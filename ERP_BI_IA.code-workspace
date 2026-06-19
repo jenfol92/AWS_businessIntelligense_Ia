@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../bussines"
+		}
+	],
+	"settings": {
+		"git.ignoreLimitWarning": true
+	}
+}

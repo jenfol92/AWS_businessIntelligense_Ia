@@ -1,0 +1,63 @@
+INSTRUCCIÓN PERMANENTE PARA ESTA MIGRACIÓN
+
+A partir de ahora, todo el código que generes debe estar documentado en castellano.
+
+Reglas de documentación:
+
+1. Documenta cada archivo con un comentario inicial explicando:
+   - qué hace el archivo
+   - a qué módulo pertenece
+   - qué responsabilidad tiene
+   - qué NO debe hacer
+
+2. Documenta cada función exportada con JSDoc en castellano:
+   - propósito
+   - parámetros
+   - qué devuelve
+   - errores de negocio relevantes si aplica
+
+3. Documenta bloques complejos de lógica:
+   - validaciones de estado
+   - cálculos de fechas
+   - cálculos de costes
+   - filtros de búsqueda
+   - rollback manual
+   - llamadas a Supabase que dependan de varias tablas
+
+4. No documentes obviedades.
+Evita comentarios tipo:
+   const x = 1 // asigna 1 a x
+
+5. Mantén el código limpio.
+Primero claridad, después comentario.
+
+6. No cambies la lógica original por documentar.
+
+7. Si documentas código existente, respeta exactamente el código funcional y añade solo comentarios.
+Si propones mejoras, sepáralas como:
+   // PROPUESTA DE MEJORA:
+   ...
+pero no las mezcles con la versión funcional.
+
+8. Toda explicación visible en UI, mensajes de error propios y comentarios deben estar en castellano, salvo textos comerciales/proforma que deban permanecer en inglés.
+
+9. No uses imports legacy:
+   - "@/lib/supabase/server"
+   - "@/lib/supabase/admin"
+
+10. Usa siempre la nueva estructura:
+   - "@/server/supabase/routeClient"
+   - "@/server/supabase/adminClient"
+   - modules/*/repositories
+   - modules/*/services
+   - modules/*/types
+   - modules/*/mappers
+
+11. Antes de tocar una vista o endpoint legacy, úsalo solo como referencia visual/funcional.
+No copies imports, rutas antiguas ni estructura antigua.
+
+12. Al final de cada fase:
+   - ejecuta npx tsc --noEmit
+   - indica archivos creados/modificados
+   - resume qué hace cada archivo
+   - indica cómo probarlo

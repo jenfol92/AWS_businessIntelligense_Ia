@@ -1,0 +1,6 @@
+export const PRODUCT_CATALOG_DEFAULT_LIMIT = 50;
+
+export {
+  EMPTY_PRODUCT_FORM,
+  PRODUCT_FORM_ESPECIFICACIONES_KEY,
+} from "./productFormDefaults";

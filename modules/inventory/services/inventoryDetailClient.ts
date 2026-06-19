@@ -1,0 +1,44 @@
+// modules/inventory/services/inventoryDetailClient.ts
+
+import type { ProductForecastConfigUpsertBody } from "@/modules/planning/types";
+import type { InventoryProductDetailResponse } from "../types/inventory.types";
+import { appendForecastConfigOverrideToSearchParams } from "./parseForecastConfigOverride";
+
+export type FetchInventoryDetailParams = {
+  canal?: string | null;
+  pais?: string | null;
+  windowDays?: number;
+  forecastOverride?: ProductForecastConfigUpsertBody | null;
+  debugStockout?: boolean;
+};
+
+export async function fetchInventoryProductDetail(
+  productId: string,
+  params: FetchInventoryDetailParams = {},
+): Promise<InventoryProductDetailResponse> {
+  const q = new URLSearchParams();
+  if (params.canal && params.canal !== "ALL") q.set("canal", params.canal);
+  if (params.pais && params.pais !== "ALL") q.set("pais", params.pais);
+  if (params.windowDays) q.set("windowDays", String(params.windowDays));
+  if (params.forecastOverride) {
+    appendForecastConfigOverrideToSearchParams(q, params.forecastOverride);
+  }
+  if (params.debugStockout) {
+    q.set("debugStockout", "1");
+  }
+
+  const res = await fetch(
+    `/api/inventory/product/${encodeURIComponent(productId)}?${q.toString()}`,
+    { cache: "no-store" },
+  );
+  const json = (await res.json()) as InventoryProductDetailResponse | {
+    ok: false;
+    error: string;
+  };
+
+  if (!res.ok || json.ok === false) {
+    throw new Error("error" in json ? json.error : `HTTP ${res.status}`);
+  }
+
+  return json;
+}

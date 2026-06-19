@@ -1,0 +1,63 @@
+# Reglas del proyecto ERP BI IA
+
+## Stack
+- Next.js 14 App Router
+- React
+- TypeScript
+- Tailwind CSS
+- Tremor solo donde ya se use o encaje en dashboards/KPIs
+- Supabase
+- Vercel
+
+## Estructura
+- Rutas App Router en `app/`
+- Lógica de negocio en `modules/`
+- Componentes compartidos en `shared/`
+- No importar nada desde `bussines/` o legacy
+- Legacy solo sirve como referencia funcional
+
+## Rutas
+- No hardcodear `/es`
+- Usar locale dinámico cuando sea necesario
+- No usar `localhost` ni URLs absolutas internas
+- Fetch frontend siempre relativo: `/api/...`
+- Links internos relativos o con locale dinámico
+- No crear rutas duplicadas
+- No crear carpetas `_id_`, `_relId_`, `route.ts/route.ts` ni `ROUTE.TS`
+- En App Router los dinámicos son `[id]`, `[relId]`, `[driveId]`
+
+## Supabase
+- Usar `@/server/supabase/routeClient`
+- Usar `@/server/supabase/adminClient` solo en servidor cuando haga falta service role
+- No usar `@/lib/supabase/server`
+- Antes de inventar campos, inspeccionar columnas reales en Supabase
+- No mostrar secretos
+
+## Storage
+- Imágenes de producto:
+  - bucket: `product-images`
+  - guardar en raíz del bucket
+  - no crear carpeta `products/`
+  - no crear carpeta por SKU
+  - guardar URL pública en `producto_detalle.imagen_url`
+- Documentos de producto:
+  - separados de contenedores
+  - usar `producto_documentos_rel`
+- Documentos de contenedor:
+  - usar rutas/tablas de contenedores
+
+## UI / Responsive
+- Diseño responsive obligatorio
+- Desktop: tablas completas
+- Móvil: cards/listados legibles
+- No resolver móvil solo con `overflow-x-auto`
+- Usar `shared/ui/ResponsiveTable`
+- Usar `shared/ui/ResponsiveDataCard`
+- Evitar `px-8` en móvil; usar `px-4 sm:px-6 lg:px-8`
+- No usar clases Bootstrap
+
+## Validación obligatoria
+Antes de terminar cualquier cambio:
+```bash
+npx.cmd tsc --noEmit
+npm run build

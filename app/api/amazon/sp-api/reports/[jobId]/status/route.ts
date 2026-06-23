@@ -4,11 +4,16 @@ import { refreshFbaCountryReportJobStatus } from "@/modules/amazon-sp-api/fbaCou
 
 export const dynamic = "force-dynamic";
 
-// TODO: proteger endpoint para rol admin antes de producción.
-
 type RouteContext = { params: Promise<{ jobId: string }> };
 
 export async function GET(_req: Request, context: RouteContext) {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { ok: false, error: "Endpoint SP-API no disponible en producción sin protección admin." },
+      { status: 404 },
+    );
+  }
+
   try {
     const { jobId } = await context.params;
     const result = await refreshFbaCountryReportJobStatus(jobId);

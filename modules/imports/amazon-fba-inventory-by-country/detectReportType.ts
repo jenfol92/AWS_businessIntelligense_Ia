@@ -59,6 +59,7 @@ const FBA_LEDGER_SIGNATURE = [
 /** Indicadores típicos de GET_AFN_INVENTORY_DATA_BY_COUNTRY. */
 const BY_COUNTRY_STOCK_HEADERS = [
   "quantity available",
+  "quantity for local fulfillment",
   "available",
   "fulfillable quantity",
   "afn fulfillable quantity",
@@ -132,7 +133,7 @@ export function assertAfnInventoryByCountryHeaders(
       [
         "El archivo no parece GET_AFN_INVENTORY_DATA_BY_COUNTRY.",
         "Se esperan columnas de SKU, país (country / marketplace-country) y stock vendible",
-        "(quantity-available, fulfillable-quantity, afn-fulfillable-quantity, available o sellable).",
+        "(quantity-available, quantity-for-local-fulfillment, fulfillable-quantity, afn-fulfillable-quantity, available o sellable).",
         defaultPais
           ? `País por defecto configurado: ${defaultPais}.`
           : "Si el informe es de un solo país, selecciona el país por defecto.",

@@ -5,9 +5,14 @@ import { requestFbaCountryReportJob } from "@/modules/amazon-sp-api/fbaCountryRe
 
 export const dynamic = "force-dynamic";
 
-// TODO: proteger endpoint para rol admin antes de producción.
-
 export async function POST() {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { ok: false, error: "Endpoint SP-API no disponible en producción sin protección admin." },
+      { status: 404 },
+    );
+  }
+
   try {
     const { job, reportId } = await requestFbaCountryReportJob();
 

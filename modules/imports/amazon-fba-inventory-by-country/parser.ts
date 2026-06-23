@@ -83,6 +83,8 @@ const COUNTRY_COLUMNS = [
 const STOCK_COLUMNS = [
   "quantity available",
   "quantity-available",
+  "quantity-for-local-fulfillment",
+  "quantity for local fulfillment",
   "available",
   "fulfillable quantity",
   "fulfillable-quantity",

@@ -44,7 +44,7 @@ export async function fetchContainerOrderLinks(
 
     .select(
 
-      "contenedor_id, orden_id, ordenes_compra(id, numero_orden, agente_id, coste_total_eur, cbm_total, fob_puerto, destino, eta, agentes_compra(contacto))",
+      "contenedor_id, orden_id, ordenes_compra(id, numero_orden, numero_pedido_agente, agente_id, coste_total_eur, cbm_total, fob_puerto, destino, eta, agentes_compra(contacto))",
 
     )
 
@@ -341,21 +341,33 @@ export async function deleteContainerById(
  * El comportamiento actual mantiene la misma lógica que el handler original.
  */
 export async function deleteContainerWithLinks(
-
   supabase: SupabaseClient,
-
   contenedorId: string,
-
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error: linksError } = await supabase
+    .from("contenedor_ordenes")
+    .delete()
+    .eq("contenedor_id", contenedorId);
 
-  await supabase.from("contenedor_ordenes").delete().eq("contenedor_id", contenedorId);
+  if (linksError) {
+    return {
+      ok: false,
+      error: `No se pudieron eliminar los vínculos del contenedor: ${linksError.message}`,
+    };
+  }
 
-  const { error } = await supabase.from("contenedores").delete().eq("id", contenedorId);
+  const { error: containerError } = await supabase
+    .from("contenedores")
+    .delete()
+    .eq("id", contenedorId);
 
-  if (error) return { ok: false, error: error.message };
+  if (containerError) {
+    return {
+      ok: false,
+      error: `No se pudo eliminar el contenedor: ${containerError.message}`,
+    };
+  }
 
   return { ok: true };
-
 }
-
 

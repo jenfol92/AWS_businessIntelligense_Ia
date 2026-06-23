@@ -13,7 +13,6 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { CheckCircle, X, FileText } from "lucide-react";
-import { resolveOrderEtaForConfirm } from "@/modules/orders/utils/resolveOrderEta";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
 
@@ -23,8 +22,13 @@ export type OrdenConfirmRow = {
   numero_orden: string | null;
   fob_puerto: string | null;
   destino: string | null;
+  fecha_orden?: string | null;
+  etd?: string | null;
+  eta?: string | null;
   cbm_total: number | null;
   coste_total_eur: number | null;
+  lead_time_produccion?: number | null;
+  lead_time_transito?: number | null;
   agente_id?: string | null;
   agente_contacto?: string | null;
 };
@@ -74,10 +78,12 @@ type OrderLeadSource = {
 
 type ItemSupplierLead = {
   proveedor_id?: string | null;
-  proveedores?: {
+  proveedores?: SupplierLeadRow | SupplierLeadRow[] | null;
+};
+
+type SupplierLeadRow = {
     dias_produccion_estandar?: number | null;
     dias_transito_estandar?: number | null;
-  } | null;
 };
 
 function toLeadDays(val: unknown): number | null {
@@ -85,6 +91,21 @@ function toLeadDays(val: unknown): number | null {
   const n = Number(val);
   if (!Number.isFinite(n) || n < 0) return null;
   return Math.round(n);
+}
+
+function firstRelation<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+function normalizeDate(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.slice(0, 10) : "";
+}
+
+function addDaysToIsoDate(isoDate: string, days: number): string {
+  const date = new Date(`${isoDate.slice(0, 10)}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 /** Máximo por proveedor distinto (contenedor espera a la fábrica más lenta). */
@@ -103,8 +124,9 @@ function maxLeadFromSuppliers(items: ItemSupplierLead[]): {
     if (!proveedorId || seen.has(proveedorId)) continue;
     seen.add(proveedorId);
 
-    const prod = toLeadDays(item.proveedores?.dias_produccion_estandar);
-    const trans = toLeadDays(item.proveedores?.dias_transito_estandar);
+    const proveedor = firstRelation(item.proveedores);
+    const prod = toLeadDays(proveedor?.dias_produccion_estandar);
+    const trans = toLeadDays(proveedor?.dias_transito_estandar);
     if (prod != null) {
       maxProd = Math.max(maxProd, prod);
       found = true;
@@ -204,23 +226,21 @@ export default function ConfirmOrderModal({
           }
 
           const { diasProduccion: prod, diasTransito: trans, fuente } =
-            resolveInitialLeadTimes(ordenData, rawItems);
+            resolveInitialLeadTimes({ ...orden, ...ordenData }, rawItems);
           setDiasProduccion(prod);
           setDiasTransito(trans);
           console.log("Lead producción:", prod);
           console.log("Lead tránsito:", trans);
           console.log("Fuente:", fuente);
 
-          if (ordenData.etd) {
-            setEtd(String(ordenData.etd).slice(0, 10));
-          }
-          if (ordenData.eta) {
-            setEtaConfirmada(String(ordenData.eta).slice(0, 10));
-            setEtaLocked(true);
-          }
-          if (ordenData.eta_real) {
-            setEtaReal(String(ordenData.eta_real).slice(0, 10));
-          }
+          const savedEtd = normalizeDate(ordenData.etd ?? orden.etd);
+          const savedEta = normalizeDate(ordenData.eta ?? orden.eta);
+          const fechaBase = normalizeDate(ordenData.fecha_orden ?? orden.fecha_orden);
+          const initialEtd = savedEtd || (fechaBase ? addDaysToIsoDate(fechaBase, prod) : "");
+          const initialEta = savedEta || (initialEtd ? addDaysToIsoDate(initialEtd, trans) : "");
+          setEtd(initialEtd);
+          setEta(initialEta);
+          setEtaTouched(Boolean(savedEta));
           if (ordenData.deposito_porcentaje != null) {
             setDepositoPct(Number(ordenData.deposito_porcentaje));
           }
@@ -273,10 +293,10 @@ export default function ConfirmOrderModal({
   // ─── Estado del formulario ────────────────────────────────────────────────
 
   const [diasProduccion, setDiasProduccion] = useState<number>(
-    LEAD_TIME_FALLBACK.produccion,
+    toLeadDays(orden.lead_time_produccion) ?? LEAD_TIME_FALLBACK.produccion,
   );
   const [diasTransito, setDiasTransito] = useState<number>(
-    LEAD_TIME_FALLBACK.transito,
+    toLeadDays(orden.lead_time_transito) ?? LEAD_TIME_FALLBACK.transito,
   );
   const [numeroPedidoAgente, setNumeroPedidoAgente] = useState("");
   const [agenteId, setAgenteId] = useState(orden.agente_id ?? "");
@@ -284,9 +304,8 @@ export default function ConfirmOrderModal({
   /** 1 unidad de moneda = X EUR */
   const [cambio,  setCambio]  = useState<number | "">(0.92);
   const [etd,     setEtd]     = useState("");
-  const [etaReal, setEtaReal] = useState("");
-  const [etaConfirmada, setEtaConfirmada] = useState("");
-  const [etaLocked, setEtaLocked] = useState(false);
+  const [eta,     setEta]     = useState("");
+  const [etaTouched, setEtaTouched] = useState(false);
   const [saving,  setSaving]  = useState(false);
   const [error,   setError]   = useState<string | null>(null);
 
@@ -297,28 +316,21 @@ export default function ConfirmOrderModal({
     "The balance will be paid 10 days before the vessel arrives at the port",
   );
 
-  const suggestedEta = useMemo(
-    () =>
-      resolveOrderEtaForConfirm({
-        savedEta: null,
-        etd: etd || null,
-        diasProduccion,
-        diasTransito,
-      }),
-    [etd, diasProduccion, diasTransito],
-  );
+  const suggestedEta = useMemo(() => {
+    if (!etd) return "";
+    return addDaysToIsoDate(etd, Math.max(0, diasTransito));
+  }, [etd, diasTransito]);
 
   useEffect(() => {
-    if (!etaLocked) {
-      setEtaConfirmada(suggestedEta);
+    if (!etaTouched && eta === "" && suggestedEta) {
+      setEta(suggestedEta);
     }
-  }, [suggestedEta, etaLocked]);
-
-  const etaStr = etaConfirmada || suggestedEta;
+  }, [eta, etaTouched, suggestedEta]);
 
   /** Fecha de pago del balance (ETA real o calculada - balanceDiasAntesEta días). */
   function calcBalanceDate(): string {
-    const targetEta = etaReal || etaStr;
+    const targetEta = eta || suggestedEta;
+    if (!targetEta) return "-";
     const d = new Date(targetEta);
     d.setDate(d.getDate() - balanceDiasAntesEta);
     return d.toLocaleDateString("es-ES");
@@ -384,9 +396,8 @@ export default function ConfirmOrderModal({
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          eta:                       etaStr,
+          eta:                       eta || suggestedEta,
           etd:                       etd || null,
-          eta_real:                  etaReal || null,
           lead_time_produccion:      diasProduccion,
           lead_time_transito:        diasTransito,
           numero_pedido_agente:      numeroPedidoAgente || null,
@@ -479,18 +490,18 @@ export default function ConfirmOrderModal({
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  ETA confirmada
+                  ETA
                 </label>
                 <input
                   type="date"
-                  value={etaConfirmada}
+                  value={eta}
                   onChange={(e) => {
-                    setEtaConfirmada(e.target.value);
-                    setEtaLocked(true);
+                    setEtaTouched(true);
+                    setEta(e.target.value);
                   }}
                   className="w-full border border-emerald-200 bg-emerald-50 rounded-lg px-3 py-2 text-sm font-semibold text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-400"
                 />
-                {!etaLocked ? (
+                {!etaTouched && suggestedEta ? (
                   <p className="mt-0.5 text-[10px] text-slate-400">
                     Sugerida: {new Date(suggestedEta).toLocaleDateString("es-ES")}
                   </p>
@@ -560,23 +571,12 @@ export default function ConfirmOrderModal({
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  ETD (opcional)
+                  ETD
                 </label>
                 <input
                   type="date"
                   value={etd}
                   onChange={(e) => setEtd(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  ETA real (opcional)
-                </label>
-                <input
-                  type="date"
-                  value={etaReal}
-                  onChange={(e) => setEtaReal(e.target.value)}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>

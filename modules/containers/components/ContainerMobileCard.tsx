@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, MapPin, Pencil } from "lucide-react";
 
 import { ContainerDetailPanel } from "@/modules/containers/components/ContainerDetailPanel";
 import { ContenedorEstadosBadges } from "@/modules/containers/components/ContainerEstadosBadges";
+import { ContainerPaymentSummaryBadge } from "@/modules/containers/components/ContainerPaymentSummaryBadge";
 import { EtaBar } from "@/modules/containers/components/EtaBar";
 import { TIPO_CONTENEDOR_LABELS } from "@/modules/containers/constants/estadoContenedor";
 import type { ContenedorRow } from "@/modules/containers/types/containerUiTypes";
@@ -31,6 +32,13 @@ function resolveEstadosContenedor(c: Pick<
 function fmtShortDate(d: string | null): string {
   if (!d) return "—";
   return new Date(d).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "2-digit" });
+}
+
+function formatOrderReference(order: ContenedorRow["ordenes"][number]): string {
+  if (order.numero_orden && order.numero_pedido_agente) {
+    return `${order.numero_orden} - ${order.numero_pedido_agente}`;
+  }
+  return order.numero_orden || order.numero_pedido_agente || "Orden sin referencia";
 }
 
 export function ContainerMobileCard({
@@ -76,15 +84,41 @@ export function ContainerMobileCard({
                 resolveEstadosContenedor(contenedor).tipo_contenedor
               ] ?? contenedor.tipo_contenedor?.toUpperCase() ?? "—",
           },
-          { label: "Transitario", value: contenedor.transitario ?? "—" },
           {
-            label: "Agente",
-            value:
-              (contenedor.ordenes_count ?? 0) === 0
-                ? "Sin orden"
-                : contenedor.agente_contacto ?? "Sin agente",
+            label: "Transitario",
+            value: (
+              <span>
+                {contenedor.transitario ?? "—"}
+                {contenedor.agente_contacto ? ` · ${contenedor.agente_contacto}` : ""}
+              </span>
+            ),
           },
-          { label: "Órdenes", value: contenedor.ordenes_count ?? 0 },
+          {
+            label: "Órdenes",
+            value:
+              contenedor.ordenes.length === 0 ? (
+                "Sin orden"
+              ) : (
+                <div className="space-y-1">
+                  {contenedor.ordenes.map((orden) => (
+                    <button
+                      key={orden.id}
+                      type="button"
+                      onClick={() => onVerOrden(orden.id)}
+                      className="block text-left text-xs font-semibold text-slate-700 hover:text-blue-700"
+                    >
+                      {formatOrderReference(orden)}
+                    </button>
+                  ))}
+                </div>
+              ),
+            className: "col-span-2",
+          },
+          {
+            label: "Pagos",
+            value: <ContainerPaymentSummaryBadge pagos={contenedor.pagos} />,
+            className: "col-span-2",
+          },
           {
             label: "Coste EUR",
             value: `€${Number(contenedor.coste_total_eur ?? 0).toLocaleString("es-ES", { maximumFractionDigits: 0 })}`,
@@ -164,7 +198,6 @@ export function ContainerMobileCard({
           <ContainerDetailPanel
             contenedorId={contenedor.id}
             onChanged={onChanged}
-            onVerOrden={onVerOrden}
           />
         </div>
       ) : null}

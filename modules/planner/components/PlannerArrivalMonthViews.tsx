@@ -8,6 +8,28 @@ import {
 } from "@/modules/planner/components/ArrivalEventCard";
 import type { ArrivalMonth } from "@/modules/planner/types/arrivals.types";
 
+const MONTH_VISUAL_STYLES = [
+  { headerClassName: "border-blue-200 bg-blue-100", bodyClassName: "bg-blue-50/35", counterClassName: "bg-blue-700 text-white" },
+  { headerClassName: "border-violet-200 bg-violet-100", bodyClassName: "bg-violet-50/35", counterClassName: "bg-violet-700 text-white" },
+  { headerClassName: "border-emerald-200 bg-emerald-100", bodyClassName: "bg-emerald-50/35", counterClassName: "bg-emerald-700 text-white" },
+  { headerClassName: "border-amber-200 bg-amber-100", bodyClassName: "bg-amber-50/40", counterClassName: "bg-amber-600 text-white" },
+  { headerClassName: "border-orange-200 bg-orange-100", bodyClassName: "bg-orange-50/40", counterClassName: "bg-orange-700 text-white" },
+  { headerClassName: "border-teal-200 bg-teal-100", bodyClassName: "bg-teal-50/40", counterClassName: "bg-teal-700 text-white" },
+  { headerClassName: "border-yellow-200 bg-yellow-100", bodyClassName: "bg-yellow-50/45", counterClassName: "bg-yellow-600 text-white" },
+  { headerClassName: "border-fuchsia-200 bg-fuchsia-100", bodyClassName: "bg-fuchsia-50/35", counterClassName: "bg-fuchsia-700 text-white" },
+  { headerClassName: "border-cyan-200 bg-cyan-100", bodyClassName: "bg-cyan-50/40", counterClassName: "bg-cyan-700 text-white" },
+  { headerClassName: "border-orange-300 bg-orange-200", bodyClassName: "bg-orange-50/50", counterClassName: "bg-orange-800 text-white" },
+  { headerClassName: "border-slate-300 bg-slate-200", bodyClassName: "bg-slate-50", counterClassName: "bg-slate-800 text-white" },
+  { headerClassName: "border-rose-200 bg-rose-100", bodyClassName: "bg-rose-50/35", counterClassName: "bg-rose-700 text-white" },
+];
+
+function getMonthVisualStyle(monthKey: string) {
+  const monthNumber = Number(monthKey.slice(5, 7));
+  const index =
+    Number.isInteger(monthNumber) && monthNumber >= 1 && monthNumber <= 12 ? monthNumber - 1 : 0;
+  return MONTH_VISUAL_STYLES[index] ?? MONTH_VISUAL_STYLES[0];
+}
+
 function formatDay(iso: string | null): string {
   if (!iso) return "—";
   return iso.slice(8, 10);
@@ -22,16 +44,17 @@ export function PlannerArrivalMonthDesktopCard({
 }) {
   const datedOrders = sortOrdersByDate([...month.confirmedEtaOrders, ...month.estimatedOrders]);
   const byDestination = groupOrdersByDestination(datedOrders);
+  const monthStyle = getMonthVisualStyle(month.month);
 
   return (
     <section className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-100 bg-slate-50 px-4 py-3">
+      <div className={`border-b px-4 py-3 ${monthStyle.headerClassName}`}>
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
             <h2 className="truncate text-base font-bold text-slate-900">{month.label}</h2>
             <p className="text-xs text-slate-500">{month.month}</p>
           </div>
-          <span className="inline-flex h-9 min-w-9 items-center justify-center rounded-full bg-indigo-600 px-2 text-sm font-bold text-white">
+          <span className={`inline-flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-sm font-bold ${monthStyle.counterClassName}`}>
             {month.total}
           </span>
         </div>
@@ -52,7 +75,7 @@ export function PlannerArrivalMonthDesktopCard({
         ) : null}
       </div>
 
-      <div className="flex-1 space-y-4 p-3">
+      <div className={`flex-1 space-y-4 p-3 ${monthStyle.bodyClassName}`}>
         {datedOrders.length === 0 && month.pendingDateOrders.length === 0 ? (
           <p className="py-8 text-center text-sm text-slate-400">Sin llegadas en este mes</p>
         ) : null}
@@ -101,13 +124,14 @@ export function PlannerArrivalMonthMobileSection({
   onToggle: () => void;
 }) {
   const datedOrders = sortOrdersByDate([...month.confirmedEtaOrders, ...month.estimatedOrders]);
+  const monthStyle = getMonthVisualStyle(month.month);
 
   return (
     <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+        className={`flex w-full items-center justify-between gap-3 border-b px-4 py-3 text-left ${monthStyle.headerClassName}`}
         aria-expanded={expanded}
       >
         <div className="min-w-0 flex-1">
@@ -124,7 +148,7 @@ export function PlannerArrivalMonthMobileSection({
       </button>
 
       {expanded ? (
-        <div className="space-y-3 border-t border-slate-100 px-3 pb-3 pt-2">
+        <div className={`space-y-3 px-3 pb-3 pt-2 ${monthStyle.bodyClassName}`}>
           {datedOrders.map((order) => (
             <ArrivalEventCard key={order.orderId} order={order} locale={locale} compact />
           ))}

@@ -24,41 +24,23 @@
 
 import { NextResponse } from "next/server";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
-import { analyzeProducts } from "@/modules/planner/services/analyzeProducts";
-import { createDraftOrdersFromAnnualPlan } from "@/modules/orders/services/createDraftOrdersFromAnnualPlan";
-import { createOrderDraftFromGroup } from "@/modules/orders/services/createOrderDraftFromGroup";
 import {
-  createOrderFromDraft,
-  type CreateOrderFromDraftResult,
-} from "@/modules/orders/services/createOrderFromDraft";
+  createOrderFromPlannerService,
+} from "@/modules/orders/services/createOrderFromPlannerService";
 import type { PlannerParams } from "@/modules/planner/types/planner.types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Default planner params (applied when not provided in request body)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DEFAULT_PARAMS = {
+const DEFAULT_PARAMS: PlannerParams = {
   windowDays: 90,
   horizonMonths: 12,
-  scenario: "base" as const,
+  scenario: "base",
   country: "ALL",
-  channel: "ALL" as const,
+  channel: "ALL",
   includeNewProducts: true,
-} satisfies PlannerParams;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Default supplier payment terms
-// Applied when the group's supplier has no payment config in proveedores table.
-// TODO: Replace with a real lookup to proveedores.deposito_porcentaje etc.
-//       once suppliers module is fully implemented.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const DEFAULT_PAYMENT = {
-  depositPercentage: 30,
-  balanceDaysBeforeArrival: 10,
-  balanceConditionsText:
-    "The balance will be paid 10 days before the vessel arrives at the port",
-} as const;
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Valid enum sets (mirrors planning/analyze/route.ts pattern)
@@ -77,7 +59,7 @@ const VALID_CHANNELS = new Set<PlannerParams["channel"]>([
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Body type
+// Body type + validation
 // ─────────────────────────────────────────────────────────────────────────────
 
 type RequestBody = {
@@ -90,10 +72,6 @@ type RequestBody = {
   includeNewProducts?: boolean;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Body validation
-// ─────────────────────────────────────────────────────────────────────────────
-
 type ParseBodyResult =
   | { ok: true; groupKey: string; plannerParams: PlannerParams }
   | { ok: false; error: string };
@@ -105,7 +83,6 @@ function parseBody(raw: unknown): ParseBodyResult {
 
   const body = raw as Record<string, unknown>;
 
-  // ── groupKey (required) ────────────────────────────────────────────────────
   if (typeof body.groupKey !== "string" || body.groupKey.trim() === "") {
     return {
       ok: false,
@@ -114,16 +91,12 @@ function parseBody(raw: unknown): ParseBodyResult {
   }
   const groupKey = body.groupKey.trim();
 
-  // ── plannerParams (all optional — fall back to defaults) ──────────────────
   const params: PlannerParams = { ...DEFAULT_PARAMS };
 
   if (body.windowDays !== undefined) {
     const n = Number(body.windowDays);
     if (!Number.isInteger(n) || n < 1 || n > 365) {
-      return {
-        ok: false,
-        error: "windowDays debe ser un entero entre 1 y 365.",
-      };
+      return { ok: false, error: "windowDays debe ser un entero entre 1 y 365." };
     }
     params.windowDays = n;
   }
@@ -131,10 +104,7 @@ function parseBody(raw: unknown): ParseBodyResult {
   if (body.horizonMonths !== undefined) {
     const n = Number(body.horizonMonths);
     if (!Number.isInteger(n) || n < 1 || n > 24) {
-      return {
-        ok: false,
-        error: "horizonMonths debe ser un entero entre 1 y 24.",
-      };
+      return { ok: false, error: "horizonMonths debe ser un entero entre 1 y 24." };
     }
     params.horizonMonths = n;
   }
@@ -168,10 +138,7 @@ function parseBody(raw: unknown): ParseBodyResult {
 
   if (body.includeNewProducts !== undefined) {
     if (typeof body.includeNewProducts !== "boolean") {
-      return {
-        ok: false,
-        error: "includeNewProducts debe ser true o false.",
-      };
+      return { ok: false, error: "includeNewProducts debe ser true o false." };
     }
     params.includeNewProducts = body.includeNewProducts;
   }
@@ -211,94 +178,72 @@ export async function POST(req: Request) {
 
   const parsed = parseBody(rawBody);
   if (!parsed.ok) {
-    // Explicit cast: strict:false + incremental tsconfig doesn't always narrow
-    // discriminated unions inside !x.ok guards.
     const { error } = parsed as Extract<ParseBodyResult, { ok: false }>;
     return NextResponse.json({ ok: false, error }, { status: 400 });
   }
 
   const { groupKey, plannerParams } = parsed;
 
-  // ── 3. Run planner analysis ────────────────────────────────────────────────
-  let annualPurchasePlan: Awaited<ReturnType<typeof analyzeProducts>>["annualPurchasePlan"];
-  try {
-    const result = await analyzeProducts(plannerParams);
-    annualPurchasePlan = result.annualPurchasePlan;
-  } catch (err) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          err instanceof Error
-            ? err.message
-            : "Error al ejecutar el análisis del planner.",
-      },
-      { status: 500 },
-    );
+  // ── 3. Orquestación delegada al service ────────────────────────────────────
+  const result = await createOrderFromPlannerService(groupKey, plannerParams);
+
+  // ── 4. Mapping de errores del service a respuestas HTTP ────────────────────
+  // NOTE: The switch is inside `if (!result.ok)` so TypeScript correctly narrows
+  //       `result` to the error-union variants before accessing `result.code`.
+  if (result.ok === false) {
+    switch (result.code) {
+      case "PLANNER_ERROR":
+        return NextResponse.json(
+          { ok: false, error: result.error },
+          { status: 500 },
+        );
+
+      case "GROUP_NOT_FOUND":
+        return NextResponse.json(
+          {
+            ok: false,
+            error: result.error,
+            availableGroupKeys: result.availableGroupKeys,
+          },
+          { status: 404 },
+        );
+
+      case "DRAFT_NOT_READY":
+        return NextResponse.json(
+          {
+            ok: false,
+            error: result.error,
+            warnings: result.warnings,
+            groupKey: result.groupKey,
+            draft: result.draft,
+          },
+          { status: 422 },
+        );
+
+      case "ORDER_DRAFT_NOT_READY":
+        return NextResponse.json(
+          { ok: false, error: result.error, code: result.code },
+          { status: 422 },
+        );
+
+      case "ORDER_HEADER_INSERT_FAILED":
+      case "ORDER_ITEMS_INSERT_FAILED":
+      default:
+        return NextResponse.json(
+          { ok: false, error: result.error, code: result.code },
+          { status: 500 },
+        );
+    }
   }
 
-  // ── 4. Build draft groups ──────────────────────────────────────────────────
-  const { groups } = createDraftOrdersFromAnnualPlan(annualPurchasePlan);
-
-  // ── 5. Find the requested group ────────────────────────────────────────────
-  const group = groups.find((g) => g.groupKey === groupKey);
-  if (!group) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Grupo no encontrado.",
-        availableGroupKeys: groups.map((g) => ({
-          groupKey: g.groupKey,
-          supplierName: g.supplierName,
-          originPortId: g.originPortId,
-          productCount: g.productCount,
-        })),
-      },
-      { status: 404 },
-    );
-  }
-
-  // ── 6. Convert group to OrderDraft ─────────────────────────────────────────
-  const draft = createOrderDraftFromGroup(group, DEFAULT_PAYMENT);
-
-  // ── 7. Check draft is ready ────────────────────────────────────────────────
-  if (!draft.isReadyToSubmit) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "El borrador no está listo para crear orden.",
-        warnings: draft.warnings,
-        groupKey,
-        draft,
-      },
-      { status: 422 },
-    );
-  }
-
-  // ── 8. Persist order ───────────────────────────────────────────────────────
-  const orderResult = await createOrderFromDraft(draft);
-
-  if (!orderResult.ok) {
-    // Explicit cast: same strict:false narrowing limitation as above.
-    const errResult = orderResult as Extract<
-      CreateOrderFromDraftResult,
-      { ok: false }
-    >;
-    const status = errResult.code === "ORDER_DRAFT_NOT_READY" ? 422 : 500;
-    return NextResponse.json(
-      { ok: false, error: errResult.message, code: errResult.code },
-      { status },
-    );
-  }
-
-  // ── 9. Return created order ────────────────────────────────────────────────
+  // ── 5. Éxito ───────────────────────────────────────────────────────────────
   return NextResponse.json(
     {
       ok: true,
-      groupKey,
-      draft,
-      orden: orderResult.orden,
-      items: orderResult.items,
+      groupKey: result.groupKey,
+      draft: result.draft,
+      orden: result.orden,
+      items: result.items,
     },
     { status: 201 },
   );

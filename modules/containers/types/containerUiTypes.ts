@@ -1,19 +1,36 @@
 import type { EstadoContenedor } from "@/modules/containers/constants/estadoContenedor";
 
 /** Orden vinculada (resumen) dentro del listado de contenedores. */
+export type OrdenResumenItem = {
+  sku:              string | null;
+  nombre:           string | null;
+  proveedor_nombre: string | null;
+};
+
 export type OrdenResumen = {
-  id:              string;
-  numero_orden:    string;
-  agente_id:       string | null;
-  agente_contacto: string | null;
-  coste_total_eur: number;
-  cbm_total:       number;
+  id:                   string;
+  numero_orden:         string;
+  numero_pedido_agente: string | null;
+  agente_id:            string | null;
+  agente_contacto:      string | null;
+  destino:              string | null;
+  coste_total_eur:      number;
+  cbm_total:            number;
+  items:                OrdenResumenItem[];
+};
+
+export type ContainerPaymentSummary = {
+  pagadoImporteEur: number;
+  pagadoFecha: string | null;
+  pendienteImporteEur: number;
+  pendienteFechaPrevista: string | null;
 };
 
 /** Fila de contenedor tal como devuelve GET /api/containers. */
 export type ContenedorRow = {
   id:                        string;
   identificador_embarque:    string;
+  numero_contenedor?:        string | null;
   tipo_contenedor:           string | null;
   transitario:               string | null;
   puerto_salida:             string | null;
@@ -34,6 +51,7 @@ export type ContenedorRow = {
   agente_contacto:           string | null;
   destino_label?:            string | null;
   destino_badge?:            string | null;
+  pagos?:                    ContainerPaymentSummary;
   ordenes:                   OrdenResumen[];
 };
 
@@ -66,7 +84,7 @@ export type OrdenDetalle = {
 };
 
 /** Pestaña dentro del panel de detalle expandido. */
-export type DetallePestaña = "editar" | "ordenes" | "documentos";
+export type DetallePestaña = "editar" | "documentos";
 
 /** Filtro de estado del listado. */
 export type EstadoFiltro = "ALL" | EstadoContenedor;

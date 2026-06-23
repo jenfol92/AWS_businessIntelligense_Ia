@@ -126,6 +126,12 @@ export type InsertOrderHeaderInput = {
   balance_dias_antes_eta?: number | null;
   balance_condiciones_texto?: string | null;
 
+  // Currency / agent reference
+  moneda_compra?: string | null;
+  tipo_cambio_moneda_eur?: number | null;
+  tipo_cambio_usd_eur?: number | null;
+  numero_pedido_agente?: string | null;
+
   // Misc
   agente_id?: string | null;
   notas?: string | null;

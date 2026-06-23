@@ -14,9 +14,19 @@
 
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Search, Scissors, Trash2, ArrowDown, ArrowUp } from "lucide-react";
 import { syncOrderLineCostFields } from "@/modules/orders/utils/syncOrderLineCostFields";
+import type { PreloadedItem } from "@/modules/orders/types/orderForm.types";
+import { useOrderCatalogs } from "@/modules/orders/hooks/useOrderCatalogs";
+import { useOrderProductSearch } from "@/modules/orders/hooks/useOrderProductSearch";
+import { useOrderFormLoader } from "@/modules/orders/hooks/useOrderFormLoader";
+import { useOrderLeadTimeSuggestions } from "@/modules/orders/hooks/useOrderLeadTimeSuggestions";
+import { buildOrderFormPayload } from "@/modules/orders/utils/buildOrderFormPayload";
+import { productSearchToOrderItem } from "@/modules/orders/utils/productSearchToOrderItem";
+import type { ProductoSearch } from "@/modules/orders/types/orderProductSearch.types";
+
+export type { PreloadedItem };
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
 
@@ -44,28 +54,6 @@ export type OrdenRow = {
   tipo_cambio_moneda_eur?: number | null;
 };
 
-/** Producto devuelto por GET /api/orders/products-search. */
-type ProductoSearch = {
-  producto_id: string;
-  sku: string;
-  nombre: string;
-  imagen_url: string | null;
-  categoria: string | null;
-  proveedor_id: string | null;
-  proveedor_nombre: string | null;
-  puerto_preferido: string | null;
-  stock_fba: number;
-  stock_fbm: number;
-  stock_total: number;
-  dias_cobertura: number | null;
-  cbm_unitario: number;
-  coste_unitario_moneda: number | null;
-  moneda_producto: string | null;
-  coste_fabrica_eur?: number | null;
-  sin_coste_historico?: boolean;
-  coste_unitario_usd: number | null;
-};
-
 /** Ítem dentro del formulario de orden (con _key local para listas React). */
 type OrderItem = {
   _key: string;
@@ -81,32 +69,6 @@ type OrderItem = {
   coste_unitario_eur: number | null;
   lote_producto: string | null;
   sin_coste_historico?: boolean;
-};
-
-/**
- * Producto precargado desde la pestaña Sugerencias.
- * Contiene los campos mínimos para construir un OrderItem sin búsqueda manual.
- */
-export type PreloadedItem = {
-  producto_id: string;
-  sku: string;
-  nombre: string;
-  proveedor_id: string | null;
-  proveedor_nombre: string | null;
-  cbm_unitario: number;
-  coste_unitario_usd: number | null;
-  /** Cantidad inicial sugerida; si no viene, se usa 1. */
-  unidades_sugeridas?: number;
-  /** Agente sugerido por planner/proveedor. */
-  agente_id?: string | null;
-  agente_contacto?: string | null;
-  /**
-   * Puerto FOB de origen como texto legible (p.ej. "Ningbo").
-   * Cuando todos los ítems precargados comparten el mismo puerto,
-   * se preselecciona automáticamente en el campo fob_puerto del formulario.
-   * Nunca debe contener un UUID.
-   */
-  fob_puerto?: string | null;
 };
 
 export interface OrderFormModalProps {
@@ -127,28 +89,18 @@ export interface OrderFormModalProps {
 
 const CBM_LIMITE_DEFAULT = 65;
 
-// ─── Tipos de puertos ─────────────────────────────────────────────────────────
+function addDaysToIsoDate(isoDate: string, days: number): string {
+  const date = new Date(`${isoDate.slice(0, 10)}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
 
-/** Puerto de origen tal como lo devuelve GET /api/logistics/ports. */
-type OriginPort = {
-  id: string;
-  name: string;
-  code: string | null;
-  pais: string | null;
-};
-
-/** Puerto de destino tal como lo devuelve GET /api/logistics/ports. */
-type DestinationPort = {
-  id: string;
-  name: string;
-  country: string | null;
-  code: string | null;
-};
-
-type PurchasingAgent = {
-  id: string;
-  contacto: string | null;
-};
+function toNonNegativeInteger(value: number | "" | string | null | undefined): number | null {
+  if (value === "" || value == null) return null;
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue) || numberValue < 0) return null;
+  return Math.round(numberValue);
+}
 
 // ─── Sub-componente: chip de cobertura de días ─────────────────────────────────
 
@@ -210,6 +162,8 @@ export default function OrderFormModal({
   const [notas, setNotas]         = useState(initialOrden?.notas ?? "");
   const [etd, setEtd]               = useState(initialOrden?.etd?.slice(0, 10) ?? "");
   const [eta, setEta]               = useState(initialOrden?.eta?.slice(0, 10) ?? "");
+  const [etdTouched, setEtdTouched] = useState(false);
+  const [etaTouched, setEtaTouched] = useState(false);
   const [monedaCompra, setMonedaCompra] = useState(initialOrden?.moneda_compra ?? "USD");
   const [tipoCambio, setTipoCambio] = useState<number | "">(
     initialOrden?.tipo_cambio_moneda_eur ?? initialOrden?.tipo_cambio_usd_eur ?? "",
@@ -223,6 +177,8 @@ export default function OrderFormModal({
   const [leadTransito, setLeadTransito] = useState<number | "">(
     initialOrden?.lead_time_transito ?? "",
   );
+  const [leadProduccionTouched, setLeadProduccionTouched] = useState(false);
+  const [leadTransitoTouched, setLeadTransitoTouched] = useState(false);
   const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
 
   // ─── Estado ítems ─────────────────────────────────────────────────────────
@@ -249,15 +205,19 @@ export default function OrderFormModal({
   const [saving,  setSaving]  = useState(false);
   const [error,   setError]   = useState<string | null>(null);
 
-  // ─── Buscador de productos ────────────────────────────────────────────────
+  // ─── Búsqueda de productos ────────────────────────────────────────────────
 
-  const [searchQ,        setSearchQ]        = useState("");
-  const [searchResults,  setSearchResults]  = useState<ProductoSearch[]>([]);
-  const [searchLoading,  setSearchLoading]  = useState(false);
-  const [showDropdown,   setShowDropdown]   = useState(false);
-  const [selectedForAdd, setSelectedForAdd] = useState<Set<string>>(new Set());
-  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dropdownRef   = useRef<HTMLDivElement>(null);
+  const {
+    searchQ,
+    setSearchQ,
+    searchResults,
+    searchLoading,
+    showDropdown,
+    setShowDropdown,
+    selectedForAdd,
+    setSelectedForAdd,
+    dropdownRef,
+  } = useOrderProductSearch();
 
   // ─── Estado split (gestionar en varios pedidos) ───────────────────────────
 
@@ -269,43 +229,18 @@ export default function OrderFormModal({
   const [cbmLimite2,   setCbmLimite2]   = useState<number>(CBM_LIMITE_DEFAULT);
   const [notas2,       setNotas2]       = useState("");
 
-  // ─── Catálogos de puertos (BD real vía /api/logistics/ports) ─────────────
+  // ─── Catálogos de puertos y agentes ──────────────────────────────────────
 
-  const [puertosOrigen,  setPuertosOrigen]  = useState<OriginPort[]>([]);
-  const [puertosDestino, setPuertosDestino] = useState<DestinationPort[]>([]);
-  const [agentesCompra,  setAgentesCompra]  = useState<PurchasingAgent[]>([]);
-
-  /** Carga puertos de origen y destino al montar el modal. */
-  useEffect(() => {
-    fetch("/api/logistics/ports")
-      .then((r) => r.json())
-      .then((j) => {
-        // DEBUG — eliminar cuando el problema esté resuelto
-        console.log("[OrderFormModal] ports response", j);
-        if (j.ok) {
-          setPuertosOrigen(j.originPorts      ?? []);
-          setPuertosDestino(j.destinationPorts ?? []);
-          console.log("[OrderFormModal] puertosOrigen", j.originPorts ?? []);
-        } else {
-          console.warn("[OrderFormModal] ports response ok=false", j);
-        }
-      })
-      .catch((err) => {
-        console.error("[OrderFormModal] Error al cargar puertos", err);
-      });
-  }, []);
-
-  /** Carga agentes de compra para guardar agente_id en la orden. */
-  useEffect(() => {
-    fetch("/api/purchasing-agents")
-      .then((r) => r.json())
-      .then((j) => {
-        if (j.ok) setAgentesCompra(j.rows ?? []);
-      })
-      .catch(() => {
-        setAgentesCompra([]);
-      });
-  }, []);
+  const { puertosOrigen, puertosDestino, agentesCompra } = useOrderCatalogs();
+  const leadSuggestionItems = useMemo(
+    () =>
+      items.map((item) => ({
+        producto_id: item.producto_id,
+        proveedor_id: item.proveedor_id,
+      })),
+    [items],
+  );
+  const suggestedLeadTimes = useOrderLeadTimeSuggestions(leadSuggestionItems);
 
   // ─── Métricas de cubicaje ─────────────────────────────────────────────────
 
@@ -315,102 +250,107 @@ export default function OrderFormModal({
   const cbmTotal2 = items2.reduce((s, i) => s + i.cantidad * i.cbm_unitario, 0);
   const cbmPct2   = Math.min((cbmTotal2 / cbmLimite2) * 100, 100);
 
-  // ─── Carga de ítems existentes al editar ─────────────────────────────────
+  // ─── Carga de orden al editar ─────────────────────────────────────────────
+
+  const { detailState } = useOrderFormLoader(
+    isEdit ? (initialOrden?.id ?? null) : null,
+  );
 
   useEffect(() => {
-    if (!isEdit || !initialOrden) return;
-    fetch(`/api/orders/${initialOrden.id}`)
-      .then((r) => r.json())
-      .then((j) => {
-        if (j.ok) {
-          const orden = j.orden as OrdenRow & Record<string, unknown>;
-          setFob(orden.fob_puerto ?? "");
-          setDestino(orden.destino ?? "");
-          setAgenteId(orden.agente_id ?? "");
-          setFecha(orden.fecha_orden?.slice(0, 10) ?? "");
-          setCbmLimite(Number(orden.cbm_limite ?? CBM_LIMITE_DEFAULT));
-          setNotas(orden.notas ?? "");
-          setEtd(orden.etd ? String(orden.etd).slice(0, 10) : "");
-          setEta(orden.eta ? String(orden.eta).slice(0, 10) : "");
-          setMonedaCompra(String(orden.moneda_compra ?? "USD"));
-          const tc = orden.tipo_cambio_moneda_eur ?? orden.tipo_cambio_usd_eur;
-          setTipoCambio(tc != null ? Number(tc) : "");
-          setNumeroPedidoAgente(orden.numero_pedido_agente ?? "");
-          setLeadProduccion(orden.lead_time_produccion ?? "");
-          setLeadTransito(orden.lead_time_transito ?? "");
-
-          setItems(
-            (j.items ?? []).map((i: Record<string, unknown>) => ({
-              _key:               String(i.id),
-              producto_id:        String(i.producto_id),
-              nombre:             (i.productos as { nombre?: string } | null)?.nombre ?? "",
-              sku:                (i.productos as { sku?: string } | null)?.sku ?? "",
-              proveedor_id:       (i.proveedor_id as string | null) ?? null,
-              proveedor_nombre:   (i.proveedores as { nombre?: string } | null)?.nombre ?? "—",
-              cantidad:           Number(i.cantidad ?? 1),
-              cbm_unitario:       Number(i.cbm_unitario ?? 0),
-              coste_unitario_moneda:
-                (i.coste_unitario_moneda as number | null)
-                ?? (i.coste_unitario_usd as number | null)
-                ?? null,
-              coste_unitario_usd: (i.coste_unitario_usd as number | null) ?? null,
-              coste_unitario_eur: (i.coste_unitario_eur as number | null) ?? null,
-              lote_producto:      (i.lote_producto as string | null) ?? null,
-              sin_coste_historico:
-                i.coste_unitario_moneda == null
-                && i.coste_unitario_usd == null
-                && i.coste_unitario_eur == null,
-            })),
-          );
-        }
-      });
-  }, [isEdit, initialOrden]);
-
-  // ─── Cierre del dropdown al clic fuera ───────────────────────────────────
+    if (!detailState) return;
+    setFob(detailState.fob);
+    setDestino(detailState.destino);
+    setAgenteId(detailState.agenteId);
+    setFecha(detailState.fecha);
+    setCbmLimite(detailState.cbmLimite);
+    setNotas(detailState.notas);
+    setEtd(detailState.etd);
+    setEta(detailState.eta);
+    setMonedaCompra(detailState.monedaCompra);
+    setTipoCambio(detailState.tipoCambio);
+    setNumeroPedidoAgente(detailState.numeroPedidoAgente);
+    setLeadProduccion(detailState.leadProduccion);
+    setLeadTransito(detailState.leadTransito);
+    setItems(detailState.items);
+  }, [detailState]);
 
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setShowDropdown(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
+    if (readonly) return;
+    if (isEdit && !detailState) return;
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setShowDropdown(false);
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
-
-  // ─── Búsqueda de productos con debounce 300ms ─────────────────────────────
-
-  useEffect(() => {
-    if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    if (!searchQ.trim()) {
-      setSearchResults([]);
-      setShowDropdown(false);
-      setSelectedForAdd(new Set());
+    // Sin productos no hay base para estimar producción, tránsito ni fechas.
+    if (items.length === 0) {
+      setLeadProduccion("");
+      setLeadTransito("");
+      setEtd("");
+      setEta("");
+      setLeadProduccionTouched(false);
+      setLeadTransitoTouched(false);
+      setEtdTouched(false);
+      setEtaTouched(false);
       return;
     }
-    setSearchLoading(true);
-    setSelectedForAdd(new Set());
-    searchTimeout.current = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/orders/products-search?q=${encodeURIComponent(searchQ)}`);
-        const j = await r.json();
-        if (j.ok) {
-          setSearchResults(j.rows ?? []);
-          setShowDropdown(true);
-        }
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 300);
-  }, [searchQ]);
+
+    if (
+      !leadProduccionTouched &&
+      suggestedLeadTimes.lead_time_produccion != null
+    ) {
+      setLeadProduccion(suggestedLeadTimes.lead_time_produccion);
+    }
+    if (
+      !leadTransitoTouched &&
+      suggestedLeadTimes.lead_time_transito != null
+    ) {
+      setLeadTransito(suggestedLeadTimes.lead_time_transito);
+    }
+  }, [
+    leadProduccion,
+    leadProduccionTouched,
+    leadTransito,
+    leadTransitoTouched,
+    detailState,
+    isEdit,
+    items.length,
+    readonly,
+    suggestedLeadTimes.lead_time_produccion,
+    suggestedLeadTimes.lead_time_transito,
+  ]);
+
+  useEffect(() => {
+    if (readonly) return;
+    if (isEdit && !detailState) return;
+    if (items.length === 0) return;
+
+    const produccion = toNonNegativeInteger(leadProduccion);
+    const transito = toNonNegativeInteger(leadTransito);
+    if (!fecha || produccion == null) return;
+
+    // Recalcula solo los campos automáticos; los valores tocados por el usuario se conservan.
+    const calculatedEtd = addDaysToIsoDate(fecha, produccion);
+    const baseEtd = etdTouched && etd ? etd : calculatedEtd;
+
+    if (!etdTouched && etd !== calculatedEtd) {
+      setEtd(calculatedEtd);
+    }
+
+    if (transito == null) return;
+    const calculatedEta = addDaysToIsoDate(baseEtd, transito);
+    if (!etaTouched && eta !== calculatedEta) {
+      setEta(calculatedEta);
+    }
+  }, [
+    eta,
+    etaTouched,
+    detailState,
+    etd,
+    etdTouched,
+    fecha,
+    isEdit,
+    items.length,
+    leadProduccion,
+    leadTransito,
+    readonly,
+  ]);
 
   // ─── Manipulación de ítems ────────────────────────────────────────────────
 
@@ -438,29 +378,7 @@ export default function OrderFormModal({
 
   function addProductFromSearch(prod: ProductoSearch) {
     if (items.find((i) => i.producto_id === prod.producto_id)) return;
-    const costs = syncOrderLineCostFields({
-      monedaCompra,
-      costeUnitarioMoneda: prod.coste_unitario_moneda,
-      costeUnitarioUsd:
-        prod.moneda_producto === "USD" ? prod.coste_unitario_moneda : prod.coste_unitario_usd,
-      costeUnitarioEur: prod.coste_fabrica_eur ?? null,
-    });
-    setItems((prev) => [
-      ...prev,
-      {
-        _key:               prod.producto_id,
-        producto_id:        prod.producto_id,
-        nombre:             prod.nombre,
-        sku:                prod.sku,
-        proveedor_id:       prod.proveedor_id,
-        proveedor_nombre:   prod.proveedor_nombre ?? "—",
-        cantidad:           1,
-        cbm_unitario:       prod.cbm_unitario ?? 0,
-        ...costs,
-        lote_producto:      null,
-        sin_coste_historico: prod.sin_coste_historico ?? !prod.coste_unitario_moneda,
-      },
-    ]);
+    setItems((prev) => [...prev, productSearchToOrderItem(prod, monedaCompra)]);
   }
 
   function addSelectedProducts() {
@@ -472,28 +390,7 @@ export default function OrderFormModal({
     if (!toAdd.length) return;
     setItems((prev) => [
       ...prev,
-      ...toAdd.map((prod) => {
-        const costs = syncOrderLineCostFields({
-          monedaCompra,
-          costeUnitarioMoneda: prod.coste_unitario_moneda,
-          costeUnitarioUsd:
-            prod.moneda_producto === "USD" ? prod.coste_unitario_moneda : prod.coste_unitario_usd,
-          costeUnitarioEur: prod.coste_fabrica_eur ?? null,
-        });
-        return {
-          _key:               prod.producto_id,
-          producto_id:        prod.producto_id,
-          nombre:             prod.nombre,
-          sku:                prod.sku,
-          proveedor_id:       prod.proveedor_id,
-          proveedor_nombre:   prod.proveedor_nombre ?? "—",
-          cantidad:           1,
-          cbm_unitario:       prod.cbm_unitario ?? 0,
-          ...costs,
-          lote_producto:      null,
-          sin_coste_historico: prod.sin_coste_historico ?? !prod.coste_unitario_moneda,
-        };
-      }),
+      ...toAdd.map((prod) => productSearchToOrderItem(prod, monedaCompra)),
     ]);
     setSelectedForAdd(new Set());
   }
@@ -536,55 +433,6 @@ export default function OrderFormModal({
     setItems((prev) => [...prev, item]);
   }
 
-  // ─── Construcción del cuerpo de la petición ───────────────────────────────
-
-  function buildBody(
-    itemList: OrderItem[],
-    opts: {
-      fob: string;
-      destino: string;
-      agenteId: string;
-      fecha: string;
-      cbmLimite: number;
-      notas: string;
-      etd: string;
-      eta: string;
-      monedaCompra: string;
-      tipoCambio: number | "";
-      numeroPedidoAgente: string;
-      leadProduccion: number | "";
-      leadTransito: number | "";
-    },
-  ) {
-    const tc = opts.tipoCambio === "" ? null : Number(opts.tipoCambio);
-    return {
-      fob_puerto:  opts.fob     || null,
-      destino:     opts.destino || null,
-      agente_id:   opts.agenteId || null,
-      fecha_orden: opts.fecha,
-      cbm_limite:  opts.cbmLimite,
-      notas:       opts.notas   || null,
-      etd:         opts.etd || null,
-      eta:         opts.eta || null,
-      moneda_compra: opts.monedaCompra || "USD",
-      tipo_cambio_moneda_eur: tc,
-      tipo_cambio_usd_eur: opts.monedaCompra === "USD" ? tc : null,
-      numero_pedido_agente: opts.numeroPedidoAgente || null,
-      lead_time_produccion: opts.leadProduccion === "" ? null : Number(opts.leadProduccion),
-      lead_time_transito: opts.leadTransito === "" ? null : Number(opts.leadTransito),
-      items: itemList.map((i) => ({
-        producto_id:        i.producto_id,
-        proveedor_id:       i.proveedor_id,
-        cantidad:           i.cantidad,
-        cbm_unitario:       i.cbm_unitario,
-        coste_unitario_moneda: i.coste_unitario_moneda,
-        coste_unitario_usd: i.coste_unitario_usd,
-        coste_unitario_eur: i.coste_unitario_eur,
-        lote_producto:      i.lote_producto?.trim() || null,
-      })),
-    };
-  }
-
   // ─── Guardado ─────────────────────────────────────────────────────────────
 
   async function handleSave() {
@@ -607,7 +455,7 @@ export default function OrderFormModal({
       leadTransito,
     };
     try {
-      const body1 = buildBody(items, headerOpts);
+      const body1 = buildOrderFormPayload(items, headerOpts);
       const url1  = isEdit ? `/api/orders/${initialOrden!.id}` : "/api/orders";
       const r1    = await fetch(url1, {
         method:  isEdit ? "PUT" : "POST",
@@ -622,7 +470,7 @@ export default function OrderFormModal({
       }
 
       if (showSplit && items2.length > 0) {
-        const body2 = buildBody(items2, {
+        const body2 = buildOrderFormPayload(items2, {
           ...headerOpts,
           fob: fob2,
           destino: destino2,
@@ -771,13 +619,16 @@ export default function OrderFormModal({
           </div>
 
           {!readonly ? (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3">
+            <div className="grid grid-cols-2 md:grid-cols-7 gap-4 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3">
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">ETD</label>
                 <input
                   type="date"
                   value={etd}
-                  onChange={(e) => setEtd(e.target.value)}
+                  onChange={(e) => {
+                    setEtdTouched(true);
+                    setEtd(e.target.value);
+                  }}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
@@ -786,7 +637,36 @@ export default function OrderFormModal({
                 <input
                   type="date"
                   value={eta}
-                  onChange={(e) => setEta(e.target.value)}
+                  onChange={(e) => {
+                    setEtaTouched(true);
+                    setEta(e.target.value);
+                  }}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">ProducciÃ³n</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={leadProduccion}
+                  onChange={(e) => {
+                    setLeadProduccionTouched(true);
+                    setLeadProduccion(e.target.value === "" ? "" : Number(e.target.value));
+                  }}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">TrÃ¡nsito</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={leadTransito}
+                  onChange={(e) => {
+                    setLeadTransitoTouched(true);
+                    setLeadTransito(e.target.value === "" ? "" : Number(e.target.value));
+                  }}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>

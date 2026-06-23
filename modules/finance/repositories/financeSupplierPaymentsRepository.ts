@@ -1,4 +1,5 @@
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   SupplierPaymentRow,
   SupplierPaymentType,
@@ -130,6 +131,34 @@ export async function fetchSupplierPaymentByType(
 
   if (error) throw new Error(formatSupabaseError(error));
   return (data as SupplierPaymentRow | null) ?? null;
+}
+
+/**
+ * Lee en lote los pagos proveedor existentes para las órdenes indicadas.
+ * Es una consulta de solo lectura para vistas de resumen: no crea, recalcula ni sincroniza pagos.
+ *
+ * @param supabase - Cliente Supabase autenticado de la ruta.
+ * @param orderIds - IDs de órdenes vinculadas a contenedores.
+ * @returns Filas persistidas en finance_supplier_payments para esas órdenes.
+ */
+export async function fetchSupplierPaymentsByOrderIds(
+  supabase: SupabaseClient,
+  orderIds: string[],
+): Promise<SupplierPaymentRow[]> {
+  const uniqueOrderIds = Array.from(new Set(orderIds.map((id) => id.trim()).filter(Boolean)));
+  if (uniqueOrderIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("finance_supplier_payments")
+    .select(
+      `id, orden_id, contenedor_id, payment_type,
+       amount_original, original_currency, amount_eur,
+       due_date, paid_at, status`,
+    )
+    .in("orden_id", uniqueOrderIds);
+
+  if (error) throw new Error(formatSupabaseError(error));
+  return (data ?? []) as SupplierPaymentRow[];
 }
 
 export type UpsertSupplierPaymentInput = {

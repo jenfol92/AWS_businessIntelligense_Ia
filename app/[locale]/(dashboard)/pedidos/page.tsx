@@ -9,15 +9,15 @@
  *   borrador   → Editar | Confirmar
  *   confirmado → Ver | Crear contenedor | Reabrir | Proforma (subir/ver)
  *
- * Datos desde:
- *   GET /api/orders           — listado con filtros
- *   GET /api/logistics/ports  — lista de puertos reales
+ * Datos desde hooks:
+ *   useOrdersList      → GET /api/orders + GET /api/logistics/ports
+ *   useOrderSuggestions → GET /api/orders/suggestions + GET /api/planner/summary
  */
 
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Check,
   Plus,
@@ -38,72 +38,32 @@ import {
 } from "lucide-react";
 
 import OrderFormModal                from "@/modules/orders/components/OrderFormModal";
-import type { PreloadedItem }        from "@/modules/orders/components/OrderFormModal";
+import type { PreloadedItem }        from "@/modules/orders/types/orderForm.types";
 import OrderDraftBasket              from "@/modules/orders/components/OrderDraftBasket";
 import { useOrderDraftBasket }       from "@/modules/orders/hooks/useOrderDraftBasket";
 import { sugerenciaToBasketItem }    from "@/modules/orders/utils/sugerenciaBasketMapper";
 import ContainerOptimizationCard     from "@/modules/planner/components/ContainerOptimizationCard";
-import type { ContainerOptimizationGroup } from "@/modules/planner/types/planner.types";
 import { containerGroupToBasketItems } from "@/modules/planner/utils/plannerBasketMappers";
 import ConfirmOrderModal             from "@/modules/orders/components/ConfirmOrderModal";
 import { OrderContainerActions }     from "@/modules/orders/components/OrderContainerSummary";
 import { OrderContainerSummary }     from "@/modules/orders/components/OrderContainerSummary";
 import { PedidosCreateContainerFlow } from "@/modules/orders/components/PedidosCreateContainerFlow";
-import { fetchOrders }               from "@/modules/orders/api/orderClient";
 import type { OrderListRow }         from "@/modules/orders/types/orderList.types";
+import type { SugerenciaRow }        from "@/modules/orders/types/orderSuggestions.types";
+import { useOrdersList }             from "@/modules/orders/hooks/useOrdersList";
+import type { EstadoFiltro }         from "@/modules/orders/hooks/useOrdersList";
+import { useOrderSuggestions }       from "@/modules/orders/hooks/useOrderSuggestions";
+import { useOrderProformaUpload }    from "@/modules/orders/hooks/useOrderProformaUpload";
+import { useReopenOrder }            from "@/modules/orders/hooks/useReopenOrder";
+import { suggestionToPreloadedItem } from "@/modules/orders/utils/suggestionToPreloadedItem";
 import { DEFAULT_LOCALE, isLocale }  from "@/config/i18n";
-import type { OriginPort }           from "@/app/api/logistics/ports/route";
 import { ResponsiveDataCard }        from "@/shared/ui/ResponsiveDataCard";
 import { ResponsiveTable }           from "@/shared/ui/ResponsiveTable";
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
 
-type EstadoFiltro = "ALL" | "borrador" | "confirmado" | "cancelado" | "recibido";
-
 /** Pestaña activa de la página de pedidos. */
 type TabPedidos = "historial" | "sugerencias";
-
-/**
- * Fila de sugerencia de compra devuelta por GET /api/orders/suggestions.
- * Coincide con SugerenciaRow del endpoint.
- */
-type SugerenciaRow = {
-  // ── Campos base ─────────────────────────────────────────────────────────
-  producto_id:        string;
-  sku:                string;
-  nombre:             string;
-  imagen_url:         string | null;
-  categoria:          string | null;
-  proveedor_id:       string | null;
-  proveedor_nombre:   string | null;
-  puerto_preferido:   string | null;
-  dias_produccion:    number;
-  dias_transito:      number;
-  lead_time_total:    number;
-  stock_fba:          number;
-  stock_fbm:          number;
-  stock_actual:       number;
-  dias_cobertura:     number | null;
-  unidades_sugeridas: number;
-  cbm_unitario:       number;
-  cbm_total_sugerido: number;
-  coste_unitario_usd: number | null;
-  riesgo:             "critico" | "bajo" | null;
-  // ── Campos extendidos del planner ────────────────────────────────────────
-  fuente?:                  "planner" | "stock";
-  recommended_order_date?:  string | null;
-  estimated_arrival_date?:  string | null;
-  agente_id?:               string | null;
-  agente_nombre?:           string | null;
-  origin_port_id?:          string | null;
-  order_timing_status?:     "ON_TIME" | "DUE_NOW" | "OVERDUE";
-  days_late?:               number;
-  consolidation_eligible?:  boolean;
-  peso_kg_total?:           number | null;
-  capital_requerido?:       number | null;
-  /** Nombre legible del puerto de origen (nunca UUID). */
-  origin_port_name?:        string | null;
-};
 
 // ─── Configuracion de badges ──────────────────────────────────────────────────
 
@@ -141,33 +101,8 @@ function ProformaCell({
   orden: OrderListRow;
   onUploaded: () => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-  const [error,     setError]     = useState<string | null>(null);
-
-  /** Envia el PDF al endpoint de proforma upload. */
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setError(null);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res  = await fetch(`/api/orders/${orden.id}/proforma-upload`, {
-        method: "POST",
-        body: fd,
-      });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error ?? "Error al subir proforma");
-      onUploaded();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Error al subir");
-    } finally {
-      setUploading(false);
-      if (inputRef.current) inputRef.current.value = "";
-    }
-  }
+  const { uploading, error, inputRef, handleFileChange } =
+    useOrderProformaUpload(orden.id, onUploaded);
 
   if (orden.proforma_firmada_url) {
     return (
@@ -407,28 +342,8 @@ function ReopenModal({
   onClose: () => void;
   onReopened: () => void;
 }) {
-  const [motivo,  setMotivo]  = useState("");
-  const [saving,  setSaving]  = useState(false);
-  const [error,   setError]   = useState<string | null>(null);
-
-  async function handleReopen() {
-    setSaving(true);
-    setError(null);
-    try {
-      const res  = await fetch(`/api/orders/${orden.id}/reopen`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ motivo }),
-      });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error ?? "Error al reabrir la orden");
-      onReopened();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Error desconocido");
-    } finally {
-      setSaving(false);
-    }
-  }
+  const { motivo, setMotivo, saving, error, handleReopen } =
+    useReopenOrder(orden.id, onReopened);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
@@ -490,11 +405,6 @@ function ReopenModal({
 
 // ─── Página principal ─────────────────────────────────────────────────────────
 
-/**
- * PedidosPage
- *
- * Vista del histórico de órdenes de compra con KPIs, filtros y tabla de acciones.
- */
 function SugerenciaToggleButton({
   selected,
   onClick,
@@ -526,172 +436,97 @@ function SugerenciaToggleButton({
   );
 }
 
+/**
+ * PedidosPage
+ *
+ * Vista del histórico de órdenes de compra con KPIs, filtros y tabla de acciones.
+ */
 export default function PedidosPage() {
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
-  const params = useParams();
-  const locale = isLocale(params.locale) ? params.locale : DEFAULT_LOCALE;
-  // ── Pestaña activa ─────────────────────────────────────────────────────
+  const params       = useParams();
+  const locale       = isLocale(params.locale) ? params.locale : DEFAULT_LOCALE;
+
+  // ── Pestaña activa ──────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<TabPedidos>("historial");
 
-  // ── Datos historial ────────────────────────────────────────────────────
-  const [ordenes,      setOrdenes]      = useState<OrderListRow[]>([]);
-  /** Puertos de origen (China) cargados desde puertos_china via /api/logistics/ports. */
-  const [originPorts,  setOriginPorts]  = useState<OriginPort[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState<string | null>(null);
+  // ── Datos de órdenes, filtros y puertos ─────────────────────────────────
+  const ordersList = useOrdersList();
 
-  // ── Filtros ────────────────────────────────────────────────────────────
-  const [filterEstado, setFilterEstado] = useState<EstadoFiltro>("ALL");
-  const [filterQ,      setFilterQ]      = useState("");
-  const [filterPuerto, setFilterPuerto] = useState("");
+  // ── Sugerencias de compra y grupos planner ──────────────────────────────
+  const suggestions = useOrderSuggestions(activeTab === "sugerencias");
 
-  // ── Datos sugerencias ──────────────────────────────────────────────────
-  const [sugerencias,       setSugerencias]       = useState<SugerenciaRow[]>([]);
-  const [loadingSugerencias, setLoadingSugerencias] = useState(false);
-  const [errorSugerencias,  setErrorSugerencias]  = useState<string | null>(null);
-  const [sugCargadas,       setSugCargadas]       = useState(false);
-  const [containerGroups,   setContainerGroups]   = useState<ContainerOptimizationGroup[]>([]);
+  // ── Basket de borrador ──────────────────────────────────────────────────
   const basket = useOrderDraftBasket();
 
-  // ── Notificacion flotante ──────────────────────────────────────────────
+  // ── Notificación flotante ───────────────────────────────────────────────
   const [toast, setToast] = useState<string | null>(null);
 
-  // ── Modales ────────────────────────────────────────────────────────────
-  const [showForm,        setShowForm]        = useState(false);
-  const [editOrden,       setEditOrden]       = useState<OrderListRow | null>(null);
-  const [readonlyOrden,   setReadonlyOrden]   = useState<OrderListRow | null>(null);
-  const [confirmOrden,    setConfirmOrden]    = useState<OrderListRow | null>(null);
-  const [reopenOrden,     setReopenOrden]     = useState<OrderListRow | null>(null);
-  const [containerOrden,  setContainerOrden]  = useState<OrderListRow | null>(null);
+  // ── Estado de modales ───────────────────────────────────────────────────
+  const [showForm,       setShowForm]       = useState(false);
+  const [editOrden,      setEditOrden]      = useState<OrderListRow | null>(null);
+  const [readonlyOrden,  setReadonlyOrden]  = useState<OrderListRow | null>(null);
+  const [confirmOrden,   setConfirmOrden]   = useState<OrderListRow | null>(null);
+  const [reopenOrden,    setReopenOrden]    = useState<OrderListRow | null>(null);
+  const [containerOrden, setContainerOrden] = useState<OrderListRow | null>(null);
   /** Ítems precargados al abrir OrderFormModal desde sugerencias. */
-  const [modalItems,      setModalItems]      = useState<PreloadedItem[] | undefined>(undefined);
+  const [modalItems,     setModalItems]     = useState<PreloadedItem[] | undefined>(undefined);
+
   const orderIdFromUrl = searchParams.get("orderId");
 
-  // ── Carga de puertos de origen desde puerto_china (BD real) ──────────
-  useEffect(() => {
-    fetch("/api/logistics/ports")
-      .then((r) => r.json())
-      .then((j) => {
-        // Solo originPorts para el filtro FOB (fob_puerto es texto, mismo que port.name)
-        if (j.ok) setOriginPorts(j.originPorts ?? []);
-      })
-      .catch(() => { /* no bloquear la UI si falla */ });
-  }, []);
+  function clearOrderIdFromUrl() {
+    if (!orderIdFromUrl) return;
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.delete("orderId");
+    const nextQuery = nextParams.toString();
+    router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
+  }
 
-  // Permite abrir una orden desde enlaces externos, como el cronograma de llegadas.
+  // Permite abrir una orden desde enlaces externos (p.ej. cronograma de llegadas).
   useEffect(() => {
-    if (!orderIdFromUrl || ordenes.length === 0) return;
+    if (!orderIdFromUrl || ordersList.ordenes.length === 0) return;
     if (readonlyOrden?.id === orderIdFromUrl || editOrden?.id === orderIdFromUrl) return;
 
-    const order = ordenes.find((o) => o.id === orderIdFromUrl);
+    const order = ordersList.ordenes.find((o) => o.id === orderIdFromUrl);
     if (!order) return;
 
     setReadonlyOrden(order);
     setEditOrden(null);
     setShowForm(true);
-  }, [editOrden?.id, orderIdFromUrl, ordenes, readonlyOrden?.id]);
+  }, [editOrden?.id, orderIdFromUrl, ordersList.ordenes, readonlyOrden?.id]);
 
-  // ── Carga de órdenes ───────────────────────────────────────────────────
-  const fetchOrdenes = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const rows = await fetchOrders({
-        estado: filterEstado !== "ALL" ? filterEstado : undefined,
-        q: filterQ,
-        puerto: filterPuerto,
-        limit: 200,
-      });
-      setOrdenes(rows);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Error desconocido");
-    } finally {
-      setLoading(false);
-    }
-  }, [filterEstado, filterQ, filterPuerto]);
-
-  useEffect(() => { fetchOrdenes(); }, [fetchOrdenes]);
-
-  // ── Toast helper ───────────────────────────────────────────────────────
+  // ── Toast helper ────────────────────────────────────────────────────────
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(null), 4000);
   }
 
-  // ── Carga de sugerencias ───────────────────────────────────────────────
-  async function fetchSugerencias() {
-    setLoadingSugerencias(true);
-    setErrorSugerencias(null);
-    try {
-      const [sugRes, plannerRes] = await Promise.all([
-        fetch("/api/orders/suggestions"),
-        fetch("/api/planner/summary?windowDays=90&country=ALL&channel=ALL&scenario=base&horizonMonths=12&includeNewProducts=true"),
-      ]);
-      const json = await sugRes.json();
-      if (!json.ok) throw new Error(json.error ?? "Error al cargar sugerencias");
-      setSugerencias(json.rows ?? []);
-
-      const plannerJson = await plannerRes.json();
-      if (plannerJson.ok && plannerJson.purchasePlan?.containerGroups) {
-        setContainerGroups(plannerJson.purchasePlan.containerGroups);
-      } else {
-        setContainerGroups([]);
-      }
-      setSugCargadas(true);
-    } catch (err: unknown) {
-      setErrorSugerencias(err instanceof Error ? err.message : "Error desconocido");
-    } finally {
-      setLoadingSugerencias(false);
-    }
-  }
-
-  /** Carga sugerencias solo la primera vez que se abre la pestaña. */
-  useEffect(() => {
-    if (activeTab === "sugerencias" && !sugCargadas) {
-      fetchSugerencias();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
-
   /**
-   * Abre OrderFormModal con el producto sugerido precargado.
-   * Si se quieren añadir varios, se pueden seleccionar antes de llamar.
+   * Abre OrderFormModal con el/los producto(s) sugerido(s) precargado(s).
+   * origin_port_name siempre es nombre legible, nunca UUID.
    */
   function handleAnadirAOrden(items: SugerenciaRow[]) {
-    const preloaded: PreloadedItem[] = items.map((s) => ({
-      producto_id:        s.producto_id,
-      sku:                s.sku,
-      nombre:             s.nombre,
-      proveedor_id:       s.proveedor_id,
-      proveedor_nombre:   s.proveedor_nombre,
-      agente_id:          s.agente_id ?? null,
-      agente_contacto:    s.agente_nombre ?? null,
-      cbm_unitario:       s.cbm_unitario,
-      coste_unitario_usd: s.coste_unitario_usd,
-      unidades_sugeridas: s.unidades_sugeridas,
-      // Puerto FOB como texto legible (origin_port_name ya es nombre, nunca UUID)
-      fob_puerto:         s.origin_port_name ?? s.puerto_preferido ?? null,
-    }));
-    setModalItems(preloaded);
+    setModalItems(items.map(suggestionToPreloadedItem));
     setEditOrden(null);
     setReadonlyOrden(null);
     setShowForm(true);
   }
 
-  // ── KPIs ───────────────────────────────────────────────────────────────
-  const kpiTotal       = ordenes.length;
-  const kpiBorradores  = ordenes.filter((o) => o.estado === "borrador").length;
-  const kpiConfirmados = ordenes.filter((o) => o.estado === "confirmado").length;
-  const kpiCbm         = ordenes.reduce((s, o) => s + Number(o.cbm_total ?? 0), 0);
-  const kpiEurTotal    = ordenes.reduce((s, o) => s + Number(o.coste_total_eur ?? 0), 0);
+  // ── KPIs ────────────────────────────────────────────────────────────────
+  const kpiTotal       = ordersList.ordenes.length;
+  const kpiBorradores  = ordersList.ordenes.filter((o) => o.estado === "borrador").length;
+  const kpiConfirmados = ordersList.ordenes.filter((o) => o.estado === "confirmado").length;
+  const kpiCbm         = ordersList.ordenes.reduce((s, o) => s + Number(o.cbm_total ?? 0), 0);
+  const kpiEurTotal    = ordersList.ordenes.reduce((s, o) => s + Number(o.coste_total_eur ?? 0), 0);
   const hoy            = new Date();
-  const kpiProxEta     = ordenes.filter((o) => {
+  const kpiProxEta     = ordersList.ordenes.filter((o) => {
     if (!o.eta) return false;
     const diff = (new Date(o.eta).getTime() - hoy.getTime()) / (1000 * 60 * 60 * 24);
     return diff >= 0 && diff <= 30;
   }).length;
 
-  // ── Formateo ───────────────────────────────────────────────────────────
+  // ── Formateo ────────────────────────────────────────────────────────────
   function fmtDate(d: string | null) {
     if (!d) return "—";
     return new Date(d).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "2-digit" });
@@ -746,9 +581,9 @@ export default function PedidosPage() {
         >
           <TrendingDown className="h-4 w-4" />
           Sugerencias de compra
-          {sugerencias.length > 0 && (
+          {suggestions.sugerencias.length > 0 && (
             <span className="ml-1 bg-red-100 text-red-600 rounded-full px-1.5 py-0.5 text-[10px] font-bold">
-              {sugerencias.length}
+              {suggestions.sugerencias.length}
             </span>
           )}
         </button>
@@ -783,8 +618,8 @@ export default function PedidosPage() {
         <div className="flex flex-col gap-1">
           <label className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">Estado</label>
           <select
-            value={filterEstado}
-            onChange={(e) => setFilterEstado(e.target.value as EstadoFiltro)}
+            value={ordersList.filterEstado}
+            onChange={(e) => ordersList.setFilterEstado(e.target.value as EstadoFiltro)}
             className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="ALL">Todos</option>
@@ -799,12 +634,12 @@ export default function PedidosPage() {
         <div className="flex flex-col gap-1">
           <label className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">Puerto FOB</label>
           <select
-            value={filterPuerto}
-            onChange={(e) => setFilterPuerto(e.target.value)}
+            value={ordersList.filterPuerto}
+            onChange={(e) => ordersList.setFilterPuerto(e.target.value)}
             className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px]"
           >
             <option value="">Todos los puertos</option>
-            {originPorts.map((p) => (
+            {ordersList.originPorts.map((p) => (
               // El valor del filtro es el nombre del puerto (fob_puerto almacena texto, no UUID)
               <option key={p.id} value={p.name}>{p.name}</option>
             ))}
@@ -817,9 +652,9 @@ export default function PedidosPage() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
             <input
-              value={filterQ}
-              onChange={(e) => setFilterQ(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && fetchOrdenes()}
+              value={ordersList.filterQ}
+              onChange={(e) => ordersList.setFilterQ(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && ordersList.refresh()}
               placeholder="Nº orden, agente, SKU o producto…"
               className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
@@ -827,26 +662,26 @@ export default function PedidosPage() {
         </div>
 
         <button
-          onClick={fetchOrdenes}
-          disabled={loading}
+          onClick={ordersList.refresh}
+          disabled={ordersList.loading}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition self-end"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-3.5 w-3.5 ${ordersList.loading ? "animate-spin" : ""}`} />
           Actualizar
         </button>
       </div>
 
       {/* ── Tabla ── */}
-      {loading ? (
+      {ordersList.loading ? (
         <div className="flex items-center justify-center py-20">
           <RefreshCw className="h-6 w-6 animate-spin text-slate-400" />
         </div>
-      ) : error ? (
+      ) : ordersList.error ? (
         <div className="flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-700">
           <AlertCircle className="h-5 w-5 shrink-0" />
-          {error}
+          {ordersList.error}
         </div>
-      ) : ordenes.length === 0 ? (
+      ) : ordersList.ordenes.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-20 text-center text-slate-400">
           <Package className="h-8 w-8 mx-auto mb-2 opacity-40" />
           <p className="text-sm">No hay órdenes con los filtros actuales.</p>
@@ -872,7 +707,7 @@ export default function PedidosPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {ordenes.map((o) => (
+                    {ordersList.ordenes.map((o) => (
                       <tr key={o.id} className="hover:bg-slate-50/60 transition-colors">
                         <td className="px-4 py-2.5">
                           <p className="font-mono font-semibold text-slate-800 text-[13px]">{o.numero_orden}</p>
@@ -923,7 +758,7 @@ export default function PedidosPage() {
                             onReopen={() => setReopenOrden(o)}
                             onProformaUploaded={() => {
                               showToast("Proforma subida correctamente.");
-                              fetchOrdenes();
+                              ordersList.refresh();
                             }}
                           />
                         </td>
@@ -935,12 +770,12 @@ export default function PedidosPage() {
             }
             mobile={
               <div className="space-y-3 p-4">
-                {ordenes.map((o) => (
-                    <OrdenMobileCard
-                      key={o.id}
-                      orden={o}
-                      locale={locale}
-                      hoy={hoy}
+                {ordersList.ordenes.map((o) => (
+                  <OrdenMobileCard
+                    key={o.id}
+                    orden={o}
+                    locale={locale}
+                    hoy={hoy}
                     fmtDate={fmtDate}
                     onEditDraft={() => { setEditOrden(o); setReadonlyOrden(null); setShowForm(true); }}
                     onConfirm={() => setConfirmOrden(o)}
@@ -949,7 +784,7 @@ export default function PedidosPage() {
                     onReopen={() => setReopenOrden(o)}
                     onProformaUploaded={() => {
                       showToast("Proforma subida correctamente.");
-                      fetchOrdenes();
+                      ordersList.refresh();
                     }}
                   />
                 ))}
@@ -959,8 +794,8 @@ export default function PedidosPage() {
 
           {/* Pie de tabla */}
           <div className="px-4 py-2.5 border-t border-slate-100 bg-slate-50 text-[11px] text-slate-400">
-            {ordenes.length} orden{ordenes.length !== 1 ? "es" : ""}
-            {filterEstado !== "ALL" || filterQ || filterPuerto ? " (filtrado)" : ""}
+            {ordersList.ordenes.length} orden{ordersList.ordenes.length !== 1 ? "es" : ""}
+            {ordersList.filterEstado !== "ALL" || ordersList.filterQ || ordersList.filterPuerto ? " (filtrado)" : ""}
           </div>
         </div>
       )}
@@ -984,32 +819,32 @@ export default function PedidosPage() {
               </p>
             </div>
             <button
-              onClick={fetchSugerencias}
-              disabled={loadingSugerencias}
+              onClick={() => suggestions.refresh()}
+              disabled={suggestions.loading}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${loadingSugerencias ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${suggestions.loading ? "animate-spin" : ""}`} />
               Actualizar
             </button>
           </div>
 
           {/* ── Estado de carga ── */}
-          {loadingSugerencias && (
+          {suggestions.loading && (
             <div className="flex items-center gap-2 text-slate-500 text-sm py-8 justify-center">
               <RefreshCw className="h-4 w-4 animate-spin" />
               Cargando sugerencias…
             </div>
           )}
 
-          {errorSugerencias && !loadingSugerencias && (
+          {suggestions.error && !suggestions.loading && (
             <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 rounded-lg px-4 py-3 border border-red-100">
               <AlertCircle className="h-4 w-4 flex-shrink-0" />
-              {errorSugerencias}
+              {suggestions.error}
             </div>
           )}
 
           {/* ── Empty state ── */}
-          {!loadingSugerencias && !errorSugerencias && sugCargadas && sugerencias.length === 0 && (
+          {!suggestions.loading && !suggestions.error && suggestions.loaded && suggestions.sugerencias.length === 0 && (
             <div className="text-center py-16 text-slate-400">
               <ShoppingCart className="h-10 w-10 mx-auto mb-3 opacity-30" />
               <p className="text-sm font-medium">No hay sugerencias de compra en este momento.</p>
@@ -1018,13 +853,13 @@ export default function PedidosPage() {
           )}
 
           {/* ── Grupos de contenedor (planner) ── */}
-          {!loadingSugerencias && containerGroups.length > 0 && (
+          {!suggestions.loading && suggestions.containerGroups.length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-semibold text-slate-800">
-                Grupos sugeridos para optimizar contenedor ({containerGroups.length})
+                Grupos sugeridos para optimizar contenedor ({suggestions.containerGroups.length})
               </h3>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {containerGroups.map((g) => (
+                {suggestions.containerGroups.map((g) => (
                   <ContainerOptimizationCard
                     key={g.groupId}
                     group={g}
@@ -1039,8 +874,8 @@ export default function PedidosPage() {
           )}
 
           {/* ── Tabla de sugerencias ── */}
-          {!loadingSugerencias && sugerencias.length > 0 && (() => {
-            // Detectar si la fuente es el planner para mostrar columnas extra
+          {!suggestions.loading && suggestions.sugerencias.length > 0 && (() => {
+            const sugerencias    = suggestions.sugerencias;
             const esFuentePlanner = sugerencias.some((s) => s.fuente === "planner");
 
             return (
@@ -1232,14 +1067,16 @@ export default function PedidosPage() {
             setEditOrden(null);
             setReadonlyOrden(null);
             setModalItems(undefined);
+            clearOrderIdFromUrl();
           }}
           onSaved={() => {
             setShowForm(false);
             setEditOrden(null);
             setReadonlyOrden(null);
             setModalItems(undefined);
+            clearOrderIdFromUrl();
             showToast("Orden guardada correctamente.");
-            fetchOrdenes();
+            ordersList.refresh();
           }}
         />
       )}
@@ -1252,7 +1089,7 @@ export default function PedidosPage() {
           onConfirmed={() => {
             setConfirmOrden(null);
             showToast(`Orden ${confirmOrden.numero_orden} confirmada.`);
-            fetchOrdenes();
+            ordersList.refresh();
           }}
         />
       )}
@@ -1265,7 +1102,7 @@ export default function PedidosPage() {
           onReopened={() => {
             setReopenOrden(null);
             showToast(`Orden ${reopenOrden.numero_orden} reabierta a borrador.`);
-            fetchOrdenes();
+            ordersList.refresh();
           }}
         />
       )}
@@ -1278,8 +1115,14 @@ export default function PedidosPage() {
         onCreated={(cid) => {
           setContainerOrden(null);
           showToast(`Contenedor creado (ID: ${cid.slice(0, 8)}…).`);
-          fetchOrdenes();
+          ordersList.refresh();
         }}
+      />
+
+      {/* Basket de borrador (sugerencias) */}
+      <OrderDraftBasket
+        basket={basket}
+        onDraftSaved={() => ordersList.refresh()}
       />
     </div>
   );

@@ -299,8 +299,20 @@ function resolveStatus(
 
 function formatDestinationFields(
   resolved: ReturnType<typeof resolveArrivalDestination>,
+  containerType: string | null,
 ): Pick<ArrivalOrder, "destination" | "destinationBadge" | "destinationCountry" | "destinationChannel"> {
   const hasDestination = Boolean(resolved.destination);
+  const isAmazonAgl = containerType?.trim().toLowerCase() === "amazon_agl";
+
+  if (!hasDestination && isAmazonAgl) {
+    return {
+      destination: "Amazon AGL",
+      destinationBadge: "Amazon AGL",
+      destinationCountry: null,
+      destinationChannel: "FBA",
+    };
+  }
+
   return {
     destination: resolved.destination ?? "Sin destino definido",
     destinationBadge: hasDestination ? resolved.destinationBadge : "Sin destino definido",
@@ -374,7 +386,7 @@ function buildStandaloneArrivalOrder(
     displayCode: identificador,
     productLines: [],
     productSummary: "Sin orden vinculada",
-    ...formatDestinationFields(resolved),
+    ...formatDestinationFields(resolved, container.tipo_contenedor),
     etaVisible: etaDate,
     estimatedMonthDate: etaDate,
     hasDefinedEta: true,
@@ -385,6 +397,7 @@ function buildStandaloneArrivalOrder(
     isDelayed: flags.isDelayed,
     containerId: container.id,
     containerNumber: container.identificador_embarque,
+    containerType: container.tipo_contenedor,
     logisticsUrl: `/logistica?containerId=${encodeURIComponent(container.id)}`,
     ordenesCount: 0,
   };
@@ -483,7 +496,7 @@ export async function buildArrivalsTimeline(
         displayCode: order.numero_pedido_agente || order.numero_orden || order.id.slice(0, 8),
         productLines,
         productSummary: buildArrivalProductSummary(productLines),
-        ...formatDestinationFields(resolved),
+        ...formatDestinationFields(resolved, containerRow?.tipo_contenedor ?? null),
         etaVisible: dateState.etaVisible,
         estimatedMonthDate: dateState.estimatedMonthDate,
         hasDefinedEta: dateState.hasDefinedEta,
@@ -494,6 +507,7 @@ export async function buildArrivalsTimeline(
         isDelayed: flags.isDelayed,
         containerId,
         containerNumber: containerRow?.identificador_embarque ?? null,
+        containerType: containerRow?.tipo_contenedor ?? null,
         logisticsUrl: containerId ? `/logistica?containerId=${encodeURIComponent(containerId)}` : null,
         ordenesCount: containerId ? 1 : undefined,
       };

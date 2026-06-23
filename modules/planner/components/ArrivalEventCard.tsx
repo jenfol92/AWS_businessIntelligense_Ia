@@ -45,6 +45,7 @@ const VISUAL_CATEGORY_STYLE: Record<
 };
 
 const DESTINATION_BADGE: Record<string, string> = {
+  "Amazon AGL": "bg-orange-100 text-orange-800 ring-1 ring-orange-300",
   FBA: "bg-orange-600 text-white",
   ES: "bg-emerald-600 text-white",
   EU: "bg-blue-600 text-white",

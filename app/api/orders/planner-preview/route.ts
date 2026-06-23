@@ -18,37 +18,21 @@
 
 import { NextResponse } from "next/server";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
-import { analyzeProducts } from "@/modules/planner/services/analyzeProducts";
-import { createDraftOrdersFromAnnualPlan } from "@/modules/orders/services/createDraftOrdersFromAnnualPlan";
-import { createOrderDraftFromGroup } from "@/modules/orders/services/createOrderDraftFromGroup";
+import { buildPlannerOrderPreviewService } from "@/modules/orders/services/buildPlannerOrderPreviewService";
 import type { PlannerParams } from "@/modules/planner/types/planner.types";
-import type { OrderDraftWarning } from "@/modules/orders/types/order.types";
-import type { DraftOrderGroup } from "@/modules/orders/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Defaults
+// Defaults y validación de query params
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DEFAULT_PARAMS = {
+const DEFAULT_PARAMS: PlannerParams = {
   windowDays: 90,
   horizonMonths: 12,
-  scenario: "base" as const,
+  scenario: "base",
   country: "ALL",
-  channel: "ALL" as const,
+  channel: "ALL",
   includeNewProducts: true,
-} satisfies PlannerParams;
-
-// TODO: Replace with real supplier lookup once suppliers module is implemented.
-const DEFAULT_PAYMENT = {
-  depositPercentage: 30,
-  balanceDaysBeforeArrival: 10,
-  balanceConditionsText:
-    "The balance will be paid 10 days before the vessel arrives at the port",
-} as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Query param validation
-// ─────────────────────────────────────────────────────────────────────────────
+};
 
 const VALID_SCENARIOS = new Set<PlannerParams["scenario"]>([
   "conservative",
@@ -122,79 +106,11 @@ function parseQueryParams(url: URL): ParseQueryResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Response shape
-// ─────────────────────────────────────────────────────────────────────────────
-
-type ItemPreview = {
-  sku: string;
-  productName: string | undefined;
-  quantity: number;
-  cbmTotal: number | null;
-  lineCostEur: number | null;
-  orderTimingStatus: "ON_TIME" | "DUE_NOW" | "OVERDUE";
-  daysLate: number;
-};
-
-type DraftPreview = {
-  groupKey: string;
-  supplierName: string | null;
-  agentName: string | null;
-  originPortId: string | null;
-  productCount: number;
-  totalUnits: number;
-  totalCbm: number;
-  totalWeightKg: number;
-  totalPurchaseCapitalRequired: number;
-  estimatedDepositAmount: number;
-  estimatedBalanceAmount: number;
-  earliestOrderDate: string | null;
-  latestOrderDate: string | null;
-  orderTimingStatus: DraftOrderGroup["orderTimingStatus"];
-  isReadyToSubmit: boolean;
-  warnings: OrderDraftWarning[];
-  itemsPreview: ItemPreview[];
-};
-
-function buildDraftPreview(group: DraftOrderGroup): DraftPreview {
-  const draft = createOrderDraftFromGroup(group, DEFAULT_PAYMENT);
-
-  const itemsPreview: ItemPreview[] = draft.items.map((item) => ({
-    sku: item.sku,
-    productName: item.productName,
-    quantity: item.quantity,
-    cbmTotal: item.cbmTotal,
-    lineCostEur: item.lineCostEur,
-    orderTimingStatus: item.orderTimingStatus,
-    daysLate: item.daysLate,
-  }));
-
-  return {
-    groupKey: group.groupKey,
-    supplierName: group.supplierName,
-    agentName: group.agentName,
-    originPortId: group.originPortId,
-    productCount: group.productCount,
-    totalUnits: group.totalUnits,
-    totalCbm: group.totalCbm,
-    totalWeightKg: group.totalWeightKg,
-    totalPurchaseCapitalRequired: group.totalPurchaseCapitalRequired,
-    estimatedDepositAmount: draft.estimatedDepositAmount,
-    estimatedBalanceAmount: draft.estimatedBalanceAmount,
-    earliestOrderDate: group.earliestOrderDate,
-    latestOrderDate: group.latestOrderDate,
-    orderTimingStatus: group.orderTimingStatus,
-    isReadyToSubmit: draft.isReadyToSubmit,
-    warnings: draft.warnings,
-    itemsPreview,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Route handler
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function GET(req: Request) {
-  // ── 1. Auth ──────────────────────────────────────────────────────────────
+  // ── 1. Auth ────────────────────────────────────────────────────────────────
   const supabase = createSupabaseRouteClient();
   const {
     data: { user },
@@ -208,7 +124,7 @@ export async function GET(req: Request) {
     );
   }
 
-  // ── 2. Parse query params ─────────────────────────────────────────────────
+  // ── 2. Parse query params ──────────────────────────────────────────────────
   const url = new URL(req.url);
   const parsed = parseQueryParams(url);
   if (!parsed.ok) {
@@ -218,10 +134,12 @@ export async function GET(req: Request) {
 
   const { params } = parsed as Extract<ParseQueryResult, { ok: true }>;
 
-  // ── 3. Run planner analysis ───────────────────────────────────────────────
-  let plannerResult: Awaited<ReturnType<typeof analyzeProducts>>;
+  // ── 3. Orquestación delegada al service ────────────────────────────────────
   try {
-    plannerResult = await analyzeProducts(params);
+    const { stats, summary, groups, drafts } =
+      await buildPlannerOrderPreviewService(params);
+
+    return NextResponse.json({ ok: true, stats, summary, groups, drafts });
   } catch (err) {
     return NextResponse.json(
       {
@@ -234,21 +152,4 @@ export async function GET(req: Request) {
       { status: 500 },
     );
   }
-
-  // ── 4. Build draft groups ─────────────────────────────────────────────────
-  const { groups, summary } = createDraftOrdersFromAnnualPlan(
-    plannerResult.annualPurchasePlan,
-  );
-
-  // ── 5. Build draft previews (no DB writes) ────────────────────────────────
-  const drafts: DraftPreview[] = groups.map(buildDraftPreview);
-
-  // ── 6. Return preview ─────────────────────────────────────────────────────
-  return NextResponse.json({
-    ok: true,
-    stats: plannerResult.stats,
-    summary,
-    groups,
-    drafts,
-  });
 }

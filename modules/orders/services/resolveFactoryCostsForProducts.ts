@@ -1,8 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
+  getLatestConfirmedFactoryCostByProductRefs,
   getLatestFactoryCostByProductIds,
   type LatestFactoryCost,
+  type ProductSupplierCostRef,
 } from "@/modules/orders/repositories/orderProductCostsRepository";
 import { getProductBaseCostByProductIds } from "@/modules/products/repositories/productCostsRepository";
 
@@ -38,4 +40,59 @@ export async function resolveFactoryCostsForProducts(
   }
 
   return map;
+}
+
+/**
+ * Coste de fabrica para busqueda de productos en ordenes:
+ * 1. ultimo orden_items confirmado/recibido por producto + proveedor
+ * 2. ultimo orden_items confirmado/recibido por producto
+ * 3. producto_costos/base como fallback
+ */
+export async function resolveFactoryCostsForProductSearch(
+  refs: ProductSupplierCostRef[],
+  supabase?: SupabaseClient,
+): Promise<Map<string, LatestFactoryCost>> {
+  const result = new Map<string, LatestFactoryCost>();
+  const uniqueRefs = Array.from(
+    new Map(
+      refs
+        .filter((ref) => Boolean(ref.producto_id))
+        .map((ref) => [
+          `${ref.producto_id}:${ref.proveedor_id ?? ""}`,
+          {
+            producto_id: ref.producto_id,
+            proveedor_id: ref.proveedor_id ?? null,
+          },
+        ]),
+    ).values(),
+  );
+
+  if (uniqueRefs.length === 0) return result;
+
+  const historical = await getLatestConfirmedFactoryCostByProductRefs(uniqueRefs, supabase);
+  for (const ref of uniqueRefs) {
+    const key = `${ref.producto_id}:${ref.proveedor_id ?? ""}`;
+    const cost = historical.get(key);
+    if (cost) result.set(key, cost);
+  }
+
+  const missingProductIds = Array.from(
+    new Set(
+      uniqueRefs
+        .filter((ref) => !result.has(`${ref.producto_id}:${ref.proveedor_id ?? ""}`))
+        .map((ref) => ref.producto_id),
+    ),
+  );
+
+  if (missingProductIds.length === 0) return result;
+
+  const fallback = await resolveFactoryCostsForProducts(missingProductIds, supabase);
+  for (const ref of uniqueRefs) {
+    const key = `${ref.producto_id}:${ref.proveedor_id ?? ""}`;
+    if (result.has(key)) continue;
+    const cost = fallback.get(ref.producto_id);
+    if (cost) result.set(key, cost);
+  }
+
+  return result;
 }

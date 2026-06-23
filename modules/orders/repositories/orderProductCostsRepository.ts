@@ -12,6 +12,13 @@ export type LatestFactoryCost = {
   contenedor_id: string | null;
 };
 
+export type ProductSupplierCostRef = {
+  producto_id: string;
+  proveedor_id: string | null;
+};
+
+const CONFIRMED_ORDER_STATES = ["confirmado", "recibido"];
+
 function normalizeRow(row: Record<string, unknown>): LatestFactoryCost {
   const monto = row.costo_fabrica_monto;
   return {
@@ -63,4 +70,114 @@ export async function getLatestFactoryCostByProductIds(
   }
 
   return map;
+}
+
+function firstRelation<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+function positiveNumberOrNull(value: unknown): number | null {
+  if (value == null) return null;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function normalizeConfirmedOrderItemCost(
+  row: Record<string, unknown>,
+): LatestFactoryCost | null {
+  const order = firstRelation(
+    row.ordenes_compra as Record<string, unknown> | Record<string, unknown>[] | null | undefined,
+  );
+  if (!order) return null;
+
+  const moneda = order.moneda_compra
+    ? String(order.moneda_compra).toUpperCase()
+    : null;
+  const monto =
+    positiveNumberOrNull(row.coste_unitario_moneda)
+    ?? (moneda === "USD" ? positiveNumberOrNull(row.coste_unitario_usd) : null)
+    ?? (moneda === "EUR" ? positiveNumberOrNull(row.coste_unitario_eur) : null);
+
+  if (!monto) return null;
+
+  return {
+    producto_id: String(row.producto_id),
+    costo_fabrica_monto: monto,
+    costo_fabrica_moneda: moneda,
+    tipo_cambio_aplicado: null,
+    costo_fabrica_eur: positiveNumberOrNull(row.coste_unitario_eur),
+    fecha:
+      (order.fecha_confirmacion ? String(order.fecha_confirmacion).slice(0, 10) : null)
+      ?? (order.created_at ? String(order.created_at).slice(0, 10) : null),
+    contenedor_id: null,
+  };
+}
+
+/**
+ * Ultimo coste de fabrica confirmado desde orden_items.
+ * Prioridad: producto + proveedor, despues producto.
+ */
+export async function getLatestConfirmedFactoryCostByProductRefs(
+  refs: ProductSupplierCostRef[],
+  supabase: SupabaseClient = createSupabaseRouteClient(),
+): Promise<Map<string, LatestFactoryCost>> {
+  const result = new Map<string, LatestFactoryCost>();
+  if (refs.length === 0) return result;
+
+  const uniqueRefs = Array.from(
+    new Map(
+      refs
+        .filter((ref) => Boolean(ref.producto_id))
+        .map((ref) => [
+          `${ref.producto_id}:${ref.proveedor_id ?? ""}`,
+          {
+            producto_id: ref.producto_id,
+            proveedor_id: ref.proveedor_id ?? null,
+          },
+        ]),
+    ).values(),
+  );
+  const productIds = Array.from(new Set(uniqueRefs.map((ref) => ref.producto_id)));
+  if (productIds.length === 0) return result;
+
+  const { data, error } = await supabase
+    .from("orden_items")
+    .select(
+      "producto_id, proveedor_id, coste_unitario_moneda, coste_unitario_usd, coste_unitario_eur, created_at, ordenes_compra!inner(estado, moneda_compra, fecha_confirmacion, created_at)",
+    )
+    .in("producto_id", productIds)
+    .in("ordenes_compra.estado", CONFIRMED_ORDER_STATES)
+    .order("fecha_confirmacion", { ascending: false, foreignTable: "ordenes_compra" })
+    .order("created_at", { ascending: false, foreignTable: "ordenes_compra" })
+    .order("created_at", { ascending: false });
+
+  if (error) throw new Error(error.message);
+
+  const byProductSupplier = new Map<string, LatestFactoryCost>();
+  const byProduct = new Map<string, LatestFactoryCost>();
+
+  for (const row of (data ?? []) as Record<string, unknown>[]) {
+    const productId = String(row.producto_id);
+    const supplierId = row.proveedor_id ? String(row.proveedor_id) : null;
+    const cost = normalizeConfirmedOrderItemCost(row);
+    if (!cost) continue;
+
+    if (!byProduct.has(productId)) byProduct.set(productId, cost);
+    if (supplierId) {
+      const key = `${productId}:${supplierId}`;
+      if (!byProductSupplier.has(key)) byProductSupplier.set(key, cost);
+    }
+  }
+
+  for (const ref of uniqueRefs) {
+    const supplierKey = `${ref.producto_id}:${ref.proveedor_id ?? ""}`;
+    const cost =
+      (ref.proveedor_id ? byProductSupplier.get(supplierKey) : null)
+      ?? byProduct.get(ref.producto_id)
+      ?? null;
+    if (cost) result.set(supplierKey, cost);
+  }
+
+  return result;
 }

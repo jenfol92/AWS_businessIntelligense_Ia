@@ -114,6 +114,14 @@ export async function POST(req: Request) {
     cbm_limite?: number | null;
     agente_id?: string | null;
     notas?: string | null;
+    etd?: string | null;
+    eta?: string | null;
+    lead_time_produccion?: number | null;
+    lead_time_transito?: number | null;
+    moneda_compra?: string | null;
+    tipo_cambio_moneda_eur?: number | null;
+    tipo_cambio_usd_eur?: number | null;
+    numero_pedido_agente?: string | null;
     items?: Array<{
       producto_id: string;
       proveedor_id?: string | null;
@@ -144,6 +152,14 @@ export async function POST(req: Request) {
       cbm_limite: cabecera.cbm_limite ?? null,
       agente_id: cabecera.agente_id ?? null,
       notas: cabecera.notas ?? null,
+      etd: cabecera.etd ?? null,
+      eta: cabecera.eta ?? null,
+      lead_time_produccion: cabecera.lead_time_produccion ?? null,
+      lead_time_transito: cabecera.lead_time_transito ?? null,
+      moneda_compra: cabecera.moneda_compra ?? null,
+      tipo_cambio_moneda_eur: cabecera.tipo_cambio_moneda_eur ?? null,
+      tipo_cambio_usd_eur: cabecera.tipo_cambio_usd_eur ?? null,
+      numero_pedido_agente: cabecera.numero_pedido_agente ?? null,
       created_by: user.id,
     });
 

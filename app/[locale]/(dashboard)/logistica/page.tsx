@@ -27,26 +27,26 @@
 
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
   CheckCircle,
-  Package,
   AlertCircle,
-  FileText,
   Anchor,
   Truck,
   MapPin,
   Pencil,
+  Search,
 } from "lucide-react";
 
 import { LogisticaCreateContainerTrigger } from "@/modules/containers/components/LogisticaCreateContainerTrigger";
 import { ContainerDetailPanel }      from "@/modules/containers/components/ContainerDetailPanel";
 import { ContainerEditModal }        from "@/modules/containers/components/ContainerEditModal";
 import { ContainerMobileCard }       from "@/modules/containers/components/ContainerMobileCard";
+import { ContainerPaymentSummaryBadge } from "@/modules/containers/components/ContainerPaymentSummaryBadge";
 import { ContenedorEstadosBadges }   from "@/modules/containers/components/ContainerEstadosBadges";
 import { EtaBar }                    from "@/modules/containers/components/EtaBar";
 import {
@@ -72,17 +72,53 @@ function resolveEstadosContenedor(c: Pick<
   return resolveContainerEstados(c);
 }
 
+function normalizeSearch(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
+function buildContainerSearchText(contenedor: ContenedorRow): string {
+  const orderText = contenedor.ordenes.flatMap((orden) => [
+    orden.numero_orden,
+    orden.numero_pedido_agente,
+    orden.agente_contacto,
+    orden.destino,
+    ...(orden.items ?? []).flatMap((item) => [item.sku, item.nombre, item.proveedor_nombre]),
+  ]);
+
+  return normalizeSearch([
+    contenedor.identificador_embarque,
+    contenedor.numero_contenedor,
+    contenedor.transitario,
+    contenedor.puerto_salida,
+    contenedor.puerto_llegada,
+    contenedor.agente_contacto,
+    ...orderText,
+  ].join(" "));
+}
+
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 /**
  * LogisticaPage — vista completa del módulo de logística.
  */
+function formatOrderReference(order: ContenedorRow["ordenes"][number]): string {
+  if (order.numero_orden && order.numero_pedido_agente) {
+    return `${order.numero_orden} - ${order.numero_pedido_agente}`;
+  }
+  return order.numero_orden || order.numero_pedido_agente || "Orden sin referencia";
+}
+
 export default function LogisticaPage() {
   const searchParams = useSearchParams();
   const [contenedores, setContenedores] = useState<ContenedorRow[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [error,        setError]        = useState<string | null>(null);
   const [filterEstado, setFilterEstado] = useState<EstadoFiltro>("ALL");
+  const [searchQ,      setSearchQ]      = useState("");
   const [expandedId,   setExpandedId]   = useState<string | null>(null);
   const [toast,        setToast]        = useState<string | null>(null);
 
@@ -114,6 +150,14 @@ export default function LogisticaPage() {
       setExpandedId(containerIdFromUrl);
     }
   }, [containerIdFromUrl]);
+
+  const normalizedSearchQ = normalizeSearch(searchQ);
+  const filteredContenedores = useMemo(() => {
+    if (!normalizedSearchQ) return contenedores;
+    return contenedores.filter((contenedor) =>
+      buildContainerSearchText(contenedor).includes(normalizedSearchQ),
+    );
+  }, [contenedores, normalizedSearchQ]);
 
   // ── Toast ─────────────────────────────────────────────────────────────────
 
@@ -244,6 +288,22 @@ export default function LogisticaPage() {
 
       {/* Filtros */}
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <label className="min-w-0 flex-1 sm:min-w-[320px]">
+          <span className="sr-only">Buscar contenedores</span>
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+              aria-hidden
+            />
+            <input
+              type="search"
+              value={searchQ}
+              onChange={(e) => setSearchQ(e.target.value)}
+              placeholder="Buscar por contenedor, pedido agente, orden, SKU o producto..."
+              className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+        </label>
         <div className="flex items-center gap-2">
           <label className="text-xs text-slate-500 font-medium">Estado (legacy)</label>
           <select value={filterEstado}
@@ -280,29 +340,37 @@ export default function LogisticaPage() {
         </div>
       )}
 
+      {!loading && !error && contenedores.length > 0 && filteredContenedores.length === 0 && (
+        <div className="text-center py-16 text-slate-400">
+          <Search className="h-10 w-10 mx-auto mb-3 opacity-30" />
+          <p className="text-sm font-medium">No se encontraron contenedores con ese criterio.</p>
+          <p className="text-xs mt-1">Prueba con el contenedor, pedido agente, orden, SKU o producto.</p>
+        </div>
+      )}
+
       {/* Tabla de contenedores */}
-      {contenedores.length > 0 && (
+      {filteredContenedores.length > 0 && (
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
           <ResponsiveTable
             desktop={
-              <div className="overflow-x-auto">
-                <table className="min-w-[1100px] w-full text-sm">
+              <div>
+                <table className="w-full table-fixed text-sm">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-100">
-                      <th className="px-4 py-2.5 w-6" />
-                      <th className="px-4 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Contenedor</th>
-                      <th className="px-4 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Ruta</th>
-                      <th className="px-4 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Tipo / Transitario</th>
-                      <th className="px-4 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Agente</th>
-                      <th className="px-4 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Estado / ETA</th>
-                      <th className="px-4 py-2.5 text-right text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Fechas</th>
-                      <th className="px-4 py-2.5 text-right text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Órdenes</th>
-                      <th className="px-4 py-2.5 text-right text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Coste EUR</th>
-                      <th className="px-4 py-2.5 text-center text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Acciones</th>
+                      <th className="w-[3%] px-1.5 py-2.5" />
+                      <th className="w-[10%] px-2 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Contenedor</th>
+                      <th className="w-[8%] px-2 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Ruta</th>
+                      <th className="w-[12%] px-2 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Tipo / Transitario</th>
+                      <th className="w-[12%] px-2 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Estado / ETA</th>
+                      <th className="w-[8%] px-2 py-2.5 text-right text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Fechas</th>
+                      <th className="w-[17%] px-2 py-2.5 text-left text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Órdenes</th>
+                      <th className="w-[16%] px-2 py-2.5 text-right text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Pagos</th>
+                      <th className="w-[6%] px-2 py-2.5 text-right text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Coste</th>
+                      <th className="w-[8%] px-2 py-2.5 text-center text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {contenedores.map((c) => {
+                    {filteredContenedores.map((c) => {
                       const expanded = expandedId === c.id;
                       const hasId = c.identificador_embarque.trim().length > 0;
                       const isIsoFormat = isIsoContainerNumber(c.identificador_embarque);
@@ -312,13 +380,13 @@ export default function LogisticaPage() {
                             className={`border-b border-slate-50 transition-colors ${expanded ? "bg-blue-50/40" : "hover:bg-blue-50/20"}`}
                           >
                             <td
-                              className="px-4 py-3 cursor-pointer text-slate-400"
+                              className="px-1.5 py-3 cursor-pointer text-slate-400"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
                               {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                             </td>
                             <td
-                              className="px-4 py-3 cursor-pointer"
+                              className="px-2 py-3 cursor-pointer"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
                               <div className="font-semibold text-slate-800 text-xs font-mono">{c.identificador_embarque}</div>
@@ -329,7 +397,7 @@ export default function LogisticaPage() {
                               ) : null}
                             </td>
                             <td
-                              className="px-4 py-3 cursor-pointer"
+                              className="px-2 py-3 cursor-pointer"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
                               <div className="flex items-center gap-1 text-xs text-slate-600">
@@ -339,7 +407,7 @@ export default function LogisticaPage() {
                               </div>
                             </td>
                             <td
-                              className="px-4 py-3 cursor-pointer"
+                              className="px-2 py-3 cursor-pointer"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
                               <div className="flex items-center gap-1.5 flex-wrap">
@@ -355,20 +423,13 @@ export default function LogisticaPage() {
                                   </span>
                                 ) : null}
                                 <span className="text-xs text-slate-500">{c.transitario ?? "—"}</span>
+                                {c.agente_contacto ? (
+                                  <span className="text-[11px] text-slate-500">{c.agente_contacto}</span>
+                                ) : null}
                               </div>
                             </td>
                             <td
-                              className="px-4 py-3 cursor-pointer"
-                              onClick={() => setExpandedId(expanded ? null : c.id)}
-                            >
-                              <span
-                                className={`text-xs font-medium ${(c.ordenes_count ?? 0) === 0 || !c.agente_contacto ? "text-slate-400" : "text-slate-700"}`}
-                              >
-                                {(c.ordenes_count ?? 0) === 0 ? "Sin orden" : c.agente_contacto ?? "Sin agente"}
-                              </span>
-                            </td>
-                            <td
-                              className="px-4 py-3 cursor-pointer"
+                              className="px-2 py-3 cursor-pointer"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
                               <div className="space-y-1">
@@ -394,7 +455,7 @@ export default function LogisticaPage() {
                               </div>
                             </td>
                             <td
-                              className="px-4 py-3 text-right cursor-pointer"
+                              className="px-2 py-3 text-right cursor-pointer"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
                               <div className="text-[11px] text-slate-500 leading-snug">
@@ -403,21 +464,46 @@ export default function LogisticaPage() {
                               </div>
                             </td>
                             <td
-                              className="px-4 py-3 text-right cursor-pointer"
+                              className="px-2 py-3 text-left cursor-pointer"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
-                              <span className="text-xs font-medium text-slate-700">{c.ordenes_count ?? 0}</span>
+                              {c.ordenes.length === 0 ? (
+                                <span className="text-xs text-slate-400">Sin orden</span>
+                              ) : (
+                                <div className="space-y-1">
+                                  {c.ordenes.map((orden) => (
+                                    <button
+                                      key={orden.id}
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setVerOrdenId(orden.id);
+                                      }}
+                                      className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left text-[11px] font-semibold text-slate-700 hover:bg-blue-50 hover:text-blue-700"
+                                      title={formatOrderReference(orden)}
+                                    >
+                                      {formatOrderReference(orden)}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
                             </td>
                             <td
-                              className="px-4 py-3 text-right cursor-pointer"
+                              className="px-2 py-3 text-right cursor-pointer"
+                              onClick={() => setExpandedId(expanded ? null : c.id)}
+                            >
+                              <ContainerPaymentSummaryBadge pagos={c.pagos} align="right" />
+                            </td>
+                            <td
+                              className="px-2 py-3 text-right cursor-pointer"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
                               <span className="text-xs font-semibold text-slate-800 tabular-nums">
                                 €{Number(c.coste_total_eur ?? 0).toLocaleString("es-ES", { maximumFractionDigits: 0 })}
                               </span>
                             </td>
-                            <td className="px-4 py-3 text-center">
-                              <div className="flex items-center justify-center gap-1.5">
+                            <td className="px-2 py-3 text-center">
+                              <div className="flex flex-col items-stretch justify-center gap-1">
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -425,13 +511,13 @@ export default function LogisticaPage() {
                                     setEditContainerId(c.id);
                                   }}
                                   title="Editar datos generales y órdenes"
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-100 text-slate-600 hover:bg-slate-200 text-xs font-medium transition"
+                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-[11px] font-medium text-slate-600 transition hover:bg-slate-200"
                                 >
                                   <Pencil className="h-3 w-3" />
                                   Editar
                                 </button>
                                 {hasId ? (
-                                  <div className="flex flex-col items-center gap-0.5">
+                                  <div className="flex flex-col items-stretch gap-0.5">
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -439,7 +525,7 @@ export default function LogisticaPage() {
                                         void handleFindTeu(c.identificador_embarque);
                                       }}
                                       title={`Copiar "${c.identificador_embarque}" y abrir FindTEU`}
-                                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-medium transition"
+                                      className="inline-flex items-center justify-center gap-1 rounded-md bg-emerald-50 px-1.5 py-1 text-[11px] font-medium text-emerald-700 transition hover:bg-emerald-100"
                                     >
                                       <MapPin className="h-3 w-3" />
                                       FindTEU
@@ -453,7 +539,7 @@ export default function LogisticaPage() {
                                 ) : (
                                   <span
                                     title="Sin número de contenedor"
-                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-100 text-slate-300 text-xs cursor-not-allowed"
+                                    className="inline-flex items-center justify-center gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-[11px] text-slate-300 cursor-not-allowed"
                                   >
                                     <MapPin className="h-3 w-3" />
                                     FindTEU
@@ -471,7 +557,6 @@ export default function LogisticaPage() {
                                     fetchContenedores();
                                     showToast("Contenedor actualizado.");
                                   }}
-                                  onVerOrden={(id) => setVerOrdenId(id)}
                                 />
                               </td>
                             </tr>
@@ -485,7 +570,7 @@ export default function LogisticaPage() {
             }
             mobile={
               <div className="space-y-3 p-4">
-                {contenedores.map((c) => {
+                {filteredContenedores.map((c) => {
                   const expanded = expandedId === c.id;
                   const hasId = c.identificador_embarque.trim().length > 0;
                   const isIsoFormat = isIsoContainerNumber(c.identificador_embarque);
@@ -513,8 +598,9 @@ export default function LogisticaPage() {
 
           {/* Pie de tabla */}
           <div className="px-4 py-2.5 border-t border-slate-100 bg-slate-50 text-[11px] text-slate-400">
-            {contenedores.length} contenedor{contenedores.length !== 1 ? "es" : ""}
+            {filteredContenedores.length} contenedor{filteredContenedores.length !== 1 ? "es" : ""}
             {filterEstado !== "ALL" ? ` (estado: ${filterEstado})` : ""}
+            {normalizedSearchQ ? " (filtrado)" : ""}
           </div>
         </div>
       )}

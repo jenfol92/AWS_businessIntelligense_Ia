@@ -7,9 +7,14 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchContainerListByEstado } from "@/modules/containers/repositories/containersRepository";
+import {
+  fetchContainerListByEstado,
+  fetchOrderItemSearchRows,
+} from "@/modules/containers/repositories/containersRepository";
 import { fetchContainerOrderLinks } from "@/modules/containers/repositories/containerOrdersRepository";
+import { buildContainerPaymentSummaries } from "@/modules/containers/services/buildContainerPaymentSummaries";
 import { mapContainerListRows } from "@/modules/containers/utils/mapContainerListRows";
+import { fetchSupplierPaymentsByOrderIds } from "@/modules/finance/repositories/financeSupplierPaymentsRepository";
 import { fetchPortCountryMap } from "@/modules/planner/repositories/plannerDestinationsRepository";
 import { resolveArrivalDestination } from "@/modules/planner/utils/resolveArrivalDestination";
 
@@ -30,8 +35,18 @@ export async function listContainersService(
     fetchContainerOrderLinks(supabase, ids),
     fetchPortCountryMap(supabase),
   ]);
+  const orderIds = Array.from(new Set(links.map((link) => link.orden_id).filter(Boolean)));
+  const [searchItems, payments] = await Promise.all([
+    fetchOrderItemSearchRows(supabase, orderIds),
+    fetchSupplierPaymentsByOrderIds(supabase, orderIds),
+  ]);
+  const paymentSummaries = buildContainerPaymentSummaries(links, payments);
 
-  return mapContainerListRows(contenedores, links).map((row) => {
+  return mapContainerListRows(
+    contenedores,
+    links,
+    searchItems as Parameters<typeof mapContainerListRows>[2],
+  ).map((row) => {
     const ordenes = (row.ordenes as Array<{ destino?: string | null }> | undefined) ?? [];
     const resolved = resolveArrivalDestination({
       puertoLlegada: (row.puerto_llegada as string | null) ?? null,
@@ -44,6 +59,7 @@ export async function listContainersService(
       destino_label: resolved.destination ?? "Sin destino definido",
       destino_badge:
         resolved.destination === null ? "Sin destino definido" : resolved.destinationBadge,
+      pagos: paymentSummaries.get(String(row.id)) ?? undefined,
     };
   });
 }

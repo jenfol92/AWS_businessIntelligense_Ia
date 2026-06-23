@@ -9,7 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { resolveFactoryCostsForProducts } from "@/modules/orders/services/resolveFactoryCostsForProducts";
+import { resolveFactoryCostsForProductSearch } from "@/modules/orders/services/resolveFactoryCostsForProducts";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 
 /**
@@ -69,8 +69,14 @@ export async function GET(req: Request) {
     cbmMap[(l as any).producto_id] = Number((l as any).cubicaje_unitario_m3 ?? 0);
   }
 
-  // Coste de fábrica más reciente (producto_costos)
-  const factoryCostMap = await resolveFactoryCostsForProducts(allIds, supabase);
+  // Coste de fabrica historico: orden_items confirmado/recibido, con producto_costos como fallback.
+  const factoryCostMap = await resolveFactoryCostsForProductSearch(
+    (productos as Array<{ id: string; proveedor_id: string | null }>).map((p) => ({
+      producto_id: p.id,
+      proveedor_id: p.proveedor_id ?? null,
+    })),
+    supabase,
+  );
 
   // Stock agregado por pais (FBA + FBM)
   const { data: inv } = await supabase
@@ -111,7 +117,7 @@ export async function GET(req: Request) {
     const diasCobertura = avgDaily > 0 ? Math.round(stockTotal / avgDaily) : null;
     const prov = Array.isArray(p.proveedores) ? p.proveedores[0] : p.proveedores;
 
-    const factory = factoryCostMap.get(p.id);
+    const factory = factoryCostMap.get(`${p.id}:${p.proveedor_id ?? ""}`);
     const monedaProducto = factory?.costo_fabrica_moneda ?? null;
     const monto = factory?.costo_fabrica_monto ?? null;
 

@@ -30,12 +30,32 @@ type ContainerOrderLink = {
   ordenes_compra: Record<string, unknown> | Record<string, unknown>[] | null;
 };
 
+type ContainerOrderSearchItem = {
+  orden_id: string;
+  productos: Record<string, unknown> | Record<string, unknown>[] | null;
+  proveedores: Record<string, unknown> | Record<string, unknown>[] | null;
+};
+
 export function mapContainerListRows(
   contenedores: Record<string, unknown>[],
   links: ContainerOrderLink[],
+  searchItems: ContainerOrderSearchItem[] = [],
 ): Record<string, unknown>[] {
   const ordenesMap: Record<string, Record<string, unknown>[]> = {};
   const linkCountMap: Record<string, number> = {};
+  const searchItemsByOrder: Record<string, Record<string, unknown>[]> = {};
+
+  for (const item of searchItems) {
+    const product = firstRelation(item.productos);
+    const supplier = firstRelation(item.proveedores);
+    const row = {
+      sku: product?.["sku"] ?? null,
+      nombre: product?.["nombre"] ?? null,
+      proveedor_nombre: supplier?.["nombre"] ?? null,
+    };
+    if (!searchItemsByOrder[item.orden_id]) searchItemsByOrder[item.orden_id] = [];
+    searchItemsByOrder[item.orden_id].push(row);
+  }
 
   for (const link of links) {
     const cid = link.contenedor_id;
@@ -49,7 +69,9 @@ export function mapContainerListRows(
       ordenesMap[cid].push({
         id: link.orden_id,
         numero_orden: null,
+        numero_pedido_agente: null,
         agente_id: null,
+        destino: null,
         coste_total_eur: 0,
         cbm_total: 0,
       });
@@ -76,10 +98,13 @@ export function mapContainerListRows(
       ordenes: ordenes.map((o) => ({
         id:              o["id"],
         numero_orden:    o["numero_orden"],
+        numero_pedido_agente: o["numero_pedido_agente"] ?? null,
         agente_id:       o["agente_id"],
         agente_contacto: resolveContainerAgentLabel([o]),
+        destino:         o["destino"] ?? null,
         coste_total_eur: Number(o["coste_total_eur"] ?? 0),
         cbm_total:       Number(o["cbm_total"]       ?? 0),
+        items:           searchItemsByOrder[String(o["id"])] ?? [],
       })),
     };
   });

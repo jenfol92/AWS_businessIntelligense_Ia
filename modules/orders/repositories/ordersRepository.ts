@@ -30,6 +30,12 @@
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import { prepareOrderItemsForPersistence } from "@/modules/orders/services/prepareOrderItemsForPersistence";
 import { updateOrderDraftService } from "@/modules/orders/services/updateOrderDraftService";
+import {
+  createOrderDraftService,
+  type CreateOrderFromDraftResult,
+} from "@/modules/orders/services/createOrderDraftService";
+import { confirmOrderService } from "@/modules/orders/services/confirmOrderService";
+import type { OrderDraft } from "@/modules/orders/types/order.types";
 import type {
   OrderItemCostWarning,
   InsertOrderItemsResult,
@@ -341,7 +347,7 @@ export async function getOrderWithItems(
     .select(
       "id, orden_id, producto_id, proveedor_id, cantidad, cbm_unitario, cbm_total, " +
       "coste_unitario_moneda, coste_unitario_usd, coste_unitario_eur, lote_producto, notas, created_at, " +
-      "productos(sku, nombre), proveedores(nombre)",
+      "productos(sku, nombre), proveedores(nombre, dias_produccion_estandar, dias_transito_estandar)",
     )
     .eq("orden_id", orderId)
     .order("created_at", { ascending: true });
@@ -364,6 +370,31 @@ export async function getOrderWithItems(
     orden: { ...ordenRow, agente_contacto: agenteContacto },
     items: (items ?? []) as unknown as OrdenItemWithProducto[],
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// createOrderDraft
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Lógica de orquestación → modules/orders/services/createOrderDraftService.ts
+
+/**
+ * Wrapper de compatibilidad — resuelve el usuario autenticado y delega en
+ * createOrderDraftService. La firma y la respuesta son idénticas a
+ * createOrderFromDraft, que sigue siendo el punto de entrada preferido desde
+ * las rutas API.
+ *
+ * @param draft - El borrador in-memory producido por createOrderDraftFromGroup.
+ * @returns CreateOrderFromDraftResult — unión discriminada ok/error.
+ */
+export async function createOrderDraft(
+  draft: OrderDraft,
+): Promise<CreateOrderFromDraftResult> {
+  const supabase = createSupabaseRouteClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return createOrderDraftService(draft, user?.id ?? null);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -394,13 +425,11 @@ export async function updateOrderDraft(
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ConfirmOrderInput — definido en modules/orders/types/orderPersistence.types.ts
+// Lógica de orquestación → modules/orders/services/confirmOrderService.ts
 
 /**
- * Confirma una orden de compra: actualiza los costes por línea, cambia el estado
- * a "confirmado" y registra todos los parámetros logísticos y de pago.
- *
- * Solo actúa sobre órdenes en estado "borrador". Si la orden ya estaba confirmada,
- * el filtro .eq("estado","borrador") devuelve 0 filas → se lanza error de negocio.
+ * Wrapper de compatibilidad — delega en confirmOrderService.
+ * La firma y la respuesta son idénticas a la versión anterior.
  *
  * @param orderId - UUID de la orden a confirmar.
  * @param input   - Datos de confirmación (lead times, ETA, costes, payment terms).
@@ -411,59 +440,5 @@ export async function confirmOrder(
   orderId: string,
   input: ConfirmOrderInput,
 ): Promise<OrdenCompraRow> {
-  const supabase = createSupabaseRouteClient();
-
-  // Actualizar costes individuales de las líneas antes de confirmar
-  if (input.items_costes && input.items_costes.length > 0) {
-    for (const ic of input.items_costes) {
-      const patch: Record<string, unknown> = {
-        coste_unitario_moneda: ic.coste_unitario_moneda ?? null,
-        coste_unitario_usd: ic.coste_unitario_usd ?? null,
-        coste_unitario_eur: ic.coste_unitario_eur ?? null,
-      };
-      if (ic.lote_producto !== undefined) {
-        patch.lote_producto = ic.lote_producto === "" ? null : ic.lote_producto;
-      }
-      await supabase
-        .from("orden_items")
-        .update(patch)
-        .eq("id", ic.item_id)
-        .eq("orden_id", orderId);
-    }
-  }
-
-  // Transición de estado: borrador → confirmado
-  const { data, error } = await supabase
-    .from("ordenes_compra")
-    .update({
-      estado: "confirmado",
-      fecha_confirmacion: new Date().toISOString().slice(0, 10),
-      eta: input.eta,
-      etd: input.etd ?? null,
-      eta_real: input.eta_real ?? null,
-      lead_time_produccion: input.lead_time_produccion ?? null,
-      lead_time_transito: input.lead_time_transito ?? null,
-      numero_pedido_agente: input.numero_pedido_agente ?? null,
-      agente_id: input.agente_id ?? null,
-      moneda_compra: input.moneda_compra ?? null,
-      tipo_cambio_moneda_eur: input.tipo_cambio_moneda_eur ?? null,
-      tipo_cambio_usd_eur: input.tipo_cambio_usd_eur ?? null,
-      deposito_porcentaje: input.deposito_porcentaje ?? 30,
-      balance_dias_antes_eta: input.balance_dias_antes_eta ?? 10,
-      balance_condiciones_texto:
-        input.balance_condiciones_texto ??
-        "The balance will be paid 10 days before the vessel arrives at the port",
-    })
-    .eq("id", orderId)
-    .eq("estado", "borrador")   // garantía: solo confirma borradores
-    .select()
-    .single();
-
-  if (error || !data) {
-    throw new Error(
-      error?.message ?? "No se pudo confirmar la orden (¿ya estaba confirmada?)",
-    );
-  }
-
-  return data as OrdenCompraRow;
+  return confirmOrderService(orderId, input);
 }

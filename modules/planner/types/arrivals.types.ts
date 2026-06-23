@@ -42,6 +42,8 @@ export type ArrivalOrder = {
   isDelayed: boolean;
   containerId: string | null;
   containerNumber: string | null;
+  /** Tipo técnico del contenedor, usado solo para badges de llegada. */
+  containerType: string | null;
   logisticsUrl: string | null;
   /** 0 si el contenedor aparece sin orden vinculada. */
   ordenesCount?: number;

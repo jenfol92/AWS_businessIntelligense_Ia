@@ -16,7 +16,6 @@ import {
   updateContainer,
 } from "@/modules/containers/api/containerClient";
 import ContainerDocumentsPanel from "@/modules/containers/components/ContainerDocumentsPanel";
-import { ContainerOrderCard } from "@/modules/containers/components/ContainerOrderCard";
 import { StockStatusBadge } from "@/modules/containers/components/StockStatusBadge";
 import {
   ESTADOS_COSTES_OPCIONES,
@@ -39,7 +38,6 @@ import { resolveContainerEstados } from "@/modules/containers/utils/resolveConta
 export type ContainerDetailPanelProps = {
   contenedorId: string;
   onChanged: () => void;
-  onVerOrden: (id: string) => void;
 };
 
 function resolveEstadosContenedor(c: Pick<
@@ -52,7 +50,6 @@ function resolveEstadosContenedor(c: Pick<
 export function ContainerDetailPanel({
   contenedorId,
   onChanged,
-  onVerOrden,
 }: ContainerDetailPanelProps) {
   const [data,    setData]    = useState<{
     contenedor: ContenedorRow;
@@ -234,8 +231,6 @@ export function ContainerDetailPanel({
     );
   }
 
-  const { ordenes } = data;
-
   return (
     <div className="bg-slate-50/80 border-t border-slate-100">
 
@@ -243,7 +238,6 @@ export function ContainerDetailPanel({
       <div className="flex items-center gap-0 border-b border-slate-200 px-4 pt-2">
         {([
           { id: "editar",    label: "ETA / Costes",  icon: <Clock className="h-3.5 w-3.5" /> },
-          { id: "ordenes",   label: `Órdenes (${ordenes.length})`, icon: <Package className="h-3.5 w-3.5" /> },
           { id: "documentos", label: "Documentos", icon: <FileText className="h-3.5 w-3.5" /> },
         ] as { id: DetallePestaña; label: string; icon: React.ReactNode }[]).map((t) => (
           <button
@@ -497,27 +491,6 @@ export function ContainerDetailPanel({
               )}
             </div>
           </>
-        )}
-
-        {/* ═══ Pestaña: Órdenes ═══ */}
-        {pestaña === "ordenes" && (
-          <div>
-            {ordenes.length === 0 ? (
-              <p className="text-xs text-slate-400">No hay órdenes vinculadas a este contenedor.</p>
-            ) : (
-              <div className="space-y-2">
-                {ordenes.map((o) => (
-                  <ContainerOrderCard
-                    key={o.id}
-                    orden={o}
-                    contenedorId={contenedorId}
-                    onRemoved={() => { load(); onChanged(); }}
-                    onVerOrden={onVerOrden}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
         )}
 
         {/* ═══ Pestaña: Documentos ═══ */}

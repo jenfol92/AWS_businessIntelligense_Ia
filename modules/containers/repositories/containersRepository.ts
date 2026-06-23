@@ -110,6 +110,32 @@ export async function fetchOrderItemsForOrders(
 /**
  * Lee solo los campos de estado y notas necesarios para construir la actualización (PUT).
  */
+/**
+ * Devuelve solo los datos necesarios para buscar contenedores por producto,
+ * SKU o proveedor desde el listado de logística. No incluye costes.
+ */
+export async function fetchOrderItemSearchRows(
+  supabase: SupabaseClient,
+  ordenIds: string[],
+): Promise<Record<string, unknown>[]> {
+  if (ordenIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("orden_items")
+    .select(
+      `orden_id,
+       productos(sku, nombre),
+       proveedores(nombre)`,
+    )
+    .in("orden_id", ordenIds);
+
+  if (error) throw new Error(error.message ?? "Error cargando datos de búsqueda de productos");
+  return (data ?? []) as Record<string, unknown>[];
+}
+
+/**
+ * Lee solo los campos de estado y notas necesarios para construir la actualización (PUT).
+ */
 export async function fetchContainerCurrentState(
   supabase: SupabaseClient,
   id: string,

@@ -2,7 +2,7 @@ import {
   FBA_COUNTRY_REPORT_TYPE,
   loadSpApiConfig,
 } from "./config";
-import { mapGenericError } from "./errors";
+import { mapGenericError, SpApiError } from "./errors";
 import {
   createReportJob,
   getReportJobById,
@@ -141,10 +141,26 @@ export async function commitFbaCountryReportJob(jobId: string) {
   const job = await getReportJobById(jobId);
   if (!job) throw new Error("Job SP-API no encontrado.");
 
+  if (job.status === "IMPORTED") {
+    throw new SpApiError(
+      "Este informe ya fue importado anteriormente.",
+      "unknown",
+      409,
+    );
+  }
+
+  if (job.status !== "PARSED_PREVIEW") {
+    throw new SpApiError(
+      "Primero descarga la vista previa antes de importar.",
+      "unknown",
+      400,
+    );
+  }
+
   const reportContent = getReportContentFromJob(job);
   if (!reportContent) {
     throw new Error(
-      "No hay documento descargado. Ejecuta preview/descarga antes de importar.",
+      "Primero descarga la vista previa antes de importar.",
     );
   }
 

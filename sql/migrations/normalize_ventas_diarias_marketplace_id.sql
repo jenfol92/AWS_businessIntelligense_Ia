@@ -18,10 +18,10 @@ WITH marketplace_map AS (
       ('DE', 'A1PA6795UKMFR9'),
       ('ES', 'A1RKKUPIHCS9HS'),
       ('FR', 'A13V1IB3VIYZZH'),
-      ('GB', 'A1F8U78D6W0GOS'),
+      ('GB', 'A1F83G8C2ARO7P'),
       ('IT', 'APJ6JRA9NG5V4'),
-      ('PL', 'A1C37XSU9S960A'),
-      ('SE', 'A2NODRK35VY8IU')
+      ('PL', 'A1C3SOZRARQ6R3'),
+      ('SE', 'A2NODRKZP88ZB9')
   ) AS m(pais, marketplace_id)
 ),
 null_dup_groups AS (
@@ -82,10 +82,10 @@ WITH marketplace_map AS (
       ('DE', 'A1PA6795UKMFR9'),
       ('ES', 'A1RKKUPIHCS9HS'),
       ('FR', 'A13V1IB3VIYZZH'),
-      ('GB', 'A1F8U78D6W0GOS'),
+      ('GB', 'A1F83G8C2ARO7P'),
       ('IT', 'APJ6JRA9NG5V4'),
-      ('PL', 'A1C37XSU9S960A'),
-      ('SE', 'A2NODRK35VY8IU')
+      ('PL', 'A1C3SOZRARQ6R3'),
+      ('SE', 'A2NODRKZP88ZB9')
   ) AS m(pais, marketplace_id)
 ),
 null_dup_groups AS (
@@ -122,10 +122,10 @@ WITH marketplace_map AS (
       ('DE', 'A1PA6795UKMFR9'),
       ('ES', 'A1RKKUPIHCS9HS'),
       ('FR', 'A13V1IB3VIYZZH'),
-      ('GB', 'A1F8U78D6W0GOS'),
+      ('GB', 'A1F83G8C2ARO7P'),
       ('IT', 'APJ6JRA9NG5V4'),
-      ('PL', 'A1C37XSU9S960A'),
-      ('SE', 'A2NODRK35VY8IU')
+      ('PL', 'A1C3SOZRARQ6R3'),
+      ('SE', 'A2NODRKZP88ZB9')
   ) AS m(pais, marketplace_id)
 ),
 eligible_null AS (
@@ -179,10 +179,10 @@ WITH marketplace_map AS (
       ('DE', 'A1PA6795UKMFR9'),
       ('ES', 'A1RKKUPIHCS9HS'),
       ('FR', 'A13V1IB3VIYZZH'),
-      ('GB', 'A1F8U78D6W0GOS'),
+      ('GB', 'A1F83G8C2ARO7P'),
       ('IT', 'APJ6JRA9NG5V4'),
-      ('PL', 'A1C37XSU9S960A'),
-      ('SE', 'A2NODRK35VY8IU')
+      ('PL', 'A1C3SOZRARQ6R3'),
+      ('SE', 'A2NODRKZP88ZB9')
   ) AS m(pais, marketplace_id)
 )
 UPDATE public.ventas_diarias vd

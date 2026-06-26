@@ -11,6 +11,8 @@ export async function saveProductManualCost(
   productId: string,
   values: ProductFormValues,
 ) {
+  if (values.parentId.trim() && values.heredarCosteUnitarioTotal) return;
+
   const payload = mapProductFormToManualCostPayload(values, productId);
   if (!payload) return;
 

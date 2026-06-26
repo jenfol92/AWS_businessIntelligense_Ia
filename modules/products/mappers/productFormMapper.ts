@@ -120,6 +120,7 @@ export function mapProductFormToCorePayload(
     stock_seguridad_minimo: values.stockSeguridadMinimo,
     parent_id: str(values.parentId) || null,
     heredar_precio: values.heredarPrecio,
+    heredar_coste_unitario_total: values.heredarCosteUnitarioTotal,
     tax_category_id: null,
     arancel_porcentaje: values.arancelPorcentaje,
     especificaciones: mergedEspec,

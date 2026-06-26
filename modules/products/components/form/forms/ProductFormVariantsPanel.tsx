@@ -146,6 +146,35 @@ export function ProductFormVariantsPanel({ form }: Props) {
 
             </label>
 
+            <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+
+              <input
+
+                type="checkbox"
+
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600"
+
+                checked={values.heredarCosteUnitarioTotal}
+
+                onChange={(e) =>
+                  updateField("heredarCosteUnitarioTotal", e.target.checked)
+                }
+
+              />
+
+              <span className="text-sm text-slate-700">
+
+                <span className="block">
+                  Heredar coste unitario total del padre
+                </span>
+                <span className="block text-xs text-slate-500">
+                  Usa el coste unitario total del producto padre para esta variante.
+                </span>
+
+              </span>
+
+            </label>
+
           </div>
 
         </section>

@@ -1,5 +1,5 @@
 import Papa from "papaparse";
-import { extractTwinlySkuFromMsku, isTwinlyMsku } from "@/modules/imports/shared/twinlySku";
+import { extractTwinlySkuFromSellerSku } from "@/modules/imports/shared/twinlySku";
 import { validateAfnInventoryByCountryFile } from "./detectReportType";
 import { resolveCountryFromValue } from "./mappers";
 import type {
@@ -144,18 +144,13 @@ export function parseAmazonFbaCountryInventoryFromText(
       continue;
     }
 
-    if (!isTwinlyMsku(skuOriginal)) {
+    const skuLimpio = extractTwinlySkuFromSellerSku(skuOriginal);
+    if (!skuLimpio) {
       skippedNonTwinlyRows++;
       continue;
     }
 
     twinlyRows++;
-
-    const skuLimpio = extractTwinlySkuFromMsku(skuOriginal);
-    if (!skuLimpio) {
-      skippedRows++;
-      continue;
-    }
 
     const countryRaw = getValue(row, COUNTRY_COLUMNS);
     const pais = resolveCountryFromValue(countryRaw, defaultPais);

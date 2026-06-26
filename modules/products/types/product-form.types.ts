@@ -71,6 +71,7 @@ export type ProductFormValues = {
   stockSeguridadMinimo: number;
   parentId: string;
   heredarPrecio: boolean;
+  heredarCosteUnitarioTotal: boolean;
 
   // —— Logística comercial (`producto_logistica`)
   unidadesPorCaja: number;
@@ -97,6 +98,7 @@ export type ProductFormValues = {
   transitoEurUnit: number;
   gastosLlegadaPuertoEurUnit: number;
   costoFleteUnitEur: number;
+  /** Coste unitario total EUR (`producto_costos.costo_unitario_total_eur`). */
   costoUnitarioTotalEur: number;
 
   /** Solo lectura: coste base efectivo (propio o fallback padre). */

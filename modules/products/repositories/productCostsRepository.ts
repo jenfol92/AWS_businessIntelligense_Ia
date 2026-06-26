@@ -248,13 +248,18 @@ async function loadLatestOwnBaseCosts(
 
 
 
-async function loadParentIdsByProductIds(
+type ProductInheritanceRow = {
+  parentId: string | null;
+  heredarCosteUnitarioTotal: boolean;
+};
+
+async function loadProductInheritanceByProductIds(
 
   productIds: string[],
 
-): Promise<Map<string, string | null>> {
+): Promise<Map<string, ProductInheritanceRow>> {
 
-  const map = new Map<string, string | null>();
+  const map = new Map<string, ProductInheritanceRow>();
 
   if (productIds.length === 0) return map;
 
@@ -266,7 +271,7 @@ async function loadParentIdsByProductIds(
 
     .from("productos")
 
-    .select("id, parent_id")
+    .select("id, parent_id, heredar_coste_unitario_total")
 
     .in("id", productIds);
 
@@ -282,7 +287,13 @@ async function loadParentIdsByProductIds(
 
     const parentId = row.parent_id as string | null;
 
-    map.set(id, parentId ?? null);
+    map.set(id, {
+      parentId: parentId ?? null,
+      heredarCosteUnitarioTotal:
+        typeof row.heredar_coste_unitario_total === "boolean"
+          ? row.heredar_coste_unitario_total
+          : true,
+    });
 
   }
 
@@ -320,7 +331,7 @@ export async function getProductBaseCostByProductIds(
 
   const ownCosts = await loadLatestOwnBaseCosts(uniqueIds);
 
-  const parentIdsMap = await loadParentIdsByProductIds(uniqueIds);
+  const inheritanceMap = await loadProductInheritanceByProductIds(uniqueIds);
 
 
 
@@ -332,7 +343,16 @@ export async function getProductBaseCostByProductIds(
 
     const own = ownCosts.get(pid);
 
-    const parentId = parentIdsMap.get(pid) ?? null;
+    const inheritance = inheritanceMap.get(pid) ?? {
+      parentId: null,
+      heredarCosteUnitarioTotal: true,
+    };
+    const parentId = inheritance.parentId;
+
+    if (parentId && inheritance.heredarCosteUnitarioTotal) {
+      needsParentEffective.push(pid);
+      continue;
+    }
 
 
 
@@ -356,25 +376,17 @@ export async function getProductBaseCostByProductIds(
 
 
 
-    if (parentId) {
+    result.set(pid, {
 
-      needsParentEffective.push(pid);
+      monto: null,
 
-    } else {
+      moneda: null,
 
-      result.set(pid, {
+      source: "none",
 
-        monto: null,
+      parentProductId: parentId,
 
-        moneda: null,
-
-        source: "none",
-
-        parentProductId: null,
-
-      });
-
-    }
+    });
 
   }
 
@@ -388,7 +400,7 @@ export async function getProductBaseCostByProductIds(
 
         needsParentEffective
 
-          .map((pid) => parentIdsMap.get(pid))
+          .map((pid) => inheritanceMap.get(pid)?.parentId)
 
           .filter((id): id is string => Boolean(id)),
 
@@ -404,7 +416,7 @@ export async function getProductBaseCostByProductIds(
 
     for (const pid of needsParentEffective) {
 
-      const parentId = parentIdsMap.get(pid);
+      const parentId = inheritanceMap.get(pid)?.parentId;
 
       if (!parentId) {
 
@@ -454,7 +466,7 @@ export async function getProductBaseCostByProductIds(
 
         source: "none",
 
-        parentProductId: parentIdsMap.get(pid) ?? null,
+        parentProductId: inheritanceMap.get(pid)?.parentId ?? null,
 
       });
 

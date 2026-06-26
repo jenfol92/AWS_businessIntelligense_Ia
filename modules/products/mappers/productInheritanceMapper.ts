@@ -23,6 +23,18 @@ export type ProductoDetalleRow = {
   created_at?: string | null;
 };
 
+type CostRowLike = {
+  costo_unitario_total_eur?: unknown;
+};
+
+export type CosteUnitarioTotalEfectivo = {
+  valueEur: number | null;
+  source: "own" | "parent" | "none";
+  inheritedFromParent: boolean;
+  inheritanceRequested: boolean;
+  parentProductId: string | null;
+};
+
 function isEmptyish(value: unknown): boolean {
   if (value === null || value === undefined) return true;
   if (typeof value === "string") return value.trim() === "";
@@ -144,14 +156,72 @@ function costeVistaVacia(row: unknown): boolean {
   return keys.every((k) => isEmptyish(o[k]));
 }
 
+function positiveNumber(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function costoUnitarioTotalFrom(
+  costeActual: unknown,
+  costos: unknown[],
+): number | null {
+  const fromCurrent = positiveNumber(
+    (costeActual as CostRowLike | null | undefined)?.costo_unitario_total_eur,
+  );
+  if (fromCurrent != null) return fromCurrent;
+
+  const latest = Array.isArray(costos) ? (costos[0] as CostRowLike | undefined) : undefined;
+  return positiveNumber(latest?.costo_unitario_total_eur);
+}
+
+export function resolveCosteUnitarioTotalEfectivo(params: {
+  producto: Record<string, unknown>;
+  parentId: string | null;
+  costos: unknown[];
+  costeActual: unknown;
+  parentCostos: unknown[];
+  parentCosteActual: unknown;
+}): CosteUnitarioTotalEfectivo {
+  const inheritanceRequested =
+    params.parentId != null &&
+    params.producto.heredar_coste_unitario_total !== false;
+
+  if (inheritanceRequested) {
+    const parentValue = costoUnitarioTotalFrom(
+      params.parentCosteActual,
+      params.parentCostos,
+    );
+    return {
+      valueEur: parentValue,
+      source: parentValue != null ? "parent" : "none",
+      inheritedFromParent: parentValue != null,
+      inheritanceRequested: true,
+      parentProductId: params.parentId,
+    };
+  }
+
+  const ownValue = costoUnitarioTotalFrom(params.costeActual, params.costos);
+  return {
+    valueEur: ownValue,
+    source: ownValue != null ? "own" : "none",
+    inheritedFromParent: false,
+    inheritanceRequested: false,
+    parentProductId: params.parentId,
+  };
+}
+
 /**
  * 6) costes: lista vacía en hijo → lista del padre (copia superficial).
  *    Vistas costeActual / costeMedio: si hijo “vacío”, usar padre.
  */
 export function mergeCostosLista(
   costosHijo: unknown[],
-  costosPadre: unknown[]
+  costosPadre: unknown[],
+  forceParent = false,
 ): unknown[] {
+  if (forceParent) {
+    return Array.isArray(costosPadre) ? [...costosPadre] : [];
+  }
   if (!Array.isArray(costosHijo) || costosHijo.length === 0) {
     return Array.isArray(costosPadre) ? [...costosPadre] : [];
   }
@@ -160,8 +230,10 @@ export function mergeCostosLista(
 
 export function mergeCosteVista(
   costeHijo: unknown,
-  costePadre: unknown
+  costePadre: unknown,
+  forceParent = false,
 ): unknown {
+  if (forceParent) return costePadre ?? null;
   if (!costeVistaVacia(costeHijo)) return costeHijo;
   return costePadre ?? null;
 }

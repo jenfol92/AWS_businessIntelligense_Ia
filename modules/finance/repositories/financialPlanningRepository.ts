@@ -36,7 +36,7 @@ export async function findFinancialPlanningData(
     containersResult,
     supplierPaymentsResult,
     creditLinesResult,
-    movementsResult,
+    repaymentGroupsResult,
     cashResult,
     incomeResult,
     settingsResult,
@@ -85,13 +85,11 @@ export async function findFinancialPlanningData(
     supabase
       .from("finance_credit_lines")
       .select("*")
-      .eq("status", "activa")
       .order("priority", { ascending: true, nullsFirst: false }),
     supabase
-      .from("finance_credit_line_movements")
+      .from("finance_credit_line_repayment_groups")
       .select("*")
-      .gte("due_date", fromDate)
-      .lte("due_date", toDate)
+      .in("status", ["open", "partially_paid"])
       .order("due_date", { ascending: true }),
     supabase
       .from("finance_cash_accounts")
@@ -113,7 +111,7 @@ export async function findFinancialPlanningData(
     containersResult,
     supplierPaymentsResult,
     creditLinesResult,
-    movementsResult,
+    repaymentGroupsResult,
     cashResult,
     incomeResult,
     settingsResult,
@@ -127,7 +125,7 @@ export async function findFinancialPlanningData(
     containers: (containersResult.data ?? []) as Record<string, unknown>[],
     supplierPayments: (supplierPaymentsResult.data ?? []) as Record<string, unknown>[],
     creditLines: (creditLinesResult.data ?? []) as Record<string, unknown>[],
-    creditLineMovements: (movementsResult.data ?? []) as Record<string, unknown>[],
+    creditLineRepaymentGroups: (repaymentGroupsResult.data ?? []) as Record<string, unknown>[],
     cashAccounts: (cashResult.data ?? []) as Record<string, unknown>[],
     amazonIncomeForecasts: (incomeResult.data ?? []) as Record<string, unknown>[],
     settings: (settingsResult.data ?? []) as Record<string, unknown>[],

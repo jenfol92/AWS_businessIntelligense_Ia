@@ -33,6 +33,7 @@ import {
 } from "../repositories/productProfitabilityRepository";
 import { applyProductDetailInheritance } from "./applyProductInheritance";
 import { mapProductDetailResponse } from "../mappers/productDetailMapper";
+import { resolveCosteUnitarioTotalEfectivo } from "../mappers/productInheritanceMapper";
 import { getEffectiveProductPrice } from "./getEffectiveProductPrice";
 
 export async function getProductDetail(query: ProductDetailQuery) {
@@ -125,6 +126,15 @@ export async function getProductDetail(query: ProductDetailQuery) {
       ? await findProductSiblings(productId, parentId)
       : [];
 
+  const costeUnitarioTotal = resolveCosteUnitarioTotalEfectivo({
+    producto,
+    parentId,
+    costos: Array.isArray(costos) ? costos : [],
+    costeActual,
+    parentCostos: Array.isArray(parentCostos) ? parentCostos : [],
+    parentCosteActual,
+  });
+
   const inherited = applyProductDetailInheritance({
     producto,
     parentCore: parentCore as Record<string, unknown> | null,
@@ -179,5 +189,6 @@ export async function getProductDetail(query: ProductDetailQuery) {
     rentabilidadPais,
     precioEfectivo,
     costeBaseEfectivo,
+    costeUnitarioTotal,
   });
 }

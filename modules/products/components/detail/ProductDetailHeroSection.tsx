@@ -51,6 +51,52 @@ function formatMarginPercent(raw: unknown): string {
   return `${pct.toFixed(1)}%`;
 }
 
+function positiveNumber(value: unknown): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function resolveHeroPrecioVenta(data: ProductDetailResponse): number | null {
+  return (
+    positiveNumber(data.precioEfectivo?.precioVentaBase) ??
+    positiveNumber(data.rentabilidad?.precio_venta_objetivo) ??
+    null
+  );
+}
+
+function resolveHeroCosteUnitarioTotal(data: ProductDetailResponse): number | null {
+  return (
+    positiveNumber(data.costeUnitarioTotal?.valueEur) ??
+    positiveNumber(data.costeActual?.costo_unitario_total_eur) ??
+    (data.costos ?? [])
+      .map((cost) => positiveNumber(cost.costo_unitario_total_eur))
+      .find((cost): cost is number => cost != null) ??
+    positiveNumber(data.rentabilidad?.coste_unitario) ??
+    null
+  );
+}
+
+function resolveHeroMargenBruto(
+  precioVenta: number | null,
+  costeUnitarioTotal: number | null,
+  data: ProductDetailResponse,
+): number | null {
+  if (
+    precioVenta != null &&
+    precioVenta > 0 &&
+    costeUnitarioTotal != null &&
+    costeUnitarioTotal >= 0
+  ) {
+    return ((precioVenta - costeUnitarioTotal) / precioVenta) * 100;
+  }
+
+  const fallback = data.rentabilidad?.margen_bruto_porcentaje;
+  if (fallback == null) return null;
+  const n = Number(fallback);
+  return Number.isFinite(n) ? n : null;
+}
+
 function formatLastOrder(iso: string | null | undefined): string {
   if (iso == null || String(iso).trim() === "") return "—";
   const d = new Date(iso);
@@ -124,7 +170,6 @@ export function ProductDetailHeroSection({
   const p = asRecord(data.producto);
   const d = asRecord(data.detalle);
   const prov = asRecord(data.proveedor);
-  const rent = data.rentabilidad;
   const parent = data.parent;
 
   const nombre =
@@ -155,14 +200,11 @@ export function ProductDetailHeroSection({
     strField(p, "last_ordered_at") ?? undefined,
   );
 
-  const precioVenta =
-    rent.precio_venta_objetivo != null
-      ? Number(rent.precio_venta_objetivo)
-      : data.precioEfectivo?.precioVentaBase ?? null;
-
-  const costeUnitario =
-    rent.coste_unitario != null ? Number(rent.coste_unitario) : null;
-  const margenLabel = formatMarginPercent(rent.margen_bruto_porcentaje);
+  const costeUnitarioTotal = data.costeUnitarioTotal;
+  const precioVenta = resolveHeroPrecioVenta(data);
+  const costeUnitario = resolveHeroCosteUnitarioTotal(data);
+  const margenBruto = resolveHeroMargenBruto(precioVenta, costeUnitario, data);
+  const margenLabel = formatMarginPercent(margenBruto);
 
   const colorActual = strField(d, "color");
 
@@ -380,11 +422,20 @@ export function ProductDetailHeroSection({
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Coste unitario
+                  Coste unitario total
                 </p>
                 <p className="mt-1 text-lg font-bold text-slate-900">
                   {formatEuro(costeUnitario)}
                 </p>
+                {costeUnitarioTotal?.inheritedFromParent ? (
+                  <p className="mt-1 text-xs font-medium text-blue-600">
+                    Heredado del padre
+                  </p>
+                ) : costeUnitarioTotal?.inheritanceRequested ? (
+                  <p className="mt-1 text-xs font-medium text-slate-500">
+                    Herencia activada, sin coste disponible en el padre
+                  </p>
+                ) : null}
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">

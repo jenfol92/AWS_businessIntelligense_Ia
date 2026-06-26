@@ -135,15 +135,25 @@ export function applyProductDetailInheritance(
 
   const costosH = Array.isArray(params.costos) ? params.costos : [];
   const costosP = Array.isArray(params.parentCostos) ? params.parentCostos : [];
-  const costosMerged = mergeCostosLista(costosH, costosP);
+  const heredaCosteUnitarioTotal =
+    producto.parent_id != null &&
+    String(producto.parent_id).trim() !== "" &&
+    producto.heredar_coste_unitario_total !== false;
+  const costosMerged = mergeCostosLista(
+    costosH,
+    costosP,
+    heredaCosteUnitarioTotal,
+  );
 
   const costeActualMerged = mergeCosteVista(
     params.costeActual,
-    params.parentCosteActual
+    params.parentCosteActual,
+    heredaCosteUnitarioTotal,
   );
   const costeMedioMerged = mergeCosteVista(
     params.costeMedio,
-    params.parentCosteMedio
+    params.parentCosteMedio,
+    heredaCosteUnitarioTotal,
   );
 
   const docsH = Array.isArray(params.documentos) ? params.documentos : [];

@@ -98,7 +98,7 @@ function mapBoxMeasuresFromDb(
   };
 }
 
-function mapCostFields(
+export function mapProductCostFieldsFromDb(
   producto: Record<string, unknown> | null,
   costo: Record<string, unknown> | null,
   costoActual: Record<string, unknown> | null,
@@ -184,6 +184,7 @@ export function mapProductFormDataToValues(input: FormLoadInput): ProductFormVal
     stockSeguridadMinimo: num(p?.stock_seguridad_minimo),
     parentId: str(p?.parent_id),
     heredarPrecio: bool(p?.heredar_precio, true),
+    heredarCosteUnitarioTotal: bool(p?.heredar_coste_unitario_total, true),
 
     categoriaId,
     categoria: categoriaNombre,
@@ -210,7 +211,7 @@ export function mapProductFormDataToValues(input: FormLoadInput): ProductFormVal
     priceChannel: str(ext?.price_channel) || EMPTY_PRODUCT_FORM.priceChannel,
     notasGenerales: str(ext?.notas_generales),
 
-    ...mapCostFields(p, costo, costoActual),
+    ...mapProductCostFieldsFromDb(p, costo, costoActual),
 
     pesoNetoKg: num(ft?.peso_neto_kg),
     ...mapBoxMeasuresFromDb(l, ft),

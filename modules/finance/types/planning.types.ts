@@ -12,6 +12,8 @@ export type FinanceEventStatus = "pendiente" | "pagado" | "vencido" | "previsto"
 
 export type FinancePaymentSource = "cash" | "caja_rural" | "la_caixa" | "bbva" | "manual";
 
+export type FinanceSupplierPaymentSourceType = "cash_account" | "credit_line" | "manual";
+
 export type FinanceCreditLine = {
   id: string;
   bankName: string;
@@ -20,6 +22,7 @@ export type FinanceCreditLine = {
   availableAmount: number;
   usedAmount: number;
   cycleDays: number | null;
+  maturityDate: string | null;
   repaymentMode: string;
   priority: number | null;
   status: string;
@@ -57,7 +60,16 @@ export type FinancePlanningEvent = {
   recommendedSource: FinancePaymentSource | null;
   recommendationReason: string;
   canMarkPaid: boolean;
+  paymentSourceType?: FinanceSupplierPaymentSourceType | null;
+  paymentCashAccountId?: string | null;
+  paymentCreditLineId?: string | null;
+  creditLineId?: string | null;
   creditLineBank?: string | null;
+  creditLineName?: string | null;
+  paidLineAmountEur?: number | null;
+  repaymentGroupId?: string | null;
+  repaymentGroupStatus?: string | null;
+  isInformational?: boolean;
   sourcePaymentId?: string | null;
 };
 
@@ -103,7 +115,7 @@ export type FinancePlanningRawData = {
   containers: Record<string, unknown>[];
   supplierPayments: Record<string, unknown>[];
   creditLines: Record<string, unknown>[];
-  creditLineMovements: Record<string, unknown>[];
+  creditLineRepaymentGroups: Record<string, unknown>[];
   cashAccounts: Record<string, unknown>[];
   amazonIncomeForecasts: Record<string, unknown>[];
   settings: Record<string, unknown>[];

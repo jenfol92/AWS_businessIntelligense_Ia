@@ -11,7 +11,10 @@ import {
   getProductBaseCostByProductIds,
 } from "../repositories/productCostsRepository";
 
-import { mapProductFormDataToValues } from "../mappers/productFormDataMapper";
+import {
+  mapProductCostFieldsFromDb,
+  mapProductFormDataToValues,
+} from "../mappers/productFormDataMapper";
 import type { ProductFormValues } from "../types";
 import { getProductAmazonSetup } from "./getProductAmazonSetup";
 import { applyPrimaryAmazonDraftToFlatFields } from "../mappers/amazonSetupMapper";
@@ -57,6 +60,26 @@ export async function getProductForm(productId: string) {
       (effective?.moneda as ProductFormValues["costeBaseEfectivoMoneda"]) ?? null,
     costeBaseSource: effective?.source ?? "none",
   };
+
+  if (product.parentId.trim() && product.heredarCosteUnitarioTotal) {
+    const [parentCore, parentCost, parentCurrentCost] = await Promise.all([
+      findProductCoreById(product.parentId),
+      findLatestProductCost(product.parentId),
+      findCurrentProductCost(product.parentId),
+    ]);
+    product = {
+      ...product,
+      ...mapProductCostFieldsFromDb(
+        parentCore as Record<string, unknown> | null,
+        parentCost as Record<string, unknown> | null,
+        parentCurrentCost as Record<string, unknown> | null,
+      ),
+      costeBaseEfectivoMonto: effective?.monto ?? null,
+      costeBaseEfectivoMoneda:
+        (effective?.moneda as ProductFormValues["costeBaseEfectivoMoneda"]) ?? null,
+      costeBaseSource: effective?.source ?? "none",
+    };
+  }
 
   try {
     const amazon = await getProductAmazonSetup(productId);

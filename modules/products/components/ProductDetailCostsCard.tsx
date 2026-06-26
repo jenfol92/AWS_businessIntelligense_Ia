@@ -3,12 +3,13 @@
 
 
 import { formatCurrency, formatDate, formatNumber } from "@/shared/utils/formatters";
+import type { ProductDetailResponse } from "../types/product-detail.types";
 
 
 
 type Props = {
 
-  data: any;
+  data: ProductDetailResponse;
 
 };
 
@@ -32,7 +33,7 @@ function formatBaseCost(monto: unknown, moneda: unknown): string {
 
  * Costes del producto.
 
- * Distingue coste propio, coste base efectivo (own/parent) y coste real EUR.
+ * Distingue coste propio, coste base efectivo y coste unitario total efectivo.
 
  */
 
@@ -64,11 +65,8 @@ export function ProductDetailCostsCard({ data }: Props) {
 
 
 
-  const costeRealEur =
-
-    costeActual?.costo_unitario_total_eur ??
-
-    (costeActual?.costo_fabrica_eur > 0 ? costeActual.costo_fabrica_eur : null);
+  const costeUnitarioTotal = data.costeUnitarioTotal;
+  const costeUnitarioTotalEur = costeUnitarioTotal?.valueEur ?? null;
 
 
 
@@ -82,7 +80,7 @@ export function ProductDetailCostsCard({ data }: Props) {
 
         <div className="text-muted small mb-3">
 
-          Coste propio, coste base efectivo y coste real EUR por lote.
+          Coste propio, coste base efectivo y coste unitario total.
 
         </div>
 
@@ -128,17 +126,24 @@ export function ProductDetailCostsCard({ data }: Props) {
 
             <div className="border rounded p-2">
 
-              <div className="text-muted small">Último coste real EUR</div>
+              <div className="text-muted small">Coste unitario total</div>
 
               <strong>
 
-                {costeRealEur != null && Number(costeRealEur) > 0
+                {costeUnitarioTotalEur != null && Number(costeUnitarioTotalEur) > 0
 
-                  ? formatCurrency(costeRealEur)
+                  ? formatCurrency(costeUnitarioTotalEur)
 
                   : "Pendiente de orden/lote"}
 
               </strong>
+              {costeUnitarioTotal?.inheritedFromParent ? (
+                <div className="text-primary small mt-1">Heredado del padre</div>
+              ) : costeUnitarioTotal?.inheritanceRequested ? (
+                <div className="text-muted small mt-1">
+                  Intenta heredar del padre, sin coste disponible
+                </div>
+              ) : null}
 
             </div>
 
@@ -214,7 +219,7 @@ export function ProductDetailCostsCard({ data }: Props) {
 
                   <th className="text-end">Base</th>
 
-                  <th className="text-end">Total EUR</th>
+                  <th className="text-end">Coste unitario total</th>
 
                 </tr>
 
@@ -224,7 +229,7 @@ export function ProductDetailCostsCard({ data }: Props) {
 
               <tbody>
 
-                {costos.slice(0, 5).map((cost: any) => (
+                {costos.slice(0, 5).map((cost) => (
 
                   <tr key={cost.id}>
 

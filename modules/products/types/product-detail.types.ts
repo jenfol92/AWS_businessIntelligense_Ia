@@ -107,6 +107,42 @@ export type ProductDetailRentabilidad = {
   raw: unknown;
 };
 
+export type ProductDetailCostRow = {
+  id?: string | null;
+  producto_id?: string | null;
+  proveedor_id?: string | null;
+  costo_fabrica_monto?: number | null;
+  costo_fabrica_moneda?: string | null;
+  costo_fabrica_eur?: number | null;
+  tipo_cambio_aplicado?: number | null;
+  arancel_porcentaje?: number | null;
+  transito_eur_unit?: number | null;
+  gastos_llegada_puerto_eur_unit?: number | null;
+  costo_flete_unit_eur?: number | null;
+  costo_unitario_total_eur?: number | null;
+  pais_destino?: string | null;
+  contenedor_id?: string | null;
+  lote_producto?: string | null;
+  fecha?: string | null;
+};
+
+export type ProductDetailAverageCost = {
+  coste_medio_eur?: number | null;
+  n_lotes?: number | null;
+  unidades_compradas_total?: number | null;
+  ultimo_lote?: string | null;
+};
+
+export type ProductDetailUnitTotalCostSource = "own" | "parent" | "none";
+
+export type ProductDetailUnitTotalCost = {
+  valueEur: number | null;
+  source: ProductDetailUnitTotalCostSource;
+  inheritedFromParent: boolean;
+  inheritanceRequested: boolean;
+  parentProductId: string | null;
+};
+
 /**
  * Archivo anidado compatible con checklist tipo ProductDocumentosCard:
  * props `registryDocs[].documento` con claves snake_case.
@@ -180,9 +216,9 @@ export type ProductDetailResponse = {
   proveedor: unknown;
 
   /** Histórico de costes (lista). */
-  costos: unknown[];
-  costeActual: unknown;
-  costeMedio: unknown;
+  costos: ProductDetailCostRow[];
+  costeActual: ProductDetailCostRow | null;
+  costeMedio: ProductDetailAverageCost | null;
 
   documentos: ProductDetailDocumentoRel[];
 
@@ -205,6 +241,9 @@ export type ProductDetailResponse = {
   /** Coste base efectivo (propio o fallback padre). */
   costeBaseEfectivo: ProductBaseCost;
 
+  /** Coste unitario total EUR efectivo para la ficha. */
+  costeUnitarioTotal: ProductDetailUnitTotalCost;
+
   /**
    * Fila cruda de `v_stock_seguridad_sugerido` (riesgo, días cobertura, unidades a pedir, etc.).
    * Expuesto para KPIs que lean `stockSugerido` explícito; no sustituye `inventario` agregado.
@@ -223,9 +262,9 @@ export type ProductDetailMapperInput = {
   logistica: unknown;
   finanzas: unknown;
   proveedor: unknown;
-  costos: unknown[];
-  costeActual: unknown;
-  costeMedio: unknown;
+  costos: ProductDetailCostRow[];
+  costeActual: ProductDetailCostRow | null;
+  costeMedio: ProductDetailAverageCost | null;
   documentos: unknown[];
   fichaTecnica: unknown;
   inventario: unknown[];
@@ -238,4 +277,5 @@ export type ProductDetailMapperInput = {
   rentabilidadPais: unknown;
   precioEfectivo: ProductEffectivePrice;
   costeBaseEfectivo: ProductBaseCost;
+  costeUnitarioTotal: ProductDetailUnitTotalCost;
 };

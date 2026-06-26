@@ -34,6 +34,7 @@ export function buildVariantFormFromParent(
     ...EMPTY_PRODUCT_FORM,
     parentId,
     heredarPrecio: true,
+    heredarCosteUnitarioTotal: true,
 
     proveedorId: parent.proveedorId,
     stockSeguridadMinimo: parent.stockSeguridadMinimo,
@@ -53,7 +54,18 @@ export function buildVariantFormFromParent(
     precioVentaBase: parent.precioVentaBase,
     priceChannel: parent.priceChannel,
 
+    costoFabricaMonto: parent.costoFabricaMonto,
+    costoFabricaMoneda: parent.costoFabricaMoneda,
+    tipoCambioAplicado: parent.tipoCambioAplicado,
+    costoFabricaEur: parent.costoFabricaEur,
     arancelPorcentaje: parent.arancelPorcentaje,
+    transitoEurUnit: parent.transitoEurUnit,
+    gastosLlegadaPuertoEurUnit: parent.gastosLlegadaPuertoEurUnit,
+    costoFleteUnitEur: parent.costoFleteUnitEur,
+    costoUnitarioTotalEur: parent.costoUnitarioTotalEur,
+    costeBaseEfectivoMonto: parent.costeBaseEfectivoMonto,
+    costeBaseEfectivoMoneda: parent.costeBaseEfectivoMoneda,
+    costeBaseSource: parent.costeBaseSource,
 
     notasGenerales: parent.notasGenerales,
 

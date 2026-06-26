@@ -321,6 +321,7 @@ export function mapProductDetailResponse(
 
     precioEfectivo: input.precioEfectivo,
     costeBaseEfectivo: input.costeBaseEfectivo,
+    costeUnitarioTotal: input.costeUnitarioTotal,
 
     stockSugerido: input.stockSugerido,
   };

@@ -46,6 +46,7 @@ function formatBaseCostLabel(
 /** Coste base de fábrica en moneda original; coste EUR real viene de orden/lote. */
 export function CostsForm({ form }: Props) {
   const { values, errors, updateField, isVariant } = form;
+  const inheritsCost = values.heredarCosteUnitarioTotal && isVariant;
 
   const costeRealEur =
     values.costoUnitarioTotalEur > 0 ? values.costoUnitarioTotalEur : null;
@@ -72,7 +73,7 @@ export function CostsForm({ form }: Props) {
   return (
     <div className="space-y-6">
       {isVariant ? (
-        <section className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+        <section className="space-y-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
           <label className="flex cursor-pointer items-center gap-3">
             <input
               type="checkbox"
@@ -82,6 +83,24 @@ export function CostsForm({ form }: Props) {
             />
             <span className="text-sm font-medium text-blue-900">
               Heredar precio de venta del producto padre
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600"
+              checked={values.heredarCosteUnitarioTotal}
+              onChange={(e) =>
+                updateField("heredarCosteUnitarioTotal", e.target.checked)
+              }
+            />
+            <span>
+              <span className="block text-sm font-medium text-blue-900">
+                Heredar coste unitario total del padre
+              </span>
+              <span className="block text-xs text-blue-800">
+                Usa el coste unitario total del producto padre para esta variante.
+              </span>
             </span>
           </label>
         </section>
@@ -105,7 +124,9 @@ export function CostsForm({ form }: Props) {
                 type="number"
                 step="0.0001"
                 className={pfFieldClass(false)}
-                value={values.costoFabricaMonto || ""}
+                value={inheritsCost ? "" : values.costoFabricaMonto || ""}
+                disabled={inheritsCost}
+                placeholder={inheritsCost ? "Heredado del padre" : ""}
                 onChange={(e) =>
                   updateField("costoFabricaMonto", toNum(e.target.value))
                 }
@@ -119,6 +140,7 @@ export function CostsForm({ form }: Props) {
                 id="pf-costo-moneda"
                 className={pfFieldClass(false)}
                 value={values.costoFabricaMoneda}
+                disabled={inheritsCost}
                 onChange={(e) => {
                   const moneda = e.target.value as typeof values.costoFabricaMoneda;
                   updateField("costoFabricaMoneda", moneda);
@@ -140,7 +162,9 @@ export function CostsForm({ form }: Props) {
                 type="number"
                 step="0.01"
                 className={pfFieldClass(false)}
-                value={values.arancelPorcentaje}
+                value={inheritsCost ? "" : values.arancelPorcentaje}
+                disabled={inheritsCost}
+                placeholder={inheritsCost ? "Heredado del padre" : ""}
                 onChange={(e) =>
                   updateField("arancelPorcentaje", toNum(e.target.value))
                 }
@@ -151,7 +175,7 @@ export function CostsForm({ form }: Props) {
                 <p>
                   Coste fábrica base:{" "}
                   <strong>{formatBaseCostLabel(effectiveMonto, effectiveMoneda)}</strong>
-                  {effectiveSource === "parent" ? (
+                  {inheritsCost || effectiveSource === "parent" ? (
                     <span className="ml-2 text-xs font-normal text-blue-700">
                       Heredado del padre
                     </span>
@@ -164,6 +188,11 @@ export function CostsForm({ form }: Props) {
                       ? fmtEur(costeRealEur)
                       : "Pendiente de orden/lote"}
                   </strong>
+                  {inheritsCost ? (
+                    <span className="ml-2 text-xs font-normal text-blue-700">
+                      Heredado del padre
+                    </span>
+                  ) : null}
                 </p>
               </div>
             </div>

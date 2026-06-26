@@ -4,6 +4,7 @@ import {
   recommendCreditLineForAmount,
 } from "./syncCreditLineDueFromSupplierPayment";
 import { SUPPLIER_PAYMENT_TYPE_LABELS } from "../types/supplierPayments.types";
+import type { SupplierPaymentType } from "../types/supplierPayments.types";
 import type {
   FinanceCashAccount,
   FinanceCreditLine,
@@ -12,6 +13,7 @@ import type {
   FinancePlanningQuery,
   FinancePlanningResponse,
   FinancePlanningRawData,
+  FinanceSupplierPaymentSourceType,
 } from "../types/planning.types";
 
 const MONTH_LABELS = [
@@ -39,6 +41,18 @@ function asNumber(value: unknown, fallback = 0): number {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function supplierPaymentSourceType(value: unknown): FinanceSupplierPaymentSourceType | null {
+  if (value === "cash_account" || value === "credit_line" || value === "manual") {
+    return value;
+  }
+  return null;
+}
+
+function isActiveCreditLineStatus(value: unknown): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "activa" || normalized === "activo" || normalized === "active";
 }
 
 function dateToMonth(date: string | null): string | null {
@@ -94,6 +108,20 @@ function logisticsLabel(value: string | null | undefined): "AGL" | "PROPIO" | "S
   return "SIN_DEFINIR";
 }
 
+function supplierPaymentEventType(
+  paymentType: string | null,
+): { paymentType: SupplierPaymentType; eventType: "supplier_deposit" | "supplier_balance" } | null {
+  if (paymentType === "DEPOSITO_30") {
+    return { paymentType, eventType: "supplier_deposit" };
+  }
+
+  if (paymentType === "BALANCE_70") {
+    return { paymentType, eventType: "supplier_balance" };
+  }
+
+  return null;
+}
+
 function buildSupplierPaymentEvents(
   raw: FinancePlanningRawData,
   creditLines: FinanceCreditLine[],
@@ -109,23 +137,21 @@ function buildSupplierPaymentEvents(
       payment["contenedores"] as Record<string, unknown> | Record<string, unknown>[] | null,
     );
     const paymentType = asString(payment["payment_type"]);
+    const mappedPaymentType = supplierPaymentEventType(paymentType);
+    if (!mappedPaymentType) continue;
+
     const dueDate = asString(payment["due_date"]);
     const amountEur = asNumber(payment["amount_eur"]);
     const recommendation = recommendCreditLineForAmount(amountEur, creditLines, cashBalance);
     const logisticsType = logisticsLabel(asString(payment["logistics_type"]));
-    const title =
-      paymentType === "DEPOSITO_30"
-        ? SUPPLIER_PAYMENT_TYPE_LABELS.DEPOSITO_30
-        : paymentType === "BALANCE_70"
-          ? SUPPLIER_PAYMENT_TYPE_LABELS.BALANCE_70
-          : "Pago proveedor";
+    const title = SUPPLIER_PAYMENT_TYPE_LABELS[mappedPaymentType.paymentType];
 
     const notes = asString(payment["notes"]);
     const reason = notes ?? recommendation.reason;
 
     events.push({
       id: String(payment["id"]),
-      type: paymentType === "DEPOSITO_30" ? "supplier_deposit" : "supplier_balance",
+      type: mappedPaymentType.eventType,
       title,
       date: dueDate,
       month: dateToMonth(dueDate),
@@ -151,6 +177,9 @@ function buildSupplierPaymentEvents(
       recommendedSource: recommendation.source,
       recommendationReason: reason,
       canMarkPaid: true,
+      paymentSourceType: supplierPaymentSourceType(payment["payment_source_type"]),
+      paymentCashAccountId: asString(payment["cash_account_id"]),
+      paymentCreditLineId: asString(payment["credit_line_id"]),
     });
   }
 
@@ -217,6 +246,105 @@ function buildContainerLogisticsEvents(
   return events;
 }
 
+function buildCreditLineRepaymentGroupEvents(
+  raw: FinancePlanningRawData,
+  creditLines: FinanceCreditLine[],
+): FinancePlanningEvent[] {
+  const events: FinancePlanningEvent[] = [];
+
+  for (const group of raw.creditLineRepaymentGroups) {
+    const creditLineId = asString(group["credit_line_id"]);
+    const line = creditLines.find((item) => item.id === creditLineId);
+    const dueDate = asString(group["due_date"]);
+    const remainingAmount = asNumber(group["remaining_amount"]);
+    if (!line || remainingAmount <= 0) continue;
+
+    events.push({
+      id: String(group["id"]),
+      type: "credit_line_release",
+      title: "Pago/devolucion de linea de credito",
+      date: dueDate,
+      month: dateToMonth(dueDate),
+      isPendingDate: !dueDate,
+      status: statusFromRow(null, null, dueDate),
+      containerId: null,
+      containerCode: null,
+      orderId: null,
+      orderCode: null,
+      numeroPedidoAgente: null,
+      agentContact: null,
+      logisticsType: "SIN_DEFINIR",
+      originalAmount: remainingAmount,
+      originalCurrency: "EUR",
+      plannedFxRate: null,
+      plannedFxSource: "not_configured",
+      plannedAmountEur: remainingAmount,
+      paidAmountEur: null,
+      recommendedSource: "cash",
+      recommendationReason: "Pago/devolucion de linea de credito con saldo pendiente real.",
+      canMarkPaid: false,
+      creditLineId: line.id,
+      creditLineBank: line.bankName,
+      creditLineName: line.lineName,
+      paidLineAmountEur: asNumber(group["paid_amount"]),
+      repaymentGroupId: asString(group["id"]),
+      repaymentGroupStatus: asString(group["status"]),
+    });
+  }
+
+  return events;
+}
+
+function buildCreditLineInformationalEvents(
+  creditLines: FinanceCreditLine[],
+  repaymentGroupEvents: FinancePlanningEvent[],
+): FinancePlanningEvent[] {
+  const linesWithPendingGroups = new Set(
+    repaymentGroupEvents
+      .map((event) => event.creditLineBank && event.creditLineName
+        ? `${event.creditLineBank}::${event.creditLineName}`
+        : null)
+      .filter((key): key is string => Boolean(key)),
+  );
+
+  return creditLines
+    .filter((line) => !linesWithPendingGroups.has(`${line.bankName}::${line.lineName}`))
+    .map((line) => ({
+      id: `credit-line-info-${line.id}`,
+      type: "credit_line_release" as const,
+      title: `Linea ${line.bankName} / ${line.lineName}`,
+      date: line.maturityDate,
+      month: dateToMonth(line.maturityDate),
+      isPendingDate: !line.maturityDate,
+      status: "previsto" as const,
+      containerId: null,
+      containerCode: null,
+      orderId: null,
+      orderCode: null,
+      numeroPedidoAgente: null,
+      agentContact: null,
+      logisticsType: "SIN_DEFINIR" as const,
+      originalAmount: 0,
+      originalCurrency: "EUR",
+      plannedFxRate: null,
+      plannedFxSource: "not_configured" as const,
+      plannedAmountEur: 0,
+      paidAmountEur: 0,
+      recommendedSource: null,
+      recommendationReason: line.maturityDate
+        ? "Linea sin vencimiento pendiente generado en grupos."
+        : "El vencimiento se generara cuando se use la linea.",
+      canMarkPaid: false,
+      creditLineId: line.id,
+      creditLineBank: line.bankName,
+      creditLineName: line.lineName,
+      paidLineAmountEur: 0,
+      repaymentGroupId: null,
+      repaymentGroupStatus: null,
+      isInformational: true,
+    }));
+}
+
 function isSupplierOrContainerPayment(type: string): boolean {
   return type.startsWith("supplier_") || type.startsWith("container_");
 }
@@ -231,19 +359,22 @@ export async function buildFinancialPlanning(
   const backfillResult = await backfillMissingSupplierPayments();
   console.log("[finance/planning] backfill completed", backfillResult);
   const raw = await findFinancialPlanningData(query);
-  const creditLines: FinanceCreditLine[] = raw.creditLines.map((row) => ({
-    id: String(row["id"]),
-    bankName: String(row["bank_name"] ?? ""),
-    lineName: String(row["line_name"] ?? ""),
-    creditLimit: asNumber(row["credit_limit"]),
-    availableAmount: asNumber(row["available_amount"]),
-    usedAmount: asNumber(row["used_amount"]),
-    cycleDays: row["cycle_days"] == null ? null : asNumber(row["cycle_days"]),
-    repaymentMode: String(row["repayment_mode"] ?? ""),
-    priority: row["priority"] == null ? null : asNumber(row["priority"]),
-    status: String(row["status"] ?? "activa"),
-    notes: asString(row["notes"]),
-  }));
+  const creditLines: FinanceCreditLine[] = raw.creditLines
+    .filter((row) => isActiveCreditLineStatus(row["status"]))
+    .map((row) => ({
+      id: String(row["id"]),
+      bankName: String(row["bank_name"] ?? ""),
+      lineName: String(row["line_name"] ?? ""),
+      creditLimit: asNumber(row["credit_limit"]),
+      availableAmount: asNumber(row["available_amount"]),
+      usedAmount: asNumber(row["used_amount"]),
+      cycleDays: row["cycle_days"] == null ? null : asNumber(row["cycle_days"]),
+      maturityDate: asString(row["maturity_date"]),
+      repaymentMode: String(row["repayment_mode"] ?? ""),
+      priority: row["priority"] == null ? null : asNumber(row["priority"]),
+      status: String(row["status"] ?? "activa"),
+      notes: asString(row["notes"]),
+    }));
   const cashAccounts: FinanceCashAccount[] = raw.cashAccounts.map((row) => ({
     id: String(row["id"]),
     name: String(row["name"] ?? ""),
@@ -255,47 +386,15 @@ export async function buildFinancialPlanning(
   const globalFxRate = globalFxRaw ? asNumber(globalFxRaw, 0) || null : null;
   const totalCreditAvailable = creditLines.reduce((sum, line) => sum + line.availableAmount, 0);
 
+  const repaymentGroupEvents = buildCreditLineRepaymentGroupEvents(raw, creditLines);
+  const creditLineInfoEvents = buildCreditLineInformationalEvents(creditLines, repaymentGroupEvents);
+
   const events = [
     ...buildSupplierPaymentEvents(raw, creditLines, cashBalance),
     ...buildContainerLogisticsEvents(raw, creditLines, cashBalance),
+    ...repaymentGroupEvents,
+    ...creditLineInfoEvents,
   ];
-
-  for (const movement of raw.creditLineMovements) {
-    const line = creditLines.find((item) => item.id === movement["credit_line_id"]);
-    const date = asString(movement["due_date"]);
-    const amount = asNumber(movement["amount"]);
-    const movementType = asString(movement["movement_type"]);
-    const isRelease = movementType === "vencimiento_linea" || movementType === "periodic_release";
-    events.push({
-      id: String(movement["id"]),
-      type: "credit_line_release",
-      title: isRelease
-        ? `Vencimiento línea ${line?.bankName ?? "línea"}`
-        : `Liberacion ${line?.bankName ?? "linea"}`,
-      date,
-      month: dateToMonth(date),
-      isPendingDate: !date,
-      status: movement["paid_at"] ? "pagado" : statusFromRow(null, null, date),
-      containerId: null,
-      containerCode: null,
-      orderId: null,
-      orderCode: null,
-      numeroPedidoAgente: null,
-      agentContact: null,
-      logisticsType: "SIN_DEFINIR",
-      originalAmount: amount,
-      originalCurrency: "EUR",
-      plannedFxRate: null,
-      plannedFxSource: "not_configured",
-      plannedAmountEur: amount,
-      paidAmountEur: movement["paid_at"] ? amount : null,
-      recommendedSource: "cash",
-      recommendationReason: "Una linea no paga otra linea; se libera con caja propia.",
-      canMarkPaid: false,
-      creditLineBank: line?.bankName ?? null,
-      sourcePaymentId: asString(movement["source_id"]),
-    } as FinancePlanningEvent);
-  }
 
   for (const income of raw.amazonIncomeForecasts) {
     const date = asString(income["forecast_date"]);
@@ -341,6 +440,7 @@ export async function buildFinancialPlanning(
     const pendingDateEvents = monthEvents.filter((event) => event.isPendingDate);
 
     for (const event of datedEvents) {
+      if (event.isInformational) continue;
       if (event.type === "amazon_income") projectedCash += event.plannedAmountEur;
       if (event.type === "credit_line_release") {
         projectedCash -= event.plannedAmountEur;
@@ -358,16 +458,16 @@ export async function buildFinancialPlanning(
       month,
       label: monthLabel(month),
       totalPendingPayments: datedEvents
-        .filter((event) => event.status === "pendiente" || event.status === "vencido")
+        .filter((event) => !event.isInformational && (event.status === "pendiente" || event.status === "vencido"))
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       totalPaidPayments: datedEvents
-        .filter((event) => event.status === "pagado")
+        .filter((event) => !event.isInformational && event.status === "pagado")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       totalIncome: datedEvents
-        .filter((event) => event.type === "amazon_income")
+        .filter((event) => !event.isInformational && event.type === "amazon_income")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       totalCreditReleases: datedEvents
-        .filter((event) => event.type === "credit_line_release")
+        .filter((event) => !event.isInformational && event.type === "credit_line_release")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       projectedCashBalance: projectedCash,
       projectedCreditAvailable: projectedCredit,
@@ -384,13 +484,13 @@ export async function buildFinancialPlanning(
       totalCreditAvailable,
       cashBalance,
       pendingPayments: events
-        .filter((event) => event.status === "pendiente" || event.status === "vencido")
+        .filter((event) => !event.isInformational && (event.status === "pendiente" || event.status === "vencido"))
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       paidPayments: events
-        .filter((event) => event.status === "pagado")
+        .filter((event) => !event.isInformational && event.status === "pagado")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       plannedIncome: events
-        .filter((event) => event.type === "amazon_income")
+        .filter((event) => !event.isInformational && event.type === "amazon_income")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       plannedUsdEurRate: globalFxRate,
       plannedUsdEurRateSource: globalFxRate ? "global_setting" : "not_configured",

@@ -27,7 +27,8 @@ export async function findProductCoreById(productId: string) {
       especificaciones,
       lote_producto_actual,
       parent_id,
-      heredar_precio
+      heredar_precio,
+      heredar_coste_unitario_total
     `)
     .eq("id", productId)
     .single();
@@ -55,6 +56,7 @@ export async function findProductCoreList(params?: {
       proveedor_id,
       parent_id,
       heredar_precio,
+      heredar_coste_unitario_total,
       updated_at
     `)
     .order("updated_at", { ascending: false })

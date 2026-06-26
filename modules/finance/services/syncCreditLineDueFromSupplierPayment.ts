@@ -53,8 +53,9 @@ export function recommendCreditLineForAmount(
 }
 
 /**
- * Genera vencimiento de línea de crédito al usar la línea para un pago proveedor.
- * Idempotente por (credit_line_id, source_type, source_id).
+ * @deprecated No usar para generar vencimientos de lineas.
+ * El modelo oficial es finance_create_credit_line_drawdown + finance_credit_line_repayment_groups.
+ * Este servicio queda solo como compatibilidad legacy hasta eliminar usos antiguos.
  */
 export async function syncCreditLineDueFromSupplierPayment(
   supplierPaymentId: string,
@@ -89,6 +90,7 @@ export async function syncCreditLineDueFromSupplierPayment(
     availableAmount: asNumber(line.available_amount),
     usedAmount: asNumber(line.used_amount),
     cycleDays: line.cycle_days == null ? null : asNumber(line.cycle_days),
+    maturityDate: typeof line.maturity_date === "string" ? line.maturity_date : null,
     repaymentMode: String(line.repayment_mode ?? ""),
     priority: line.priority == null ? null : asNumber(line.priority),
     status: String(line.status ?? "activa"),

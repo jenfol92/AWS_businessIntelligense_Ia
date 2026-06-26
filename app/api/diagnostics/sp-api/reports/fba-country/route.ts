@@ -229,6 +229,7 @@ async function handleParseReport(
       marketplace,
       reportId,
       processingStatus,
+      reportDocumentId: report.reportDocumentId,
     });
     return NextResponse.json(diagnostic);
   } catch (error: unknown) {

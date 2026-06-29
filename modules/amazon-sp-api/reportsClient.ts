@@ -64,6 +64,7 @@ export function mapAmazonProcessingToJobStatus(
   switch (processingStatus) {
     case "IN_QUEUE":
     case "IN_PROGRESS":
+    case "PROCESSING":
       return "IN_PROGRESS";
     case "DONE":
       return "DONE";

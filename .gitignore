@@ -145,6 +145,7 @@ build/
 
 # Secretos y Claves (¡IMPORTANTE!)
 *.json
+!vercel.json
 .env
 .env.local
 .env.development.local

@@ -58,17 +58,54 @@ export async function startAmazonReportSyncRun(
   if (!row?.started) return { started: false, reason: "LOCKED" };
   if (!row.run_id) throw new Error("La RPC start_amazon_report_sync_run no devolvió run_id.");
 
-  const { error: scheduleError } = await supabaseAdmin
+  return { started: true, runId: row.run_id };
+}
+
+export async function markAmazonReportScheduleRequested(
+  scheduleId: string,
+  requestedAt: Date = new Date(),
+  options: { markSuccess?: boolean } = {},
+): Promise<AmazonReportScheduleRow> {
+  const requestedAtIso = toIso(requestedAt);
+  const markSuccess = options.markSuccess ?? true;
+  const { data, error } = await supabaseAdmin
     .from("amazon_report_schedules")
     .update({
-      last_requested_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      last_requested_at: requestedAtIso,
+      ...(markSuccess ? { last_success_at: requestedAtIso } : {}),
+      last_error_at: null,
+      last_error: null,
+      updated_at: requestedAtIso,
     })
-    .eq("id", input.scheduleId);
+    .eq("id", scheduleId)
+    .select("*")
+    .single();
 
-  if (scheduleError) throw new Error(scheduleError.message);
+  if (error) throw new Error(error.message);
 
-  return { started: true, runId: row.run_id };
+  return data as AmazonReportScheduleRow;
+}
+
+export async function markAmazonReportScheduleError(
+  scheduleId: string,
+  errorMessage: string,
+  erroredAt: Date = new Date(),
+): Promise<AmazonReportScheduleRow> {
+  const erroredAtIso = toIso(erroredAt);
+  const { data, error } = await supabaseAdmin
+    .from("amazon_report_schedules")
+    .update({
+      last_error_at: erroredAtIso,
+      last_error: errorMessage,
+      updated_at: erroredAtIso,
+    })
+    .eq("id", scheduleId)
+    .select("*")
+    .single();
+
+  if (error) throw new Error(error.message);
+
+  return data as AmazonReportScheduleRow;
 }
 
 export async function finishAmazonReportSyncRunSuccess(

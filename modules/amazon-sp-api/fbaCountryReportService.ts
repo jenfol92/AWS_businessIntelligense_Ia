@@ -22,18 +22,39 @@ import type { AmazonSpApiReportJobRow } from "./types";
 
 type RequestFbaCountryReportJobOptions = {
   marketplaceIds?: string[] | null;
+  source?: "manual" | "scheduler";
 };
+
+type RequestFbaCountryReportJobResult = {
+  job: AmazonSpApiReportJobRow;
+  reportId: string;
+  marketplaceIds: string[];
+  usedDefaultMarketplaceIds: boolean;
+};
+
+function hasImportedMarker(job: AmazonSpApiReportJobRow): boolean {
+  return Boolean(job.raw?.importedAt || job.raw?.importSummary);
+}
+
+function hasPreviewSummary(job: AmazonSpApiReportJobRow): boolean {
+  const summary = job.raw?.lastPreviewSummary;
+  return Boolean(summary && typeof summary === "object");
+}
 
 export async function requestFbaCountryReportJob(
   options: RequestFbaCountryReportJobOptions = {},
-): Promise<{
-  job: AmazonSpApiReportJobRow;
-  reportId: string;
-}> {
+): Promise<RequestFbaCountryReportJobResult> {
   const config = loadSpApiConfig();
+  const source = options.source ?? "manual";
+  const optionMarketplaceIds = options.marketplaceIds
+    ?.map((id) => id.trim())
+    .filter(Boolean);
   const marketplaceIds =
-    options.marketplaceIds?.map((id) => id.trim()).filter(Boolean) ??
-    config.marketplaceIds;
+    optionMarketplaceIds && optionMarketplaceIds.length > 0
+      ? optionMarketplaceIds
+      : config.marketplaceIds;
+  const usedDefaultMarketplaceIds =
+    !optionMarketplaceIds || optionMarketplaceIds.length === 0;
 
   if (marketplaceIds.length === 0) {
     throw new Error(
@@ -41,16 +62,30 @@ export async function requestFbaCountryReportJob(
     );
   }
 
+  const createReportPayload = {
+    reportType: FBA_COUNTRY_REPORT_TYPE,
+    marketplaceIds,
+  };
+
+  console.info("[amazon-sp-api] request fba country report", {
+    source,
+    reportType: FBA_COUNTRY_REPORT_TYPE,
+    marketplaceIdsCount: marketplaceIds.length,
+    marketplaceIds,
+    usedDefaultMarketplaceIds,
+    region: config.region,
+    endpoint: config.endpoint,
+    hasLwaRefreshToken: Boolean(config.lwaRefreshToken),
+    createReportPayload,
+  });
+
   const job = await createReportJob({
     reportType: FBA_COUNTRY_REPORT_TYPE,
     marketplaceIds,
   });
 
   try {
-    const { reportId } = await createReport({
-      reportType: FBA_COUNTRY_REPORT_TYPE,
-      marketplaceIds,
-    });
+    const { reportId } = await createReport(createReportPayload);
 
     const updated = await updateReportJob(job.id, {
       report_id: reportId,
@@ -58,9 +93,38 @@ export async function requestFbaCountryReportJob(
       processing_status: "IN_QUEUE",
     });
 
-    return { job: updated, reportId };
+    return {
+      job: updated,
+      reportId,
+      marketplaceIds,
+      usedDefaultMarketplaceIds,
+    };
   } catch (error) {
     const mapped = mapGenericError(error);
+    const amazonError =
+      mapped.details &&
+      typeof mapped.details === "object" &&
+      "errors" in mapped.details &&
+      Array.isArray((mapped.details as { errors: unknown[] }).errors)
+        ? (mapped.details as { errors: Array<{ code?: unknown; message?: unknown }> })
+            .errors[0]
+        : null;
+    console.error("[amazon-sp-api] createReport failed", {
+      source,
+      reportType: FBA_COUNTRY_REPORT_TYPE,
+      marketplaceIdsCount: marketplaceIds.length,
+      marketplaceIds,
+      region: config.region,
+      endpoint: config.endpoint,
+      hasLwaRefreshToken: Boolean(config.lwaRefreshToken),
+      createReportPayload,
+      errorName: mapped.name,
+      errorStatus: mapped.status ?? null,
+      errorCode: mapped.code,
+      errorMessage: mapped.message,
+      amazonErrorCode: amazonError?.code ?? null,
+      amazonErrorMessage: amazonError?.message ?? null,
+    });
     await updateReportJob(job.id, {
       status: "ERROR",
       error_message: mapped.message,
@@ -111,6 +175,22 @@ export async function downloadAndPreviewFbaCountryReportJob(jobId: string) {
   let job = await getReportJobById(jobId);
   if (!job) throw new Error("Job SP-API no encontrado.");
 
+  if (job.status === "IMPORTED" || hasImportedMarker(job)) {
+    throw new SpApiError(
+      "Este informe ya fue importado; no se puede volver a generar preview.",
+      "unknown",
+      409,
+    );
+  }
+
+  if (job.status === "PARSED_PREVIEW" && hasPreviewSummary(job)) {
+    throw new SpApiError(
+      "Este informe ya tiene preview generado.",
+      "unknown",
+      409,
+    );
+  }
+
   let reportContent = getReportContentFromJob(job);
 
   if (!reportContent) {
@@ -139,16 +219,26 @@ export async function downloadAndPreviewFbaCountryReportJob(jobId: string) {
     sourceFileName: `sp-api-${job.report_id ?? job.id}.txt`,
   });
 
-  await updateReportJob(jobId, {
+  const updated = await updateReportJob(jobId, {
     status: "PARSED_PREVIEW",
     raw: {
       ...(job.raw ?? {}),
       lastPreviewAt: new Date().toISOString(),
+      lastPreviewSummary: {
+        mode: preview.mode,
+        totalRows: preview.totalRows,
+        validRows: preview.validRows,
+        importableRows: preview.importableRows,
+        productsMatched: preview.validRows - preview.skippedUnlinkedRows,
+        productsUnmatched: preview.skippedUnlinkedRows,
+        countries: preview.rowsByCountry.map((row) => row.key),
+        warnings: preview.warnings.length,
+      },
     },
   });
 
   return {
-    job,
+    job: updated,
     preview,
   };
 }
@@ -157,7 +247,7 @@ export async function commitFbaCountryReportJob(jobId: string) {
   const job = await getReportJobById(jobId);
   if (!job) throw new Error("Job SP-API no encontrado.");
 
-  if (job.status === "IMPORTED") {
+  if (job.status === "IMPORTED" || hasImportedMarker(job)) {
     throw new SpApiError(
       "Este informe ya fue importado anteriormente.",
       "unknown",
@@ -168,6 +258,14 @@ export async function commitFbaCountryReportJob(jobId: string) {
   if (job.status !== "PARSED_PREVIEW") {
     throw new SpApiError(
       "Primero descarga la vista previa antes de importar.",
+      "unknown",
+      400,
+    );
+  }
+
+  if (job.processing_status !== "DONE") {
+    throw new SpApiError(
+      "El informe debe estar DONE antes de importar.",
       "unknown",
       400,
     );

@@ -1,0 +1,168 @@
+PROMPT_BASE_ANTI_DUPLICADOS — Regla obligatoria antes de crear o modificar código
+
+Aplica estas reglas SIEMPRE antes de implementar cualquier fase.
+
+## Objetivo
+
+Evitar duplicar funciones, hooks, componentes, servicios, endpoints, tipos, SQL, migraciones, RPCs, helpers o archivos que ya existan en el proyecto.
+
+Si algo ya existe, NO lo recrees con otro nombre ni en otra carpeta. Primero debes reutilizarlo, corregirlo, ampliarlo o integrarlo en el código existente.
+
+## Regla principal
+
+Antes de crear cualquier archivo, función, hook, componente, endpoint, tipo, helper, migración SQL o RPC:
+
+1. Busca si ya existe algo equivalente.
+2. Si existe, modifica/mejora lo existente.
+3. Si existe pero está incompleto, complétalo.
+4. Si existe pero está mal ubicado, informa y propón moverlo solo si es imprescindible.
+5. Si existe duplicado, no crees otro duplicado; indica cuál debe quedar como fuente canónica.
+6. Si no estás seguro de si algo existente sirve, detente y pregunta antes de crear algo nuevo.
+
+## Búsquedas obligatorias antes de crear
+
+Antes de crear cualquier cosa nueva, ejecutar búsquedas con `rg` o exploración de carpetas.
+
+Ejemplos:
+
+```powershell
+rg -n "nombreFuncion|nombreSimilar|conceptoRelacionado" app modules shared sql
+rg -n "useNombre|NombreComponent|NombreService|NombreRepository" app modules shared
+rg -n "CREATE OR REPLACE FUNCTION|CREATE FUNCTION|nombre_rpc|nombre_tabla|nombre_vista" sql
+rg -n "api/ruta|nombreEndpoint|route.ts" app modules
+```
+
+También revisar nombres similares, no solo el nombre exacto. Por ejemplo:
+
+```txt
+leadTime / lead_time / deliveryTime / transitTime
+forecast / replenishment / planner / annualForecast
+stockFba / fbaStock / ledgerStock / countryStock
+```
+
+## Archivos nuevos
+
+Solo puedes crear un archivo nuevo si cumples TODO esto:
+
+1. Has buscado equivalentes.
+2. No existe un archivo adecuado para ampliar.
+3. El nuevo archivo encaja con la arquitectura del proyecto.
+4. El nombre no duplica otro concepto existente.
+5. Explicas en el informe por qué era necesario crear archivo nuevo.
+
+Si existe un archivo del módulo que ya contiene lógica parecida, modifica ese archivo en vez de crear otro.
+
+## Funciones nuevas
+
+Antes de crear una función nueva:
+
+1. Busca si existe una función equivalente.
+2. Si existe, reutilízala.
+3. Si existe pero no cubre el caso, amplíala manteniendo compatibilidad.
+4. No crees `buildX2`, `buildXNew`, `resolveXFixed`, `fetchXOptimized` ni nombres similares salvo que el usuario lo pida expresamente.
+5. Mantén contratos públicos existentes siempre que sea posible.
+
+## Hooks y componentes React
+
+Antes de crear un hook o componente:
+
+1. Buscar si ya existe un hook/componente con esa responsabilidad.
+2. No crear otro hook si uno existente puede ampliarse.
+3. No duplicar estado si ya hay estado canónico.
+4. No duplicar llamadas a API si ya existe cliente o service.
+5. No meter lógica pesada en `page.tsx`.
+
+## Endpoints API
+
+Antes de crear un endpoint:
+
+1. Buscar si ya existe una ruta similar en `app/api`.
+2. Revisar si existe servicio en `modules`.
+3. No duplicar endpoints con nombres distintos para el mismo caso.
+4. Si el endpoint existente sirve, ampliarlo de forma compatible.
+5. Si hace falta un endpoint nuevo, justificarlo.
+
+## SQL, migraciones, vistas y RPC
+
+Antes de crear migración, vista, función SQL o RPC:
+
+1. Buscar en `sql/migrations`, `sql/diagnostics` y código.
+2. Si la función/vista/RPC ya existe, no crear otra con otro nombre.
+3. Si una migración pendiente ya contiene el objeto y aún no está consolidada, modificar esa migración pendiente si procede.
+4. Si el objeto ya existe en migraciones históricas, crear una migración nueva idempotente con `CREATE OR REPLACE` o `ALTER`, no duplicar el objeto.
+5. No crear dos RPCs que hagan lo mismo.
+6. No crear tablas nuevas si ya existe una tabla operativa o histórica equivalente.
+7. Si dudas entre tabla, vista, RPC o repositorio, detente e informa.
+
+## Repositorios, services y arquitectura
+
+Respeta la arquitectura del proyecto:
+
+```txt
+app/       → rutas, pages, layouts, route.ts
+modules/   → lógica de negocio por módulo
+shared/    → utilidades compartidas
+sql/       → migraciones y diagnósticos SQL
+```
+
+No metas lógica pesada en `app`.
+No importes Supabase directamente desde componentes.
+No mezcles lógica de módulos distintos si no es necesario.
+No crees carpetas paralelas si ya existe módulo correcto.
+
+## Regla de mejora sobre duplicación
+
+Si encuentras algo existente pero deficiente:
+
+```txt
+MAL:
+Crear otra función nueva con nombre parecido.
+
+BIEN:
+Mejorar la función existente, manteniendo su contrato si se usa en más sitios.
+```
+
+Si el contrato actual no permite la mejora, proponer cambio compatible o fase separada.
+
+## Si detectas duplicados ya existentes
+
+No los arregles automáticamente salvo que la fase lo pida.
+
+Debes informar:
+
+```txt
+Duplicado detectado:
+- Archivo/función A
+- Archivo/función B
+- Diferencia entre ambos
+- Recomendación de cuál debe quedar como fuente canónica
+```
+
+Y detenerte si corregirlo queda fuera del alcance.
+
+## Informe obligatorio en cada fase
+
+Al terminar, informa siempre:
+
+```txt
+1. Qué búsquedas hiciste para evitar duplicados.
+2. Qué elementos existentes encontraste.
+3. Si reutilizaste, modificaste o ampliaste algo existente.
+4. Si creaste archivos nuevos, justificar por qué no existía alternativa.
+5. Confirmar que no duplicaste funciones/hooks/componentes/endpoints/RPCs.
+6. Confirmar que no tocaste módulos fuera del alcance.
+7. Archivos modificados.
+8. Archivos nuevos, si los hay.
+9. Resultado de npx.cmd tsc --noEmit.
+10. Resultado de npm.cmd run build.
+```
+
+## Regla de detención
+
+Si para cumplir la fase necesitas crear algo nuevo pero encuentras algo parecido y no está claro si debes reutilizarlo o sustituirlo:
+
+DETENTE.
+
+No improvises.
+
+Devuelve informe y pregunta antes de crear duplicados.

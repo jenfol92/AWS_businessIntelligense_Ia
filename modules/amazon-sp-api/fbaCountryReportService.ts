@@ -20,20 +20,36 @@ import {
 import { importAmazonFbaInventoryByCountryFromText } from "@/modules/imports/amazon-fba-inventory-by-country/service";
 import type { AmazonSpApiReportJobRow } from "./types";
 
-export async function requestFbaCountryReportJob(): Promise<{
+type RequestFbaCountryReportJobOptions = {
+  marketplaceIds?: string[] | null;
+};
+
+export async function requestFbaCountryReportJob(
+  options: RequestFbaCountryReportJobOptions = {},
+): Promise<{
   job: AmazonSpApiReportJobRow;
   reportId: string;
 }> {
   const config = loadSpApiConfig();
+  const marketplaceIds =
+    options.marketplaceIds?.map((id) => id.trim()).filter(Boolean) ??
+    config.marketplaceIds;
+
+  if (marketplaceIds.length === 0) {
+    throw new Error(
+      "Faltan credenciales SP-API. Revisa .env.local. (AMAZON_MARKETPLACE_*)",
+    );
+  }
+
   const job = await createReportJob({
     reportType: FBA_COUNTRY_REPORT_TYPE,
-    marketplaceIds: config.marketplaceIds,
+    marketplaceIds,
   });
 
   try {
     const { reportId } = await createReport({
       reportType: FBA_COUNTRY_REPORT_TYPE,
-      marketplaceIds: config.marketplaceIds,
+      marketplaceIds,
     });
 
     const updated = await updateReportJob(job.id, {

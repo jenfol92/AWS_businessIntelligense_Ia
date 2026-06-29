@@ -74,6 +74,7 @@ export async function startAmazonReportSyncRun(
 export async function finishAmazonReportSyncRunSuccess(
   runId: string,
   summary: Record<string, unknown> | null = null,
+  amazonReportJobId: string | null = null,
 ): Promise<AmazonReportSyncRunRow> {
   const finishedAt = new Date().toISOString();
   const { data, error } = await supabaseAdmin
@@ -81,6 +82,7 @@ export async function finishAmazonReportSyncRunSuccess(
     .update({
       status: "SUCCESS",
       finished_at: finishedAt,
+      amazon_report_job_id: amazonReportJobId,
       summary,
       error: null,
     })

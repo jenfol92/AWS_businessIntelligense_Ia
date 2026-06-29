@@ -153,3 +153,5 @@ build/
 
 # Específicos de Drive
 credentials-drive.json
+# Carpetas internas de agentes/herramientas
+.agents/

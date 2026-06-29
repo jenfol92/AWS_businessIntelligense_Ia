@@ -68,7 +68,7 @@ where connamespace = 'public'::regnamespace
     'finance_supplier_payments_source_type_check',
     'finance_supplier_payments_source_target_check'
   )
-order by table_name::text, conname;
+order by conrelid::regclass::text, conname;
 
 -- 4) Indices de agrupacion e idempotencia
 select

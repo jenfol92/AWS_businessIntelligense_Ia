@@ -10,6 +10,7 @@ export type FetchInventoryDetailParams = {
   windowDays?: number;
   forecastOverride?: ProductForecastConfigUpsertBody | null;
   debugStockout?: boolean;
+  signal?: AbortSignal;
 };
 
 export async function fetchInventoryProductDetail(
@@ -29,7 +30,7 @@ export async function fetchInventoryProductDetail(
 
   const res = await fetch(
     `/api/inventory/product/${encodeURIComponent(productId)}?${q.toString()}`,
-    { cache: "no-store" },
+    { cache: "no-store", signal: params.signal },
   );
   const json = (await res.json()) as InventoryProductDetailResponse | {
     ok: false;

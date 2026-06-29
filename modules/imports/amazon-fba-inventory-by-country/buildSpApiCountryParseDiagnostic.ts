@@ -7,7 +7,7 @@
 
 import { extractTwinlySkuFromSellerSku } from "@/modules/imports/shared/twinlySku";
 import { parseAmazonFbaCountryInventoryFromText } from "./parser";
-import { loadProductIdsBySku } from "./repository";
+import { loadProductIdsBySku, loadInventarioPaisesStockFbaByProductIds } from "./repository";
 import type { FbaCountryParseResult, ParsedFbaCountryRow } from "./types";
 
 const ROWS_PREVIEW_LIMIT = 10;
@@ -55,6 +55,34 @@ type GroupedImportPreviewRow = {
   productoId: string | null;
 };
 
+export type SpApiFbaCountryInventoryDeltaRow = {
+  cleanTwinlySku: string;
+  productoId: string;
+  country: string;
+  currentStockFba: number | null;
+  newStockFba: number;
+  delta: number;
+  status: "new" | "increase" | "decrease" | "unchanged";
+};
+
+export type SpApiFbaCountryCurrentInventoryDelta = {
+  comparedRows: number;
+  currentTotalQuantity: number;
+  newTotalQuantity: number;
+  deltaTotalQuantity: number;
+  rowsIncreasing: number;
+  rowsDecreasing: number;
+  rowsUnchanged: number;
+  rowsMissingCurrent: number;
+  largestIncreases: Array<
+    Omit<SpApiFbaCountryInventoryDeltaRow, "status">
+  >;
+  largestDecreases: Array<
+    Omit<SpApiFbaCountryInventoryDeltaRow, "status">
+  >;
+  rowsPreview: SpApiFbaCountryInventoryDeltaRow[];
+};
+
 export type SpApiFbaCountryImportPreview = {
   twinlyRowCount: number;
   nonTwinlyRowCount: number;
@@ -71,11 +99,12 @@ export type SpApiFbaCountryImportPreview = {
   }>;
   rowsPreview: GroupedImportPreviewRow[];
   unmatchedPreview: GroupedImportPreviewRow[];
+  currentInventoryDelta: SpApiFbaCountryCurrentInventoryDelta;
   supabaseReadOnly: {
     description: string;
-    table: "productos";
-    operation: "SELECT id, sku FROM productos WHERE sku IN (...skusLimpios)";
-    matchRule: "productos.sku = skuLimpio extraido con /843661661\\d{4}/";
+    tables: Array<"productos" | "inventario_paises">;
+    operations: string[];
+    matchRule: string;
     writes: false;
   };
 };
@@ -276,6 +305,117 @@ function sortGroupedPreviewRows(rows: GroupedImportPreviewRow[]) {
   );
 }
 
+function resolveInventoryDeltaStatus(
+  currentStockFba: number | null,
+  delta: number,
+): SpApiFbaCountryInventoryDeltaRow["status"] {
+  if (currentStockFba == null) return "new";
+  if (delta > 0) return "increase";
+  if (delta < 0) return "decrease";
+  return "unchanged";
+}
+
+function toInventoryDeltaRow(
+  row: GroupedImportPreviewRow,
+  currentStockFba: number | null,
+): SpApiFbaCountryInventoryDeltaRow {
+  const newStockFba = row.quantity;
+  const delta = newStockFba - (currentStockFba ?? 0);
+  return {
+    cleanTwinlySku: row.cleanTwinlySku,
+    productoId: row.productoId!,
+    country: row.country,
+    currentStockFba,
+    newStockFba,
+    delta,
+    status: resolveInventoryDeltaStatus(currentStockFba, delta),
+  };
+}
+
+function toInventoryDeltaSample(
+  row: SpApiFbaCountryInventoryDeltaRow,
+): Omit<SpApiFbaCountryInventoryDeltaRow, "status"> {
+  return {
+    cleanTwinlySku: row.cleanTwinlySku,
+    productoId: row.productoId,
+    country: row.country,
+    currentStockFba: row.currentStockFba,
+    newStockFba: row.newStockFba,
+    delta: row.delta,
+  };
+}
+
+/**
+ * Compara stock FBA nuevo (preview) vs inventario_paises actual. Solo lectura.
+ */
+async function buildCurrentInventoryDelta(
+  groupedRows: GroupedImportPreviewRow[],
+): Promise<SpApiFbaCountryCurrentInventoryDelta> {
+  const comparableRows = groupedRows.filter(
+    (row): row is GroupedImportPreviewRow & { productoId: string } =>
+      row.productMatched && row.productoId != null,
+  );
+
+  const productoIds = comparableRows.map((row) => row.productoId);
+  const currentByKey = await loadInventarioPaisesStockFbaByProductIds(productoIds);
+
+  const deltaRows = comparableRows.map((row) => {
+    const current = currentByKey.get(`${row.productoId}::${row.country}`);
+    const currentStockFba = current ? current.stock_fba : null;
+    return toInventoryDeltaRow(row, currentStockFba);
+  });
+
+  let currentTotalQuantity = 0;
+  let newTotalQuantity = 0;
+  let rowsIncreasing = 0;
+  let rowsDecreasing = 0;
+  let rowsUnchanged = 0;
+  let rowsMissingCurrent = 0;
+
+  for (const row of deltaRows) {
+    newTotalQuantity += row.newStockFba;
+    currentTotalQuantity += row.currentStockFba ?? 0;
+
+    if (row.status === "new") rowsMissingCurrent++;
+    else if (row.status === "increase") rowsIncreasing++;
+    else if (row.status === "decrease") rowsDecreasing++;
+    else rowsUnchanged++;
+  }
+
+  const sortedByDelta = [...deltaRows].sort(
+    (a, b) =>
+      Math.abs(b.delta) - Math.abs(a.delta) ||
+      b.newStockFba - a.newStockFba ||
+      a.cleanTwinlySku.localeCompare(b.cleanTwinlySku),
+  );
+
+  const increases = deltaRows
+    .filter((row) => row.delta > 0)
+    .sort((a, b) => b.delta - a.delta || a.country.localeCompare(b.country))
+    .slice(0, IMPORT_PREVIEW_LIMIT)
+    .map(toInventoryDeltaSample);
+
+  const decreases = deltaRows
+    .filter((row) => row.delta < 0)
+    .sort((a, b) => a.delta - b.delta || a.country.localeCompare(b.country))
+    .slice(0, IMPORT_PREVIEW_LIMIT)
+    .map(toInventoryDeltaSample);
+
+  return {
+    comparedRows: deltaRows.length,
+    currentTotalQuantity,
+    newTotalQuantity,
+    deltaTotalQuantity: newTotalQuantity - currentTotalQuantity,
+    rowsIncreasing,
+    rowsDecreasing,
+    rowsUnchanged,
+    rowsMissingCurrent,
+    largestIncreases: increases,
+    largestDecreases: decreases,
+    rowsPreview: sortedByDelta.slice(0, IMPORT_PREVIEW_LIMIT),
+  };
+}
+
 /**
  * Preview de importacion Twinly agrupado por skuLimpio + pais.
  * Fuente: parsed.validRows del parser Twinly (no structuredRows).
@@ -331,6 +471,7 @@ async function buildImportPreview(
   const unmatchedRows = sortGroupedPreviewRows(
     groupedRows.filter((row) => !row.productMatched),
   );
+  const currentInventoryDelta = await buildCurrentInventoryDelta(groupedRows);
 
   return {
     twinlyRowCount: parsed.twinlyRows,
@@ -347,11 +488,15 @@ async function buildImportPreview(
       ),
     rowsPreview: sortedGroupedRows.slice(0, IMPORT_PREVIEW_LIMIT),
     unmatchedPreview: unmatchedRows.slice(0, IMPORT_PREVIEW_LIMIT),
+    currentInventoryDelta,
     supabaseReadOnly: {
       description:
-        "Consulta Supabase de solo lectura para enlazar skuLimpio con productos.sku.",
-      table: "productos",
-      operation: "SELECT id, sku FROM productos WHERE sku IN (...skusLimpios)",
+        "Consultas Supabase de solo lectura para match de producto y delta vs inventario actual.",
+      tables: ["productos", "inventario_paises"],
+      operations: [
+        "SELECT id, sku FROM productos WHERE sku IN (...skusLimpios)",
+        "SELECT producto_id, pais, stock_fba, updated_at FROM inventario_paises WHERE producto_id IN (...productoIds)",
+      ],
       matchRule: "productos.sku = skuLimpio extraido con /843661661\\d{4}/",
       writes: false,
     },

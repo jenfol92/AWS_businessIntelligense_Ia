@@ -691,7 +691,7 @@ export async function fetchProductFbaStockDailyByYear(
   return result;
 }
 
-type FbaStockDailyFullRow = {
+type LatestFbaLedgerStockRpcRow = {
   producto_id: string;
   snapshot_date: string;
   stock_sellable: number | null;
@@ -712,63 +712,28 @@ export async function fetchLatestFbaLedgerStockByProductIds(
   if (productIds.length === 0) return result;
 
   const supabase = createSupabaseRouteClient();
-  const byProductDate = new Map<
-    string,
-    { snapshotDate: string; sellable: number; total: number }
-  >();
 
   for (const chunk of chunkArray(productIds, 100)) {
-    let offset = 0;
-    const pageSize = 1000;
+    const { data, error } = await supabase.rpc(
+      "get_latest_fba_ledger_stock_by_products",
+      { product_ids: chunk },
+    );
 
-    for (;;) {
-      const { data, error } = await supabase
-        .from("v_product_fba_stock_daily")
-        .select("producto_id, snapshot_date, stock_sellable, stock_total")
-        .in("producto_id", chunk)
-        .order("snapshot_date", { ascending: false })
-        .range(offset, offset + pageSize - 1);
-
-      if (error) throw new Error(error.message);
-
-      const rows = (data ?? []) as FbaStockDailyFullRow[];
-      for (const row of rows) {
-        if (!row.producto_id) continue;
-        const pid = row.producto_id;
-        const date = row.snapshot_date.slice(0, 10);
-        const existing = byProductDate.get(pid);
-        if (!existing) {
-          byProductDate.set(pid, {
-            snapshotDate: date,
-            sellable: Number(row.stock_sellable ?? 0),
-            total: Number(row.stock_total ?? 0),
-          });
-          continue;
-        }
-        if (date < existing.snapshotDate) continue;
-        if (date > existing.snapshotDate) {
-          byProductDate.set(pid, {
-            snapshotDate: date,
-            sellable: Number(row.stock_sellable ?? 0),
-            total: Number(row.stock_total ?? 0),
-          });
-          continue;
-        }
-        existing.sellable += Number(row.stock_sellable ?? 0);
-        existing.total += Number(row.stock_total ?? 0);
-      }
-
-      if (rows.length < pageSize) break;
-      offset += pageSize;
+    if (error) {
+      throw new Error(
+        "No se pudo obtener latest FBA ledger stock. Revisa que la migración get_latest_fba_ledger_stock_by_products esté aplicada.",
+      );
     }
-  }
 
-  for (const [pid, agg] of Array.from(byProductDate.entries())) {
-    result.set(pid, {
-      snapshotDate: agg.snapshotDate,
-      stockSellable: agg.sellable,
-      stockTotal: agg.total,
-    });
+    const rows = (data ?? []) as LatestFbaLedgerStockRpcRow[];
+    for (const row of rows) {
+      if (!row.producto_id || !row.snapshot_date) continue;
+      result.set(String(row.producto_id), {
+        snapshotDate: row.snapshot_date.slice(0, 10),
+        stockSellable: Number(row.stock_sellable ?? 0),
+        stockTotal: Number(row.stock_total ?? 0),
+      });
+    }
   }
 
   return result;

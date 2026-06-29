@@ -5,7 +5,7 @@
 "use client";
 
 import Link from "next/link";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import {
   AlertCircle,
@@ -78,6 +78,40 @@ function fmtDate(iso: string | null | undefined): string {
   const d = new Date(`${iso.slice(0, 10)}T00:00:00`);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("es-ES");
+}
+
+const FORECAST_COUNTRY_LABELS: Record<string, string> = {
+  ALL: "Todos los países",
+  EU: "Unión Europea",
+  ES: "España",
+  FR: "Francia",
+  DE: "Alemania",
+  IT: "Italia",
+  GB: "Reino Unido",
+  PL: "Polonia",
+  SE: "Suecia",
+  PT: "Portugal",
+  NL: "Países Bajos",
+  BE: "Bélgica",
+  AT: "Austria",
+  LU: "Luxemburgo",
+  DK: "Dinamarca",
+};
+
+function forecastCountryHumanLabel(code: string): string {
+  return FORECAST_COUNTRY_LABELS[code.toUpperCase()] ?? code;
+}
+
+function forecastChannelHumanLabel(channel: string): string {
+  const c = channel.toUpperCase();
+  if (c === "ALL") return "Todos los canales";
+  if (c === "AMAZON_FBA" || c === "FBA") return "FBA";
+  if (c === "AMAZON_FBM" || c === "FBM") return "FBM";
+  return channel;
+}
+
+function forecastScopeHumanLabel(country: string, channel: string): string {
+  return `${forecastCountryHumanLabel(country)} · ${forecastChannelHumanLabel(channel)}`;
 }
 
 function buildComparisonUrl(filters: {
@@ -160,6 +194,9 @@ export function InventoryPage() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [simulationOverride, setSimulationOverride] =
     useState<ProductForecastConfigUpsertBody | null>(null);
+  const activeDetailAbortRef = useRef<AbortController | null>(null);
+  const detailRequestIdRef = useRef(0);
+  const simulationProductIdRef = useRef<string | null>(null);
 
   const [expandedPais, setExpandedPais] = useState<string | null>(null);
   const [lotesData, setLotesData] = useState<InventoryLotesResponse | null>(null);
@@ -205,16 +242,14 @@ export function InventoryPage() {
         return;
       }
       setListData(json);
-      if (!selectedId && json.products[0]) {
-        setSelectedId(json.products[0].productoId);
-      }
+      setSelectedId((current) => current ?? json.products[0]?.productoId ?? null);
     } catch (e) {
       setListError(e instanceof Error ? e.message : "Error de red");
       setListData(null);
     } finally {
       setListLoading(false);
     }
-  }, [comparisonUrl, selectedId]);
+  }, [comparisonUrl]);
 
   useEffect(() => {
     void loadList();
@@ -227,12 +262,21 @@ export function InventoryPage() {
         : null,
     [listData, selectedId, variantByParent],
   );
+  const isSimulationActiveForSelectedProduct =
+    simulationOverride != null &&
+    selectedProduct?.productoId != null &&
+    simulationProductIdRef.current === selectedProduct.productoId;
 
   const loadDetail = useCallback(
     async (
       productId: string,
       forecastOverride?: ProductForecastConfigUpsertBody | null,
     ) => {
+      activeDetailAbortRef.current?.abort();
+      const requestId = detailRequestIdRef.current + 1;
+      detailRequestIdRef.current = requestId;
+      const controller = new AbortController();
+      activeDetailAbortRef.current = controller;
       setDetailLoading(true);
       setDetailError(null);
       try {
@@ -242,25 +286,47 @@ export function InventoryPage() {
           windowDays,
           forecastOverride: forecastOverride ?? undefined,
           debugStockout: showStockoutDebug,
+          signal: controller.signal,
         });
+        if (detailRequestIdRef.current !== requestId) return;
         setDetail(json);
       } catch (e) {
+        if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+          return;
+        }
+        if (detailRequestIdRef.current !== requestId) return;
         setDetailError(e instanceof Error ? e.message : "Error de red");
         setDetail(null);
       } finally {
-        setDetailLoading(false);
+        if (detailRequestIdRef.current === requestId) {
+          setDetailLoading(false);
+          if (activeDetailAbortRef.current === controller) {
+            activeDetailAbortRef.current = null;
+          }
+        }
       }
     },
     [canal, pais, windowDays, showStockoutDebug],
   );
 
   useEffect(() => {
+    simulationProductIdRef.current = null;
     setSimulationOverride(null);
   }, [selectedId]);
 
   useEffect(() => {
+    return () => {
+      activeDetailAbortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!selectedProduct?.productoId) return;
-    void loadDetail(selectedProduct.productoId, simulationOverride);
+    const effectiveOverride =
+      simulationProductIdRef.current === selectedProduct.productoId
+        ? simulationOverride
+        : null;
+    void loadDetail(selectedProduct.productoId, effectiveOverride);
   }, [
     selectedProduct?.productoId,
     loadDetail,
@@ -545,11 +611,12 @@ export function InventoryPage() {
                           }
                           onChange={(e) => {
                             const v = e.target.value;
+                            simulationProductIdRef.current = null;
+                            setSimulationOverride(null);
                             setVariantByParent((prev) => ({
                               ...prev,
                               [parentOfSelected.productoId]: v,
                             }));
-                            void loadDetail(v);
                           }}
                           className="mt-2 rounded-lg border border-slate-200 px-2 py-1 text-xs"
                         >
@@ -639,7 +706,11 @@ export function InventoryPage() {
               </Card>
 
               <Card className="ring-1 ring-slate-100 p-4">
-                <Title className="text-base mb-3">Entradas previstas</Title>
+                <Title className="text-base mb-1">Entradas previstas</Title>
+                <Text className="mb-3 text-xs text-slate-500">
+                  Entradas ya registradas en pedidos y logística. El forecast anual las
+                  incorpora como stock futuro en la simulación mensual.
+                </Text>
                 <InboundSection inbound={detail.inbound} locale={locale} />
               </Card>
 
@@ -647,7 +718,7 @@ export function InventoryPage() {
                 <Title className="text-base mb-3">Simulación de forecast</Title>
                 <InventoryForecastSimulationPanel
                   productId={detail.product.productoId}
-                  isSimulationActive={simulationOverride != null}
+                  isSimulationActive={isSimulationActiveForSelectedProduct}
                   dataAvailability={
                     detail.annualForecast.methodInfo?.dataAvailability ?? {
                       hasOwnSales: detail.annualForecast.previousYearTotalUnits > 0,
@@ -659,9 +730,11 @@ export function InventoryPage() {
                     detail.product.risk === "bajo"
                   }
                   onSimulate={async (override) => {
+                    simulationProductIdRef.current = detail.product.productoId;
                     setSimulationOverride(override);
                   }}
                   onSaved={async () => {
+                    simulationProductIdRef.current = null;
                     setSimulationOverride(null);
                   }}
                 />
@@ -671,15 +744,19 @@ export function InventoryPage() {
                 <Title className="text-base mb-2">Forecast / reposición</Title>
                 <ForecastPanel
                   detail={detail}
-                  simulationActive={simulationOverride != null}
+                  simulationActive={isSimulationActiveForSelectedProduct}
                 />
               </Card>
 
               <Card className="ring-1 ring-slate-100 p-4">
-                <Title className="text-base mb-2">Forecast anual</Title>
+                <Title className="text-base mb-1">Forecast anual</Title>
+                <Text className="mb-3 text-xs text-slate-500">
+                  Combina histórico del año base, stock operativo actual y entradas
+                  previstas para proyectar el año en curso.
+                </Text>
                 <AnnualForecastPanel
                   detail={detail}
-                  simulationActive={simulationOverride != null}
+                  simulationActive={isSimulationActiveForSelectedProduct}
                   showStockoutDebug={showStockoutDebug}
                 />
               </Card>
@@ -695,6 +772,19 @@ export function InventoryPage() {
   );
 }
 
+function operationalFbaSourceLabel(
+  source: NonNullable<InventoryProductDetailResponse["operationalStock"]>["stockOperationalFbaSource"],
+): string {
+  switch (source) {
+    case "country_inventory":
+      return "stock por país actualizado";
+    case "ledger":
+      return "ledger FBA";
+    default:
+      return "sin stock FBA registrado";
+  }
+}
+
 function OperationalStockPanel({
   stock,
 }: {
@@ -708,20 +798,15 @@ function OperationalStockPanel({
     <Card className="ring-1 ring-slate-100 p-4">
       <Title className="text-base mb-3">Stock operativo</Title>
       <div className="space-y-2 text-sm text-slate-800">
-        {stock.stockFbaLatestLedger != null && stock.stockFbaLatestLedgerDate ? (
-          <p>
-            <span className="text-slate-500">FBA ledger último: </span>
-            <span className="font-semibold">
-              {fmtNum(stock.stockFbaLatestLedger)} uds
-            </span>
-            <span className="text-slate-500">
-              {" "}
-              · fecha {fmtDate(stock.stockFbaLatestLedgerDate)}
-            </span>
-          </p>
-        ) : (
-          <p className="text-slate-500">Sin snapshot FBA ledger importado.</p>
-        )}
+        <p>
+          <span className="text-slate-500">Stock FBA operativo usado: </span>
+          <span className="font-semibold text-slate-900">
+            {fmtNum(stock.stockOperationalFba)} uds
+          </span>
+        </p>
+        <p className="text-xs text-slate-500">
+          Fuente: {operationalFbaSourceLabel(stock.stockOperationalFbaSource)}
+        </p>
         <p>
           <span className="text-slate-500">FBM: </span>
           <span className="font-semibold">{fmtNum(stock.stockOperationalFbm)} uds</span>
@@ -733,9 +818,19 @@ function OperationalStockPanel({
           </span>
         </p>
         <p className="text-xs text-slate-500">
-          Stock por país registrado (inventario_paises):{" "}
-          {countrySummary || "—"} · FBA app {fmtNum(stock.stockFbaApp)} uds
+          Stock por país (inventario_paises): {countrySummary || "—"}
         </p>
+        {stock.stockFbaLatestLedger != null && stock.stockFbaLatestLedgerDate ? (
+          <p className="text-xs text-slate-500">
+            Referencia ledger FBA: {fmtNum(stock.stockFbaLatestLedger)} uds ·{" "}
+            {fmtDate(stock.stockFbaLatestLedgerDate)}
+            <span className="block text-[11px] text-slate-400">
+              Solo auditoría; no es el stock FBA operativo actual.
+            </span>
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500">Sin referencia ledger FBA importada.</p>
+        )}
         {stock.stockFbaDiscrepancy ? (
           <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
             {stock.discrepancyMessage}
@@ -971,7 +1066,7 @@ function InboundSection({
               <th className="py-2 pr-3">Pedido agente</th>
               <th className="py-2 pr-3">Contenedor</th>
               <th className="py-2 pr-3">ETA</th>
-              <th className="py-2 pr-3">Tipo</th>
+              <th className="py-2 pr-3">Tipo de entrada</th>
               <th className="py-2 pr-3 text-right">Uds</th>
               <th className="py-2 pr-3">Estado</th>
               <th className="py-2 pr-3">Enlace</th>
@@ -1035,7 +1130,7 @@ function InboundSection({
                   label: "ETA",
                   value: `${fmtDate(row.eta)}${row.confidence === "provisional" ? " (orden)" : row.etaSource === "container" ? " (contenedor)" : ""}`,
                 },
-                { label: "Tipo", value: inboundTypeLabel(row) },
+                { label: "Tipo de entrada", value: inboundTypeLabel(row) },
                 { label: "Unidades", value: fmtNum(row.cantidadPendiente) },
                 { label: "Estado", value: row.estado },
               ]}
@@ -1157,7 +1252,7 @@ function monthlyInboundDetailRows(
         value: "Mes pasado (histórico)",
       },
       {
-        label: "Año anterior",
+        label: "Ventas mismo mes año base",
         value: fmtNum(line.previousYearSalesUnits),
       },
     ];
@@ -1172,7 +1267,10 @@ function monthlyInboundDetailRows(
         tone: "inbound",
       });
     } else if ((line.inboundUnits ?? 0) === 0) {
-      rows.push({ label: "Entradas", value: "Sin entradas previstas este mes" });
+      rows.push({
+        label: "Entradas registradas",
+        value: "Sin entradas previstas este mes",
+      });
     }
     rows.push(
       { label: "Ventas servidas", value: fmtNum(line.servedUnits) },
@@ -1419,10 +1517,15 @@ function StockoutHistoricalCorrectionPanel({
 
   return (
     <div className="rounded-lg border border-violet-100 bg-violet-50/60 p-3 text-xs text-violet-950 space-y-2">
-      <p className="font-semibold">Corrección por rotura histórica ({baseYear})</p>
+      <p className="font-semibold">Base histórica corregida {baseYear}</p>
+      <p className="text-violet-900">
+        Esta tabla recalcula la demanda del año base. Parte de las ventas reales de{" "}
+        {baseYear} y estima ventas perdidas cuando hubo días sin stock. No es una
+        simulación futura.
+      </p>
       <div className="grid gap-2 sm:grid-cols-2">
-        <p>Ventas reales: {fmtNum(correction.totalActualSales)} uds</p>
-        <p>Demanda corregida: {fmtNum(correction.totalCorrectedSales)} uds</p>
+        <p>Ventas reales {baseYear}: {fmtNum(correction.totalActualSales)} uds</p>
+        <p>Demanda corregida {baseYear}: {fmtNum(correction.totalCorrectedSales)} uds</p>
         <p>Demanda no servida estimada: {fmtNum(correction.totalEstimatedLostDemand)} uds</p>
         <p>Meses con rotura: {correction.correctedMonthsCount}</p>
       </div>
@@ -1445,7 +1548,7 @@ function StockoutHistoricalCorrectionPanel({
             ) : (
               <ChevronRight className="h-3.5 w-3.5" />
             )}
-            Detalle mensual corregido
+            Desglose mensual año base {baseYear}
           </button>
           {expanded ? (
             <div className="overflow-x-auto">
@@ -1453,11 +1556,11 @@ function StockoutHistoricalCorrectionPanel({
                 <thead>
                   <tr className="border-b border-violet-200 text-left">
                     <th className="py-1 pr-2">Mes</th>
-                    <th className="py-1 pr-2 text-right">Ventas reales</th>
+                    <th className="py-1 pr-2 text-right">Ventas reales {baseYear}</th>
                     <th className="py-1 pr-2 text-right">Días c/stock</th>
                     <th className="py-1 pr-2 text-right">Días rotura</th>
-                    <th className="py-1 pr-2 text-right">Forecast corr.</th>
-                    <th className="py-1 pr-2 text-right">Demanda perdida</th>
+                    <th className="py-1 pr-2 text-right">Demanda corr. {baseYear}</th>
+                    <th className="py-1 pr-2 text-right">Demanda no servida est.</th>
                     <th className="py-1 pr-2">Conf.</th>
                   </tr>
                 </thead>
@@ -1533,8 +1636,11 @@ function ForecastPanel({
         />
       ) : null}
       <Text className="text-xs text-slate-500">
-        Corto plazo · ventana {detail.recentWindowDays} días ·{" "}
-        {detail.annualForecast.country}/{detail.annualForecast.channel}
+        Corto plazo · ventana {detail.recentWindowDays} días · Alcance:{" "}
+        {forecastScopeHumanLabel(
+          detail.annualForecast.country,
+          detail.annualForecast.channel,
+        )}
       </Text>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-lg border border-slate-100 p-2">
@@ -1631,6 +1737,10 @@ function AnnualForecastPanel({
       : af.channel === "AMAZON_FBM"
         ? "FBM"
         : "ALL";
+  const scopeHumanLabel = forecastScopeHumanLabel(af.country, af.channel);
+  const usesStockoutCorrectedMethod =
+    af.stockoutCorrection?.applied === true ||
+    displayMethod.toLowerCase().includes("corregido");
 
   const operationalMonthlyPlan = af.monthlyPlan.filter(
     (line) => line.isOperationalMonth !== false,
@@ -1661,29 +1771,55 @@ function AnnualForecastPanel({
         />
       ) : null}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-lg border border-slate-100 p-2">
+        <div className="rounded-lg border border-slate-100 p-2 sm:col-span-2">
           <Text className="text-[10px] uppercase text-slate-400">Alcance</Text>
-          <p className="text-sm font-semibold">
-            {af.country} / {channelLabel}
+          <p className="text-sm font-semibold">{scopeHumanLabel}</p>
+          <p className="mt-0.5 text-[10px] text-slate-500">
+            Filtro técnico: {af.country} / {channelLabel}
           </p>
         </div>
         <div className="rounded-lg border border-slate-100 p-2">
-          <Text className="text-[10px] uppercase text-slate-400">Base</Text>
-          <p className="text-sm font-semibold">Año {af.baseYear}</p>
+          <Text className="text-[10px] uppercase text-slate-400">Año base</Text>
+          <p className="text-sm font-semibold">{af.baseYear}</p>
         </div>
         <div className="rounded-lg border border-slate-100 p-2">
-          <Text className="text-[10px] uppercase text-slate-400">Ventas base</Text>
+          <Text className="text-[10px] uppercase text-slate-400">
+            Ventas reales año base {af.baseYear}
+          </Text>
           <p className="text-sm font-semibold">{fmtNum(af.previousYearTotalUnits)} uds</p>
+          {af.stockoutCorrection?.applied ? (
+            <p className="mt-1 text-[10px] text-slate-600">
+              Demanda corregida usada:{" "}
+              {fmtNum(af.stockoutCorrection.totalCorrectedSales)} uds/año
+            </p>
+          ) : null}
         </div>
-        <div className="rounded-lg border border-slate-100 p-2">
-          <Text className="text-[10px] uppercase text-slate-400">Stock apertura</Text>
+        <div className="rounded-lg border border-slate-100 p-2 sm:col-span-2">
+          <Text className="text-[10px] uppercase text-slate-400">
+            Stock inicial usado en simulación
+          </Text>
           <p className="text-sm font-semibold">{fmtNum(af.currentOpeningStock)} uds</p>
+          <p className="mt-0.5 text-[10px] text-slate-500">
+            Punto de partida: stock operativo actual al calcular el plan.
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-100 p-2 sm:col-span-2">
+          <Text className="text-[10px] uppercase text-slate-400">Plan futuro</Text>
+          <p className="text-sm font-semibold">Simulación {af.forecastYear}</p>
         </div>
       </div>
 
-      <Text className="text-xs text-slate-500">
-        Método del plan: {displayMethod} · Plan {af.forecastYear}
-      </Text>
+      <div className="space-y-1">
+        <Text className="text-xs text-slate-500">
+          Método del plan: {displayMethod} · Plan {af.forecastYear}
+        </Text>
+        {usesStockoutCorrectedMethod ? (
+          <Text className="text-xs text-slate-500">
+            Usa ventas reales del año anterior y corrige los meses donde hubo rotura de
+            stock.
+          </Text>
+        ) : null}
+      </div>
 
       {af.stockoutCorrection?.applied ? (
         <StockoutHistoricalCorrectionPanel
@@ -1738,13 +1874,14 @@ function AnnualForecastPanel({
 
       <details className="rounded-lg border border-slate-200 bg-white">
         <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-600">
-          Detalle mensual (técnico)
+          Simulación mensual de stock {af.forecastYear}
         </summary>
         <div className="border-t border-slate-100 p-2">
           <p className="mb-2 px-1 text-[11px] text-slate-500">
-            Las pérdidas del mes pueden producirse antes de una entrada prevista
-            dentro del mismo mes. El plan de compras arriba es la referencia para
-            decidir pedidos.
+            Esta tabla proyecta el stock mes a mes usando el stock actual, el forecast
+            mensual y las entradas previstas ya registradas en pedidos/logística. Las
+            pérdidas del mes pueden producirse antes de una entrada prevista dentro del
+            mismo mes. El plan de compras arriba es la referencia para decidir pedidos.
           </p>
       <ResponsiveTable
         desktop={
@@ -1753,15 +1890,32 @@ function AnnualForecastPanel({
               <thead>
                 <tr className="border-b border-slate-200 text-left text-slate-500">
                   <th className="py-2 pr-2">Mes</th>
-                  <th className="py-2 pr-2 text-right">Año ant.</th>
-                  <th className="py-2 pr-2 text-right">Forecast</th>
-                  <th className="py-2 pr-2 text-right">Apertura</th>
-                  <th className="py-2 pr-2">Movimiento del mes</th>
-                  <th className="py-2 pr-2 text-right">Cierre</th>
+                  <th className="py-2 pr-2 text-right" title="Ventas del mismo mes en el año base">
+                    Ventas año base
+                  </th>
+                  <th className="py-2 pr-2 text-right" title="Demanda prevista del mes">
+                    Demanda prevista
+                  </th>
+                  <th className="py-2 pr-2 text-right" title="Stock al inicio del mes">
+                    Stock inicio mes
+                  </th>
+                  <th
+                    className="py-2 pr-2"
+                    title="Entradas registradas, ventas servidas y ventas perdidas"
+                  >
+                    Movimiento del mes
+                  </th>
+                  <th className="py-2 pr-2 text-right" title="Stock estimado al final del mes">
+                    Stock fin mes
+                  </th>
                   <th className="py-2 pr-2 text-right">Días rotura</th>
                   <th className="py-2 pr-2">F. rotura</th>
-                  <th className="py-2 pr-2 text-right">Compra</th>
-                  <th className="py-2 pr-2">Motivo</th>
+                  <th className="py-2 pr-2 text-right" title="Pedido recomendado">
+                    Pedido rec.
+                  </th>
+                  <th className="py-2 pr-2" title="Motivo del cálculo">
+                    Motivo
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1834,17 +1988,17 @@ function AnnualForecastPanel({
                 title={MONTH_LABELS[line.month - 1] ?? `Mes ${line.month}`}
                 subtitle={annualReasonLabel(line.reason)}
                 fields={[
-                  { label: "Año anterior", value: fmtNum(line.previousYearSalesUnits) },
-                  { label: "Forecast", value: fmtNum(line.forecastSalesUnits) },
-                  { label: "Apertura física", value: fmtNum(line.openingPhysicalStock) },
+                  { label: "Ventas mismo mes año base", value: fmtNum(line.previousYearSalesUnits) },
+                  { label: "Demanda prevista mes", value: fmtNum(line.forecastSalesUnits) },
+                  { label: "Stock al inicio del mes", value: fmtNum(line.openingPhysicalStock) },
                   ...detailRows.map((row) => ({ label: row.label, value: row.value })),
-                  { label: "Cierre físico", value: fmtNum(line.closingPhysicalStock) },
+                  { label: "Stock fin de mes", value: fmtNum(line.closingPhysicalStock) },
                   {
                     label: "Días rotura",
                     value: line.stockoutDays > 0 ? fmtNum(line.stockoutDays) : "—",
                   },
                   {
-                    label: "Compra rec.",
+                    label: "Pedido recomendado",
                     value:
                       line.recommendedPurchaseUnits > 0
                         ? fmtNum(line.recommendedPurchaseUnits)

@@ -33,6 +33,55 @@ export async function loadProductIdsBySku(
   return map;
 }
 
+export type InventarioPaisStockFbaReadRow = {
+  producto_id: string;
+  pais: string;
+  stock_fba: number;
+  updated_at: string | null;
+};
+
+/**
+ * SELECT de solo lectura: stock FBA actual en inventario_paises para productos del preview.
+ */
+export async function loadInventarioPaisesStockFbaByProductIds(
+  productoIds: string[],
+): Promise<Map<string, InventarioPaisStockFbaReadRow>> {
+  const map = new Map<string, InventarioPaisStockFbaReadRow>();
+  if (productoIds.length === 0) return map;
+
+  const uniqueIds = Array.from(new Set(productoIds));
+  for (let i = 0; i < uniqueIds.length; i += BATCH_SIZE) {
+    const chunk = uniqueIds.slice(i, i + BATCH_SIZE);
+    const { data, error } = await supabaseAdmin
+      .from("inventario_paises")
+      .select("producto_id, pais, stock_fba, updated_at")
+      .in("producto_id", chunk);
+
+    if (error) throw new Error(error.message);
+
+    for (const row of data ?? []) {
+      const r = row as {
+        producto_id: string;
+        pais: string;
+        stock_fba: number | null;
+        updated_at: string | null;
+      };
+      const productoId = String(r.producto_id ?? "").trim();
+      const pais = String(r.pais ?? "").trim();
+      if (!productoId || !pais) continue;
+
+      map.set(`${productoId}::${pais}`, {
+        producto_id: productoId,
+        pais,
+        stock_fba: Number(r.stock_fba ?? 0),
+        updated_at: r.updated_at ?? null,
+      });
+    }
+  }
+
+  return map;
+}
+
 async function loadAmazonMarketplaceIdByCode(): Promise<Map<string, string>> {
   const { data, error } = await supabaseAdmin
     .from("amazon_marketplaces")

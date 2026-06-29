@@ -18,6 +18,8 @@ export type InventarioPaisStockRow = {
   updatedAt: string | null;
 };
 
+export type OperationalStockFbaSource = "country_inventory" | "ledger" | "none";
+
 export type OperationalStockSummary = {
   stockFbaApp: number;
   stockFbmApp: number;
@@ -25,11 +27,19 @@ export type OperationalStockSummary = {
   stockFbaLatestLedger: number | null;
   stockFbaLatestLedgerDate: string | null;
   stockFbaLatestLedgerTotal: number | null;
+  /** Máximo updated_at entre filas inventario_paises del producto. */
+  stockFbaAppLatestUpdatedAt: string | null;
   stockFbaDiscrepancy: boolean;
   stockOperationalFba: number;
+  stockOperationalFbaSource: OperationalStockFbaSource;
   stockOperationalFbm: number;
   stockOperationalTotal: number;
   discrepancyMessage: string | null;
+};
+
+export type BuildOperationalStockOptions = {
+  /** Vista de auditoría ledger: fuerza ledger como fuente operativa si existe. */
+  preferLedgerSource?: boolean;
 };
 
 function sumInventarioFba(rows: InventoryRow[]): number {
@@ -40,9 +50,117 @@ function sumInventarioFbm(rows: InventoryRow[]): number {
   return rows.reduce((s, r) => s + Number(r.stock_fbm ?? 0), 0);
 }
 
+function latestInventarioPaisesUpdatedAt(rows: InventoryRow[]): string | null {
+  let latest: string | null = null;
+  let latestMs = -Infinity;
+
+  for (const row of rows) {
+    const updatedAt = row.updated_at;
+    if (!updatedAt) continue;
+    const ms = new Date(updatedAt).getTime();
+    if (!Number.isFinite(ms) || ms <= latestMs) continue;
+    latestMs = ms;
+    latest = updatedAt;
+  }
+
+  return latest;
+}
+
+function ledgerSnapshotMs(snapshotDate: string): number {
+  return new Date(`${snapshotDate.slice(0, 10)}T00:00:00Z`).getTime();
+}
+
+/** True si inventario_paises tiene al menos una fila para el producto. */
+function hasCountryInventoryRows(rows: InventoryRow[]): boolean {
+  return rows.length > 0;
+}
+
+/**
+ * inventario_paises es más reciente que el snapshot ledger cuando
+ * su updated_at máximo es posterior a la fecha del ledger.
+ */
+function isCountryInventoryNewerThanLedger(
+  latestCountryUpdatedAt: string | null,
+  ledgerDate: string | null,
+): boolean {
+  if (!latestCountryUpdatedAt || !ledgerDate) return false;
+
+  const countryDay = latestCountryUpdatedAt.slice(0, 10);
+  const ledgerDay = ledgerDate.slice(0, 10);
+  if (countryDay > ledgerDay) return true;
+  if (countryDay < ledgerDay) return false;
+
+  const countryMs = new Date(latestCountryUpdatedAt).getTime();
+  const ledgerMs = ledgerSnapshotMs(ledgerDate);
+  return Number.isFinite(countryMs) && countryMs > ledgerMs;
+}
+
+function resolveOperationalFbaSource(params: {
+  hasLedger: boolean;
+  hasCountryRows: boolean;
+  countryNewerThanLedger: boolean;
+  preferLedgerSource: boolean;
+}): OperationalStockFbaSource {
+  const { hasLedger, hasCountryRows, countryNewerThanLedger, preferLedgerSource } =
+    params;
+
+  if (preferLedgerSource && hasLedger) return "ledger";
+  if (!hasCountryRows && !hasLedger) return "none";
+  if (!hasCountryRows && hasLedger) return "ledger";
+  if (hasCountryRows && !hasLedger) return "country_inventory";
+  if (countryNewerThanLedger) return "country_inventory";
+  return "ledger";
+}
+
+function resolveOperationalFba(
+  source: OperationalStockFbaSource,
+  stockFbaApp: number,
+  stockFbaLatestLedger: number | null,
+): number {
+  switch (source) {
+    case "country_inventory":
+      return stockFbaApp;
+    case "ledger":
+      return stockFbaLatestLedger ?? stockFbaApp;
+    default:
+      return 0;
+  }
+}
+
+function buildDiscrepancyMessage(
+  stockFbaDiscrepancy: boolean,
+  source: OperationalStockFbaSource,
+  stockFbaApp: number,
+  stockFbaLatestLedger: number | null,
+): string | null {
+  if (!stockFbaDiscrepancy) return null;
+
+  if (
+    source === "country_inventory" &&
+    stockFbaLatestLedger != null
+  ) {
+    return `La última lectura del ledger FBA indica ${stockFbaLatestLedger} uds, pero el stock por país actualizado indica ${stockFbaApp} uds. Se usa el stock por país como stock operativo.`;
+  }
+
+  if (source === "country_inventory") {
+    return "La última lectura del ledger FBA no coincide con el stock por país. Se usa el stock por país como stock operativo porque es la fuente más reciente.";
+  }
+
+  if (source === "ledger" && stockFbaLatestLedger != null) {
+    return `La última lectura del ledger FBA indica ${stockFbaLatestLedger} uds, pero el stock por país registrado indica ${stockFbaApp} uds. Se usa el ledger como stock operativo.`;
+  }
+
+  if (source === "ledger") {
+    return "La última lectura del ledger FBA no coincide con el stock por país. Se usa el ledger como stock operativo porque es la fuente más reciente.";
+  }
+
+  return null;
+}
+
 export function buildOperationalStockSummary(
   inventoryRows: InventoryRow[],
   ledger: LatestFbaLedgerStock | null | undefined,
+  options: BuildOperationalStockOptions = {},
 ): OperationalStockSummary {
   const stockFbaApp = sumInventarioFba(inventoryRows);
   const stockFbmApp = sumInventarioFbm(inventoryRows);
@@ -59,18 +177,40 @@ export function buildOperationalStockSummary(
   const stockFbaLatestLedger = ledger?.stockSellable ?? null;
   const stockFbaLatestLedgerDate = ledger?.snapshotDate ?? null;
   const stockFbaLatestLedgerTotal = ledger?.stockTotal ?? null;
+  const stockFbaAppLatestUpdatedAt = latestInventarioPaisesUpdatedAt(inventoryRows);
 
-  const hasLedger = stockFbaLatestLedger != null && stockFbaLatestLedgerDate != null;
-  const stockFbaDiscrepancy =
-    hasLedger && Math.abs(stockFbaApp - stockFbaLatestLedger) > 0;
+  const hasLedger =
+    stockFbaLatestLedger != null && stockFbaLatestLedgerDate != null;
+  const hasCountryRows = hasCountryInventoryRows(inventoryRows);
+  const countryNewerThanLedger = isCountryInventoryNewerThanLedger(
+    stockFbaAppLatestUpdatedAt,
+    stockFbaLatestLedgerDate,
+  );
 
-  const stockOperationalFba = hasLedger ? stockFbaLatestLedger : stockFbaApp;
+  const stockOperationalFbaSource = resolveOperationalFbaSource({
+    hasLedger,
+    hasCountryRows,
+    countryNewerThanLedger,
+    preferLedgerSource: options.preferLedgerSource === true,
+  });
+
+  const stockOperationalFba = resolveOperationalFba(
+    stockOperationalFbaSource,
+    stockFbaApp,
+    stockFbaLatestLedger,
+  );
   const stockOperationalFbm = stockFbmApp;
   const stockOperationalTotal = stockOperationalFba + stockOperationalFbm;
 
-  const discrepancyMessage = stockFbaDiscrepancy
-    ? "El stock FBA importado por ledger no coincide con el stock por país registrado en la app."
-    : null;
+  const stockFbaDiscrepancy =
+    hasLedger && hasCountryRows && Math.abs(stockFbaApp - stockFbaLatestLedger) > 0;
+
+  const discrepancyMessage = buildDiscrepancyMessage(
+    stockFbaDiscrepancy,
+    stockOperationalFbaSource,
+    stockFbaApp,
+    stockFbaLatestLedger,
+  );
 
   return {
     stockFbaApp,
@@ -79,8 +219,10 @@ export function buildOperationalStockSummary(
     stockFbaLatestLedger,
     stockFbaLatestLedgerDate,
     stockFbaLatestLedgerTotal,
+    stockFbaAppLatestUpdatedAt,
     stockFbaDiscrepancy,
     stockOperationalFba,
+    stockOperationalFbaSource,
     stockOperationalFbm,
     stockOperationalTotal,
     discrepancyMessage,
@@ -89,7 +231,7 @@ export function buildOperationalStockSummary(
 
 /**
  * Stock de apertura para forecast/simulación según scope.
- * ALL/ALL y ALL+FBA usan ledger FBA cuando existe; por país sigue inventario_paises.
+ * ALL/ALL y ALL+FBA usan stock operativo FBA resuelto (país o ledger según frescura).
  */
 export function resolveOpeningStockForScope(
   inventoryRows: InventoryRow[],
@@ -113,7 +255,8 @@ export function resolveOpeningStockForScope(
   if (
     countryScope.filter === "ALL" &&
     channelScope.filter === "AMAZON_FBA" &&
-    operational?.stockFbaLatestLedger != null
+    operational &&
+    operational.stockOperationalFbaSource !== "none"
   ) {
     return operational.stockOperationalFba;
   }

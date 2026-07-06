@@ -2,46 +2,45 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { fetchOrders } from "@/modules/orders/api/orderClient";
-import { fetchPortsCatalog } from "@/modules/logistics/api/logisticsClient";
 import type { OrderListRow } from "@/modules/orders/types/orderList.types";
-import type { OriginPort } from "@/modules/logistics/types/ports.types";
 
 export type EstadoFiltro = "ALL" | "borrador" | "confirmado" | "cancelado" | "recibido";
 
 export type UseOrdersListResult = {
-  ordenes:          OrderListRow[];
-  loading:          boolean;
-  error:            string | null;
-  originPorts:      OriginPort[];
-  filterEstado:     EstadoFiltro;
-  filterQ:          string;
-  filterPuerto:     string;
-  setFilterEstado:  (v: EstadoFiltro) => void;
-  setFilterQ:       (v: string) => void;
-  setFilterPuerto:  (v: string) => void;
-  refresh:          () => void;
+  ordenes: OrderListRow[];
+  loading: boolean;
+  error: string | null;
+  filterEstado: EstadoFiltro;
+  filterQ: string;
+  filterCreatedFrom: string;
+  filterCreatedTo: string;
+  filterEtdFrom: string;
+  filterEtdTo: string;
+  filterEtaFrom: string;
+  filterEtaTo: string;
+  setFilterEstado: (v: EstadoFiltro) => void;
+  setFilterQ: (v: string) => void;
+  setFilterCreatedFrom: (v: string) => void;
+  setFilterCreatedTo: (v: string) => void;
+  setFilterEtdFrom: (v: string) => void;
+  setFilterEtdTo: (v: string) => void;
+  setFilterEtaFrom: (v: string) => void;
+  setFilterEtaTo: (v: string) => void;
+  refresh: () => void;
 };
 
-/**
- * Gestiona el listado de órdenes de compra con filtros y carga de puertos FOB.
- * Rellena `ordenes` automáticamente al montar y cada vez que cambia un filtro.
- * Expone `refresh()` para recargas manuales (tras guardar, confirmar, reabrir…).
- */
 export function useOrdersList(): UseOrdersListResult {
-  const [ordenes,      setOrdenes]      = useState<OrderListRow[]>([]);
-  const [originPorts,  setOriginPorts]  = useState<OriginPort[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState<string | null>(null);
+  const [ordenes, setOrdenes] = useState<OrderListRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filterEstado, setFilterEstado] = useState<EstadoFiltro>("ALL");
-  const [filterQ,      setFilterQ]      = useState("");
-  const [filterPuerto, setFilterPuerto] = useState("");
-
-  // Puertos de origen: carga única al montar
-  useEffect(() => {
-    fetchPortsCatalog()
-      .then(({ originPorts: ports }) => setOriginPorts(ports))
-      .catch(() => {});
-  }, []);
+  const [filterQ, setFilterQ] = useState("");
+  const [filterCreatedFrom, setFilterCreatedFrom] = useState("");
+  const [filterCreatedTo, setFilterCreatedTo] = useState("");
+  const [filterEtdFrom, setFilterEtdFrom] = useState("");
+  const [filterEtdTo, setFilterEtdTo] = useState("");
+  const [filterEtaFrom, setFilterEtaFrom] = useState("");
+  const [filterEtaTo, setFilterEtaTo] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -49,9 +48,14 @@ export function useOrdersList(): UseOrdersListResult {
     try {
       const rows = await fetchOrders({
         estado: filterEstado !== "ALL" ? filterEstado : undefined,
-        q:      filterQ,
-        puerto: filterPuerto,
-        limit:  200,
+        q: filterQ,
+        createdFrom: filterCreatedFrom,
+        createdTo: filterCreatedTo,
+        etdFrom: filterEtdFrom,
+        etdTo: filterEtdTo,
+        etaFrom: filterEtaFrom,
+        etaTo: filterEtaTo,
+        limit: 200,
       });
       setOrdenes(rows);
     } catch (err: unknown) {
@@ -59,7 +63,16 @@ export function useOrdersList(): UseOrdersListResult {
     } finally {
       setLoading(false);
     }
-  }, [filterEstado, filterQ, filterPuerto]);
+  }, [
+    filterCreatedFrom,
+    filterCreatedTo,
+    filterEstado,
+    filterEtaFrom,
+    filterEtaTo,
+    filterEtdFrom,
+    filterEtdTo,
+    filterQ,
+  ]);
 
   useEffect(() => {
     refresh();
@@ -69,13 +82,22 @@ export function useOrdersList(): UseOrdersListResult {
     ordenes,
     loading,
     error,
-    originPorts,
     filterEstado,
     filterQ,
-    filterPuerto,
+    filterCreatedFrom,
+    filterCreatedTo,
+    filterEtdFrom,
+    filterEtdTo,
+    filterEtaFrom,
+    filterEtaTo,
     setFilterEstado,
     setFilterQ,
-    setFilterPuerto,
+    setFilterCreatedFrom,
+    setFilterCreatedTo,
+    setFilterEtdFrom,
+    setFilterEtdTo,
+    setFilterEtaFrom,
+    setFilterEtaTo,
     refresh,
   };
 }

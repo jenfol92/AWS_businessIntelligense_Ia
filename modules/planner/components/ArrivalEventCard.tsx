@@ -3,6 +3,7 @@ import { CheckCircle, Clock, Ship } from "lucide-react";
 
 import { ArrivalProductSummary } from "@/modules/planner/components/ArrivalProductSummary";
 import type { ArrivalDateSource, ArrivalOrder } from "@/modules/planner/types/arrivals.types";
+import { arrivalLogisticsLabel } from "@/modules/planner/utils/arrivalLogisticsLabel";
 import {
   getArrivalVisualCategory,
   type ArrivalVisualCategory,
@@ -11,6 +12,7 @@ import { ResponsiveDataCard } from "@/shared/ui/ResponsiveDataCard";
 
 const SOURCE_LABEL: Record<ArrivalDateSource, string> = {
   container_eta: "ETA contenedor",
+  amazon_inbound_eta: "ETA Amazon inbound",
   order_eta: "ETA orden",
   estimated_from_etd: "Estimada por lead time",
   estimated_from_order_date: "Estimada por lead time",
@@ -72,10 +74,23 @@ function destinationBadgeClass(badge: string): string {
 }
 
 function buildDetailHref(locale: string, order: ArrivalOrder): string {
-  if (order.containerId) {
+  if (order.logisticsKind === "contenedor_propio" && order.containerId) {
     return `/${locale}/logistica?containerId=${encodeURIComponent(order.containerId)}`;
   }
+  if (order.logisticsKind === "amazon_inbound" && order.amazonInbound?.shipment_id) {
+    return `/${locale}/amazon/envios?shipmentId=${encodeURIComponent(order.amazonInbound.shipment_id)}`;
+  }
   return `/${locale}/pedidos?orderId=${encodeURIComponent(order.orderId)}`;
+}
+
+function logisticsSummaryValue(order: ArrivalOrder): string {
+  if (order.logisticsKind === "contenedor_propio") {
+    return order.containerNumber ?? "Contenedor propio";
+  }
+  if (order.logisticsKind === "amazon_inbound") {
+    return order.amazonInbound?.shipment_id ?? "Amazon inbound";
+  }
+  return arrivalLogisticsLabel(order);
 }
 
 function EtaBadge({ order }: { order: ArrivalOrder }) {
@@ -93,18 +108,36 @@ function EtaBadge({ order }: { order: ArrivalOrder }) {
   );
 }
 
-function ContainerBadge({ order }: { order: ArrivalOrder }) {
-  if (order.containerId) {
+function LogisticsBadge({ order }: { order: ArrivalOrder }) {
+  if (order.logisticsKind === "contenedor_propio") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 ring-1 ring-indigo-200">
         <Ship className="h-3 w-3" aria-hidden />
-        {order.containerNumber ?? "Contenedor"}
+        {order.containerNumber ?? "Contenedor propio"}
       </span>
     );
   }
+
+  if (order.logisticsKind === "amazon_inbound") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-semibold text-orange-700 ring-1 ring-orange-200">
+        <Ship className="h-3 w-3" aria-hidden />
+        {arrivalLogisticsLabel(order)}
+      </span>
+    );
+  }
+
+  if (order.tipoEnvio === "amazon_agl") {
+    return (
+      <span className="inline-flex rounded-full bg-purple-50 px-2 py-0.5 text-[10px] font-semibold text-purple-700 ring-1 ring-purple-200">
+        Amazon AGL pendiente vínculo
+      </span>
+    );
+  }
+
   return (
     <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 ring-1 ring-slate-200">
-      Sin contenedor
+      Sin logística vinculada
     </span>
   );
 }
@@ -113,11 +146,73 @@ export type ArrivalEventCardProps = {
   order: ArrivalOrder;
   locale: string;
   compact?: boolean;
+  onOpenDetail?: (order: ArrivalOrder) => void;
+  onOpenOrder?: (order: ArrivalOrder) => void;
 };
 
-export function ArrivalEventCard({ order, locale, compact = false }: ArrivalEventCardProps) {
-  const href = buildDetailHref(locale, order);
+function DetailAction({
+  href,
+  order,
+  onOpenDetail,
+  compact,
+}: {
+  href: string;
+  order: ArrivalOrder;
+  onOpenDetail?: (order: ArrivalOrder) => void;
+  compact?: boolean;
+}) {
+  const className = compact
+    ? "inline-flex min-h-10 w-full items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+    : "inline-flex min-h-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50";
+
+  if (onOpenDetail) {
+    return (
+      <button type="button" onClick={() => onOpenDetail(order)} className={className}>
+        Ver detalle
+      </button>
+    );
+  }
+
+  return (
+    <Link href={href} className={className}>
+      Ver detalle
+    </Link>
+  );
+}
+
+function OrderReference({
+  order,
+  onOpenOrder,
+}: {
+  order: ArrivalOrder;
+  onOpenOrder?: (order: ArrivalOrder) => void;
+}) {
   const reference = order.numeroPedidoAgente || order.numeroOrden || order.displayCode;
+
+  if (onOpenOrder) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenOrder(order)}
+        className="truncate font-mono text-sm font-bold text-slate-900 underline decoration-slate-300 underline-offset-2 hover:text-indigo-700"
+        title="Ver pedido"
+      >
+        {reference}
+      </button>
+    );
+  }
+
+  return <p className="truncate font-mono text-sm font-bold text-slate-900">{reference}</p>;
+}
+
+export function ArrivalEventCard({
+  order,
+  locale,
+  compact = false,
+  onOpenDetail,
+  onOpenOrder,
+}: ArrivalEventCardProps) {
+  const href = buildDetailHref(locale, order);
   const dateLabel = order.hasDefinedEta
     ? formatEta(order.etaVisible)
     : order.estimatedMonthDate
@@ -127,7 +222,13 @@ export function ArrivalEventCard({ order, locale, compact = false }: ArrivalEven
   if (compact) {
     return (
       <ResponsiveDataCard
-        title={<span className="font-mono">{reference}</span>}
+        title={
+          onOpenOrder ? (
+            <OrderReference order={order} onOpenOrder={onOpenOrder} />
+          ) : (
+            <span className="font-mono">{order.displayCode}</span>
+          )
+        }
         subtitle={
           <ArrivalProductSummary lines={order.productLines} fallbackText={order.productSummary} />
         }
@@ -143,22 +244,17 @@ export function ArrivalEventCard({ order, locale, compact = false }: ArrivalEven
         }
         fields={[
           { label: "Fecha", value: dateLabel },
-          { label: "Destino", value: order.destination ?? "—" },
+          { label: "Destino", value: order.amazonInbound?.destination_center ?? order.destination ?? "—" },
           { label: "Origen fecha", value: SOURCE_LABEL[order.dateSource] },
           {
-            label: "Contenedor",
-            value: order.containerNumber ?? "—",
+            label: "Logistica",
+            value: logisticsSummaryValue(order),
             className: "col-span-2",
           },
         ]}
-        footer={<ContainerBadge order={order} />}
+        footer={<LogisticsBadge order={order} />}
         actions={
-          <Link
-            href={href}
-            className="inline-flex min-h-10 w-full items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            Ver detalle
-          </Link>
+          <DetailAction href={href} order={order} onOpenDetail={onOpenDetail} compact />
         }
       />
     );
@@ -168,7 +264,7 @@ export function ArrivalEventCard({ order, locale, compact = false }: ArrivalEven
     <article className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm transition hover:border-slate-300">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="truncate font-mono text-sm font-bold text-slate-900">{reference}</p>
+          <OrderReference order={order} onOpenOrder={onOpenOrder} />
           {order.numeroOrden && order.numeroPedidoAgente ? (
             <p className="truncate text-xs text-slate-500">{order.numeroOrden}</p>
           ) : null}
@@ -188,23 +284,28 @@ export function ArrivalEventCard({ order, locale, compact = false }: ArrivalEven
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         <EtaBadge order={order} />
-        <ContainerBadge order={order} />
+        <LogisticsBadge order={order} />
         <span className="inline-flex rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-slate-200">
           {SOURCE_LABEL[order.dateSource]}
         </span>
       </div>
+
+      {order.logisticsKind === "amazon_inbound" && order.amazonInbound ? (
+        <div className="mt-2 rounded-lg bg-orange-50/60 px-2 py-1.5 text-xs text-slate-600 ring-1 ring-orange-100">
+          <p className="font-mono font-semibold text-orange-800">{order.amazonInbound.shipment_id}</p>
+          <p>
+            {order.amazonInbound.estado_amazon ?? "Sin estado"} ·{" "}
+            {order.amazonInbound.destination_center ?? "Centro no disponible"}
+          </p>
+        </div>
+      ) : null}
 
       <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-2">
         <div className="min-w-0">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Fecha</p>
           <p className="text-sm font-medium text-slate-800">{dateLabel}</p>
         </div>
-        <Link
-          href={href}
-          className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
-        >
-          Ver detalle
-        </Link>
+        <DetailAction href={href} order={order} onOpenDetail={onOpenDetail} />
       </div>
     </article>
   );
@@ -229,4 +330,14 @@ export function groupOrdersByDestination(orders: ArrivalOrder[]): Map<string, Ar
 
 export function destinationBadgeClassName(badge: string): string {
   return destinationBadgeClass(badge);
+}
+
+// Re-export helpers used by legacy imports.
+export {
+  amazonInboundRouteLabel,
+  amazonInboundTransportLabel,
+} from "@/modules/planner/utils/arrivalLogisticsLabel";
+
+export function amazonInboundLogisticsLabel(order: ArrivalOrder): string {
+  return arrivalLogisticsLabel(order);
 }

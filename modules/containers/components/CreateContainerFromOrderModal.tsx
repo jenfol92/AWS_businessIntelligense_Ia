@@ -3,7 +3,7 @@
  * Archivo  : modules/containers/components/CreateContainerFromOrderModal.tsx
  * Qué hace : Modal para crear un nuevo contenedor a partir de una orden confirmada.
  *            Carga los puertos de origen y destino desde GET /api/logistics/ports
- *            (tablas reales puerto_china y puertos_pais).
+ *            (tablas reales puerto_china y paises).
  *            Permite seleccionar/deseleccionar órdenes y envía a POST /api/containers.
  *
  * Decisión de campo puerto:
@@ -19,7 +19,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { X as XIcon, Check as CheckIcon, Package as PackageIcon, RefreshCw, AlertCircle } from "lucide-react";
-import type { OriginPort, DestinationPort } from "@/app/api/logistics/ports/route";
+import type { OriginPort, DestinationCountry } from "@/app/api/logistics/ports/route";
 import { createContainerFromOrder } from "@/modules/containers/api/containerClient";
 import {
   buildLogisticaContainerHref,
@@ -102,6 +102,7 @@ export default function CreateContainerFromOrderModal({
   const [embarque,       setEmbarque]       = useState("");
   const [tipoContenedor, setTipo]           = useState<"propio" | "amazon_agl">("propio");
   const [transitario,    setTransitario]    = useState("");
+  const [destinoPaisId,  setDestinoPaisId]  = useState("");
   const [puertoSalida,   setPuertoSalida]   = useState("");
   const [puertoLlegada,  setPuertoLlegada]  = useState("");
   const [fechaSalida,    setFechaSalida]    = useState("");
@@ -114,7 +115,7 @@ export default function CreateContainerFromOrderModal({
 
   // ── Catálogos de puertos (BD) ──────────────────────────────────────────────
   const [puertosOrigen,  setPuertosOrigen]  = useState<OriginPort[]>([]);
-  const [puertosDestino, setPuertosDestino] = useState<DestinationPort[]>([]);
+  const [paisesDestino,  setPaisesDestino]  = useState<DestinationCountry[]>([]);
   const [loadingPuertos, setLoadingPuertos] = useState(true);
 
   // ── Órdenes confirmadas ────────────────────────────────────────────────────
@@ -139,7 +140,7 @@ export default function CreateContainerFromOrderModal({
       .then((j) => {
         if (j.ok) {
           setPuertosOrigen(j.originPorts      ?? []);
-          setPuertosDestino(j.destinationPorts ?? []);
+          setPaisesDestino(j.destinationCountries ?? []);
         }
       })
       .finally(() => setLoadingPuertos(false));
@@ -217,6 +218,7 @@ export default function CreateContainerFromOrderModal({
       const json = await createContainerFromOrder({
         identificador_embarque: embarque.trim(),
         tipo_contenedor:        tipoContenedor,
+        destino_pais_id:        destinoPaisId || null,
         transitario:            transitario   || null,
         puerto_salida:          puertoSalida  || null,
         puerto_llegada:         puertoLlegada || null,
@@ -385,25 +387,22 @@ export default function CreateContainerFromOrderModal({
               </select>
             </div>
 
-            {/* Puerto llegada — pobla desde puertos_pais (BD) */}
+            {/* Puerto llegada — pobla desde paises (BD) */}
             <div>
               <label className="text-xs font-medium text-slate-500 mb-1 block">
-                Puerto llegada
+                País destino
                 {loadingPuertos && (
                   <RefreshCw className="inline h-3 w-3 animate-spin ml-1 text-slate-300" />
                 )}
               </label>
               <select
-                value={puertoLlegada}
-                onChange={(e) => {
-                  setTouched((prev) => ({ ...prev, puertoLlegada: true }));
-                  setPuertoLlegada(e.target.value);
-                }}
+                value={destinoPaisId}
+                onChange={(e) => setDestinoPaisId(e.target.value)}
                 className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">— auto desde orden —</option>
-                {puertosDestino.map((p) => (
-                  <option key={p.id} value={p.name}>
+                {paisesDestino.map((p) => (
+                  <option key={p.id} value={p.id}>
                     {p.name}{p.country ? ` · ${p.country}` : ""}
                   </option>
                 ))}

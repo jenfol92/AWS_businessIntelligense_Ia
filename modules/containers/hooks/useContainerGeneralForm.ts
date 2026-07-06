@@ -12,6 +12,7 @@ import {
 export type ContainerGeneralFormValues = {
   identificador_embarque: string;
   tipo_contenedor: "propio" | "amazon_agl";
+  destino_pais_id: string;
   transitario: string;
   puerto_salida: string;
   puerto_llegada: string;
@@ -23,6 +24,7 @@ export type ContainerGeneralFormValues = {
 const EMPTY_VALUES: ContainerGeneralFormValues = {
   identificador_embarque: "",
   tipo_contenedor:       "propio",
+  destino_pais_id:       "",
   transitario:           "",
   puerto_salida:         "",
   puerto_llegada:        "",
@@ -36,6 +38,7 @@ function valuesFromContenedor(c: ContenedorRow): ContainerGeneralFormValues {
     identificador_embarque: c.identificador_embarque ?? "",
     tipo_contenedor:
       c.tipo_contenedor?.toLowerCase() === "amazon_agl" ? "amazon_agl" : "propio",
+    destino_pais_id:    c.destino_pais_id ?? "",
     transitario:        c.transitario ?? "",
     puerto_salida:      c.puerto_salida ?? "",
     puerto_llegada:     c.puerto_llegada ?? "",
@@ -76,6 +79,7 @@ export function useContainerGeneralForm(contenedorId: string) {
   const buildUpdatePayload = useCallback(() => ({
     identificador_embarque: values.identificador_embarque.trim() || undefined,
     tipo_contenedor:        values.tipo_contenedor,
+    destino_pais_id:        values.destino_pais_id || null,
     transitario:            values.transitario || null,
     puerto_salida:          values.puerto_salida || null,
     puerto_llegada:         values.puerto_llegada || null,

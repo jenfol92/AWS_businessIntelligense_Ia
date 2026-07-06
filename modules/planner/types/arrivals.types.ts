@@ -1,5 +1,6 @@
 export type ArrivalDateSource =
   | "container_eta"
+  | "amazon_inbound_eta"
   | "order_eta"
   | "estimated_from_etd"
   | "estimated_from_order_date"
@@ -25,6 +26,8 @@ export type ArrivalOrder = {
   orderId: string;
   numeroOrden: string | null;
   numeroPedidoAgente: string | null;
+  proveedor: string | null;
+  tipoEnvio: string | null;
   displayCode: string;
   productSummary: string;
   productLines: ArrivalProductLine[];
@@ -44,6 +47,23 @@ export type ArrivalOrder = {
   containerNumber: string | null;
   /** Tipo técnico del contenedor, usado solo para badges de llegada. */
   containerType: string | null;
+  logisticsKind: "contenedor_propio" | "amazon_inbound" | "none";
+  amazonInbound: {
+    shipment_id: string;
+    shipment_name: string | null;
+    estado_amazon: string | null;
+    destination_center: string | null;
+    destination_country: string | null;
+    logistics_flow: string | null;
+    transport_provider: string | null;
+    eta_estimada: string | null;
+    fecha_salida: string | null;
+    fecha_entrega_real: string | null;
+    ship_from_address: string | null;
+    tracking_number: string | null;
+    agl_tracking_number: string | null;
+    amazon_container_number: string | null;
+  } | null;
   logisticsUrl: string | null;
   /** 0 si el contenedor aparece sin orden vinculada. */
   ordenesCount?: number;

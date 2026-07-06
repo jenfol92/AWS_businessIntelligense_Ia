@@ -22,9 +22,15 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    console.warn(
+      "[amazon-report-scheduler] legacy route /api/cron/amazon-sp-api/reports only requests reports; use /api/cron/amazon/reports/run for poll/preview/commit/request flow.",
+    );
     const summary = await requestDueAmazonReportSchedules();
     return NextResponse.json({
       ok: true,
+      legacy: true,
+      warning:
+        "Ruta legacy: solo requestea informes. Usar /api/cron/amazon/reports/run como cron principal.",
       totalDue: summary.processed,
       requested: summary.requested,
       skipped: summary.skippedLocked + summary.skippedExistingJob,

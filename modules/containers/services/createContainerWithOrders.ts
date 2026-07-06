@@ -83,6 +83,7 @@ export async function createContainerWithOrders(
   let insertPayload = {
     identificador_embarque: body.identificador_embarque.trim(),
     tipo_contenedor:        tipoContenedor,
+    destino_pais_id:        body.destino_pais_id     ?? null,
     transitario:            body.transitario        ?? null,
     puerto_salida:          body.puerto_salida      ?? null,
     puerto_llegada:         body.puerto_llegada     ?? null,

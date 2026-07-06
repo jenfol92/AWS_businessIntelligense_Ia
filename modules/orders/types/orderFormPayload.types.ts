@@ -6,6 +6,7 @@
 
 /** Campos de cabecera que el formulario pasa al builder, en notación camelCase del modal. */
 export type OrderFormHeaderOpts = {
+  tipoEnvio: "propio" | "amazon_agl";
   fob: string;
   destino: string;
   agenteId: string;
@@ -52,6 +53,7 @@ export type OrderApiItemPayload = {
 
 /** Payload completo enviado a POST /api/orders y PUT /api/orders/[id]. */
 export type OrderFormPayload = {
+  tipo_envio: "propio" | "amazon_agl";
   fob_puerto: string | null;
   destino: string | null;
   agente_id: string | null;

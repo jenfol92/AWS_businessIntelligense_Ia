@@ -40,6 +40,7 @@ export async function GET(request: NextRequest) {
       steps: {
         poll: { checked: 0, done: 0, stillPending: 0, failed: 0, errors: 0 },
         preview: { checked: 0, previewed: 0, skipped: 0, errors: 0 },
+        commit: { checked: 0, committed: 0, skippedSuperseded: 0, errors: 0 },
         requestDue: {
           processed: 0,
           requested: 0,
@@ -49,6 +50,8 @@ export async function GET(request: NextRequest) {
         },
       },
       readyToCommit: [],
+      skippedSuperseded: [],
+      errors: [],
       skippedReason: "disabled",
     });
   }

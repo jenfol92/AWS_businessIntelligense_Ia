@@ -104,6 +104,102 @@ async function loadAmazonMarketplaceIdByCode(): Promise<Map<string, string>> {
 /**
  * Agrega filas por producto+país usando el snapshot más reciente del archivo.
  */
+function buildAggregatedRaw(row: ParsedFbaCountryRow): Record<string, unknown> {
+  return {
+    marketplaceCountry: row.pais,
+    cleanSku: row.skuLimpio,
+    totalQuantity: row.stockFba,
+    sources: [
+      {
+        rowNumber: row.rowNumber,
+        sellerSku: row.skuOriginal,
+        country: row.pais,
+        quantityForLocalFulfillment: row.stockFba,
+        raw: row.raw,
+      },
+    ],
+    skipped: [],
+  };
+}
+
+function appendAggregatedRawSource(
+  item: AggregatedFbaCountryStock,
+  row: ParsedFbaCountryRow,
+) {
+  const current =
+    item.raw && typeof item.raw === "object" && !Array.isArray(item.raw)
+      ? item.raw
+      : {
+          marketplaceCountry: item.pais,
+          cleanSku: item.sku_limpio,
+          totalQuantity: item.stock_fba,
+          sources: [],
+          skipped: [],
+        };
+  const sources = Array.isArray(current.sources) ? current.sources : [];
+
+  item.raw = {
+    ...current,
+    marketplaceCountry: item.pais,
+    cleanSku: item.sku_limpio,
+    totalQuantity: Number(current.totalQuantity ?? 0) + row.stockFba,
+    sources: [
+      ...sources,
+      {
+        rowNumber: row.rowNumber,
+        sellerSku: row.skuOriginal,
+        country: row.pais,
+        quantityForLocalFulfillment: row.stockFba,
+        raw: row.raw,
+      },
+    ],
+    skipped: Array.isArray(current.skipped) ? current.skipped : [],
+  };
+}
+
+function mergeAggregatedRaw(
+  target: AggregatedFbaCountryStock,
+  source: AggregatedFbaCountryStock,
+) {
+  const targetRaw =
+    target.raw && typeof target.raw === "object" && !Array.isArray(target.raw)
+      ? target.raw
+      : {
+          marketplaceCountry: target.pais,
+          cleanSku: target.sku_limpio,
+          totalQuantity: target.stock_fba,
+          sources: [],
+          skipped: [],
+        };
+  const sourceRaw =
+    source.raw && typeof source.raw === "object" && !Array.isArray(source.raw)
+      ? source.raw
+      : {
+          marketplaceCountry: source.pais,
+          cleanSku: source.sku_limpio,
+          totalQuantity: source.stock_fba,
+          sources: [],
+          skipped: [],
+        };
+
+  target.raw = {
+    ...targetRaw,
+    marketplaceCountry: target.pais,
+    cleanSku: target.sku_limpio,
+    totalQuantity:
+      Number(targetRaw.totalQuantity ?? 0) +
+      Number(sourceRaw.totalQuantity ?? source.stock_fba),
+    sources: [
+      ...(Array.isArray(targetRaw.sources) ? targetRaw.sources : []),
+      ...(Array.isArray(sourceRaw.sources) ? sourceRaw.sources : []),
+    ],
+    skipped: [
+      ...(Array.isArray(targetRaw.skipped) ? targetRaw.skipped : []),
+      ...(Array.isArray(sourceRaw.skipped) ? sourceRaw.skipped : []),
+    ],
+  };
+}
+
 export function aggregateCountryStockRows(
   rows: ParsedFbaCountryRow[],
   productoBySku: Map<string, string>,
@@ -121,6 +217,7 @@ export function aggregateCountryStockRows(
     const prev = byProductCountryDate.get(key);
     if (prev) {
       prev.stock_fba += row.stockFba;
+      appendAggregatedRawSource(prev, row);
       continue;
     }
 
@@ -131,7 +228,7 @@ export function aggregateCountryStockRows(
       marketplace_id: marketplaceId,
       stock_fba: row.stockFba,
       snapshot_date: row.snapshotDate,
-      raw: row.raw,
+      raw: buildAggregatedRaw(row),
     });
   }
 
@@ -144,6 +241,7 @@ export function aggregateCountryStockRows(
       latestByProductCountry.set(key, { ...item });
     } else if (item.snapshot_date === prev.snapshot_date) {
       prev.stock_fba += item.stock_fba;
+      mergeAggregatedRaw(prev, item);
     }
   }
 

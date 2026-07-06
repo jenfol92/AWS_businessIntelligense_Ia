@@ -222,7 +222,7 @@ export async function listOrders(
 ): Promise<OrdenCompraRow[]> {
   const supabase = createSupabaseRouteClient();
 
-  const { estado, q, puerto, limit = 200, extraOrderIds = [] } = input;
+  const { estado, q, createdFrom, createdTo, limit = 200, extraOrderIds = [] } = input;
 
   let query = supabase
     .from("ordenes_compra")
@@ -235,9 +235,12 @@ export async function listOrders(
     query = query.eq("estado", estado);
   }
 
-  // Filtro parcial por puerto de origen FOB
-  if (puerto && puerto.trim()) {
-    query = query.ilike("fob_puerto", `%${puerto.trim()}%`);
+  if (createdFrom && createdFrom.trim()) {
+    query = query.gte("created_at", `${createdFrom.trim().slice(0, 10)}T00:00:00.000Z`);
+  }
+
+  if (createdTo && createdTo.trim()) {
+    query = query.lte("created_at", `${createdTo.trim().slice(0, 10)}T23:59:59.999Z`);
   }
 
   // Búsqueda por texto: numero_orden, numero_pedido_agente y/o IDs de órdenes

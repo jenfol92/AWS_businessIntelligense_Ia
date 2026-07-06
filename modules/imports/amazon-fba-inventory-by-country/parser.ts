@@ -81,16 +81,18 @@ const COUNTRY_COLUMNS = [
  * No usar reserved, unsellable, inbound, working, ending warehouse balance, etc.
  */
 const STOCK_COLUMNS = [
-  "quantity available",
-  "quantity-available",
   "quantity-for-local-fulfillment",
   "quantity for local fulfillment",
-  "available",
-  "fulfillable quantity",
-  "fulfillable-quantity",
   "afn fulfillable quantity",
   "afn-fulfillable-quantity",
+  "fulfillable quantity",
+  "fulfillable-quantity",
   "sellable",
+
+  // Fallbacks: solo si el informe no trae columnas más específicas.
+  "quantity available",
+  "quantity-available",
+  "available",
 ];
 
 function hasStockColumnPresent(row: RawRow): boolean {

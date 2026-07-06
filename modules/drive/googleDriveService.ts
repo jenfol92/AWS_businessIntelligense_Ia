@@ -227,6 +227,32 @@ export async function uploadContainerDocument(
 }
 
 /**
+ * Obtiene o crea la carpeta de un shipment Amazon inbound.
+ * Estructura: {root}/Amazon Inbound Shipments/{shipmentId}
+ */
+export async function getOrCreateAmazonInboundShipmentFolder(
+  shipmentId: string,
+): Promise<string> {
+  const { drive } = await getAdminDriveClientSafe();
+  const rootId = getRootFolderId();
+  const parentId = await getOrCreateFolder(drive, "Amazon Inbound Shipments", rootId);
+  return getOrCreateFolder(drive, sanitizeName(shipmentId), parentId);
+}
+
+/**
+ * Sube un documento de shipment Amazon inbound a Drive.
+ */
+export async function uploadAmazonInboundShipmentDocument(
+  shipmentId: string,
+  fileName: string,
+  buffer: Buffer,
+  mimeType: string,
+): Promise<DriveUploadResult> {
+  const folderId = await getOrCreateAmazonInboundShipmentFolder(shipmentId);
+  return uploadFileToDriveFolder(folderId, fileName, buffer, mimeType);
+}
+
+/**
  * Sube la proforma firmada de una orden a Drive.
  * Si la orden tiene contenedor, va dentro de la carpeta del contenedor.
  * Si no tiene contenedor, va en _Ordenes_sin_contenedor/{numeroOrden}.

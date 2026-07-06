@@ -9,10 +9,12 @@ export {
 import { FBA_COUNTRY_REPORT_TYPE } from "./config";
 import { mapGenericError } from "./errors";
 import {
+  commitFbaCountryReportJob,
   downloadAndPreviewFbaCountryReportJob,
   requestFbaCountryReportJob,
 } from "./fbaCountryReportService";
 import {
+  findLatestImportedAmazonReportJob,
   findBlockingAmazonReportJob,
   listAmazonReportJobsReadyForPreview,
   listAmazonReportJobsReadyToCommit,
@@ -118,6 +120,26 @@ export type AmazonReportReadyToCommitItem = {
   debugHasImportSummary?: boolean;
 };
 
+export type AmazonReportCommitReadyResult = {
+  jobId: string;
+  reportId: string | null;
+  reportType: string;
+  action: "committed" | "skipped_superseded" | "error";
+  supersededByJobId?: string;
+  supersededByReportId?: string | null;
+  inventarioPaisesUpserted?: number;
+  historySnapshotsUpserted?: number;
+  error?: string;
+};
+
+export type AmazonReportCommitReadySummary = {
+  checked: number;
+  committed: number;
+  skippedSuperseded: number;
+  errors: number;
+  results: AmazonReportCommitReadyResult[];
+};
+
 export type AmazonReportRunSafeSummary = {
   steps: {
     poll: Pick<
@@ -128,12 +150,18 @@ export type AmazonReportRunSafeSummary = {
       AmazonReportPreviewSummary,
       "checked" | "previewed" | "skipped" | "errors"
     >;
+    commit: Pick<
+      AmazonReportCommitReadySummary,
+      "checked" | "committed" | "skippedSuperseded" | "errors"
+    >;
     requestDue: Pick<
       AmazonReportRequestDueSummary,
       "processed" | "requested" | "skippedLocked" | "skippedExistingJob" | "errors"
     >;
   };
   readyToCommit: AmazonReportReadyToCommitItem[];
+  skippedSuperseded: AmazonReportCommitReadyResult[];
+  errors: Array<{ step: "poll" | "preview" | "commit" | "requestDue"; count: number }>;
 };
 
 const SUPPORTED_FBA_COUNTRY_SCHEDULE_TYPES = new Set([
@@ -184,6 +212,23 @@ function countriesFromSummary(summary: Record<string, unknown>): string[] {
   const value = summary.countries;
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item)).filter(Boolean);
+}
+
+function timestampMs(value: string | null): number {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function isJobOlderThanImported(
+  job: { requested_at: string; updated_at: string },
+  imported: { requested_at: string; updated_at: string } | null,
+): boolean {
+  if (!imported) return false;
+  const jobTime = timestampMs(job.requested_at) || timestampMs(job.updated_at);
+  const importedTime =
+    timestampMs(imported.requested_at) || timestampMs(imported.updated_at);
+  return importedTime > jobTime;
 }
 
 async function requestDueAmazonReportSchedule(
@@ -577,11 +622,116 @@ export async function listReadyToCommitAmazonReportJobs(): Promise<
     });
 }
 
+export async function commitReadyAmazonReportJobs(): Promise<AmazonReportCommitReadySummary> {
+  const jobs = await listAmazonReportJobsReadyToCommit({
+    reportType: FBA_COUNTRY_REPORT_TYPE,
+  });
+  const latestImported = await findLatestImportedAmazonReportJob({
+    reportType: FBA_COUNTRY_REPORT_TYPE,
+  });
+
+  console.info("[amazon-report-scheduler] ready report jobs for commit found", {
+    count: jobs.length,
+    reportType: FBA_COUNTRY_REPORT_TYPE,
+    latestImportedJobId: latestImported?.id ?? null,
+    latestImportedReportId: latestImported?.report_id ?? null,
+  });
+
+  const results: AmazonReportCommitReadyResult[] = [];
+
+  for (const job of jobs) {
+    if (isJobOlderThanImported(job, latestImported)) {
+      await updateReportJob(job.id, {
+        raw: {
+          ...(job.raw ?? {}),
+          supersededAt: new Date().toISOString(),
+          supersededByJobId: latestImported?.id ?? null,
+          supersededByReportId: latestImported?.report_id ?? null,
+          supersededReason:
+            "Skipped by scheduler because a newer job of the same report_type is already IMPORTED.",
+        },
+      });
+
+      console.warn("[amazon-report-scheduler] report job skipped superseded", {
+        jobId: job.id,
+        reportId: job.report_id,
+        reportType: job.report_type,
+        supersededByJobId: latestImported?.id ?? null,
+        supersededByReportId: latestImported?.report_id ?? null,
+      });
+
+      results.push({
+        jobId: job.id,
+        reportId: job.report_id,
+        reportType: job.report_type,
+        action: "skipped_superseded",
+        supersededByJobId: latestImported?.id,
+        supersededByReportId: latestImported?.report_id ?? null,
+      });
+      continue;
+    }
+
+    try {
+      const { job: updatedJob, commit } = await commitFbaCountryReportJob(job.id);
+      console.info("[amazon-report-scheduler] report job auto committed", {
+        jobId: updatedJob.id,
+        reportId: updatedJob.report_id,
+        reportType: updatedJob.report_type,
+        inventarioPaisesUpserted: commit.inventarioPaisesUpserted,
+        historySnapshotsUpserted: commit.historySnapshotsUpserted,
+      });
+
+      results.push({
+        jobId: updatedJob.id,
+        reportId: updatedJob.report_id,
+        reportType: updatedJob.report_type,
+        action: "committed",
+        inventarioPaisesUpserted: commit.inventarioPaisesUpserted,
+        historySnapshotsUpserted: commit.historySnapshotsUpserted,
+      });
+    } catch (error: unknown) {
+      const mapped = mapGenericError(error);
+      console.error("[amazon-report-scheduler] report job commit error", {
+        jobId: job.id,
+        reportId: job.report_id,
+        reportType: job.report_type,
+        error: mapped.message,
+      });
+
+      results.push({
+        jobId: job.id,
+        reportId: job.report_id,
+        reportType: job.report_type,
+        action: "error",
+        error: mapped.message,
+      });
+    }
+  }
+
+  return {
+    checked: jobs.length,
+    committed: results.filter((result) => result.action === "committed").length,
+    skippedSuperseded: results.filter(
+      (result) => result.action === "skipped_superseded",
+    ).length,
+    errors: results.filter((result) => result.action === "error").length,
+    results,
+  };
+}
+
 export async function runSafeAmazonReportScheduler(): Promise<AmazonReportRunSafeSummary> {
   const poll = await pollPendingAmazonReportJobs();
   const preview = await previewReadyAmazonReportJobs();
+  const commit = await commitReadyAmazonReportJobs();
   const requestDue = await requestDueAmazonReportSchedules();
   const readyToCommit = await listReadyToCommitAmazonReportJobs();
+  const errorSteps: AmazonReportRunSafeSummary["errors"] = [
+    { step: "poll", count: poll.errors },
+    { step: "preview", count: preview.errors },
+    { step: "commit", count: commit.errors },
+    { step: "requestDue", count: requestDue.errors },
+  ];
+  const errors = errorSteps.filter((item) => item.count > 0);
 
   return {
     steps: {
@@ -598,6 +748,12 @@ export async function runSafeAmazonReportScheduler(): Promise<AmazonReportRunSaf
         skipped: preview.skipped,
         errors: preview.errors,
       },
+      commit: {
+        checked: commit.checked,
+        committed: commit.committed,
+        skippedSuperseded: commit.skippedSuperseded,
+        errors: commit.errors,
+      },
       requestDue: {
         processed: requestDue.processed,
         requested: requestDue.requested,
@@ -607,5 +763,9 @@ export async function runSafeAmazonReportScheduler(): Promise<AmazonReportRunSaf
       },
     },
     readyToCommit,
+    skippedSuperseded: commit.results.filter(
+      (result) => result.action === "skipped_superseded",
+    ),
+    errors,
   };
 }

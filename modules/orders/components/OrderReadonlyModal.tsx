@@ -50,6 +50,7 @@ type OrdenDetalle = {
   numero_orden:         string | null;
   numero_pedido_agente: string | null;
   estado:               string;
+  tipo_envio:           "propio" | "amazon_agl";
   fob_puerto:           string | null;
   destino:              string | null;
   fecha_orden:          string;
@@ -98,6 +99,10 @@ const ESTADO_STYLE: Record<string, string> = {
   cancelado:  "bg-red-50 text-red-600",
   recibido:   "bg-blue-50 text-blue-700",
 };
+
+function tipoEnvioLabel(tipoEnvio: string | null | undefined): string {
+  return tipoEnvio === "amazon_agl" ? "Amazon AGL" : "Envio propio";
+}
 
 // ─── Componente ───────────────────────────────────────────────────────────────
 
@@ -179,6 +184,7 @@ export default function OrderReadonlyModal({ ordenId, onClose }: OrderReadonlyMo
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 text-xs">
                 {[
                   { label: "Fecha orden",  value: fmtDate(orden.fecha_orden) },
+                  { label: "Tipo envio",   value: tipoEnvioLabel(orden.tipo_envio) },
                   { label: "FOB Puerto",   value: orden.fob_puerto  ?? "—" },
                   { label: "Destino",      value: orden.destino     ?? "—" },
                   { label: "ETA",          value: fmtDate(orden.eta) },

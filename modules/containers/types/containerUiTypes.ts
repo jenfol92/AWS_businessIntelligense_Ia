@@ -32,6 +32,7 @@ export type ContenedorRow = {
   identificador_embarque:    string;
   numero_contenedor?:        string | null;
   tipo_contenedor:           string | null;
+  destino_pais_id?:          string | null;
   transitario:               string | null;
   puerto_salida:             string | null;
   puerto_llegada:            string | null;

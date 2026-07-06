@@ -37,7 +37,10 @@ export async function getReportJobById(
   return (data as AmazonSpApiReportJobRow | null) ?? null;
 }
 
-export type BlockingAmazonReportJobReason = "pending" | "recent_success";
+export type BlockingAmazonReportJobReason =
+  | "open_job"
+  | "pending"
+  | "recent_success";
 
 export type BlockingAmazonReportJob = {
   job: AmazonSpApiReportJobRow;
@@ -48,6 +51,32 @@ export async function findBlockingAmazonReportJob(params: {
   reportType: string;
   recentSince: Date;
 }): Promise<BlockingAmazonReportJob | null> {
+  const { data: openData, error: openError } = await supabaseAdmin
+    .from("amazon_spapi_report_jobs")
+    .select("*")
+    .eq("report_type", params.reportType)
+    .in("status", [
+      "CREATED",
+      "SUBMITTED",
+      "IN_PROGRESS",
+      "DONE",
+      "DOWNLOADED",
+      "PARSED_PREVIEW",
+    ])
+    .is("error_message", null)
+    .order("requested_at", { ascending: false });
+
+  if (openError) throw new Error(openError.message);
+
+  const openJob = ((openData ?? []) as AmazonSpApiReportJobRow[]).find((job) => {
+    if (job.raw?.importedAt || job.raw?.importSummary) return false;
+    if (job.raw?.supersededAt) return false;
+    return true;
+  });
+  if (openJob) {
+    return { job: openJob, reason: "open_job" };
+  }
+
   const { data: pendingData, error: pendingError } = await supabaseAdmin
     .from("amazon_spapi_report_jobs")
     .select("*")
@@ -141,6 +170,8 @@ export async function listAmazonReportJobsReadyToCommit(params: {
     if (job.processing_status !== "DONE") return false;
     if (job.error_message) return false;
     if (job.raw?.importedAt || job.raw?.importSummary) return false;
+    if (job.raw?.supersededAt) return false;
+    if (!getReportContentFromJob(job)) return false;
     const summary = job.raw?.lastPreviewSummary;
     if (!summary || typeof summary !== "object") return false;
     const record = summary as Record<string, unknown>;
@@ -149,6 +180,23 @@ export async function listAmazonReportJobsReadyToCommit(params: {
       Number(record.warnings) === 0
     );
   });
+}
+
+export async function findLatestImportedAmazonReportJob(params: {
+  reportType: string;
+}): Promise<AmazonSpApiReportJobRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from("amazon_spapi_report_jobs")
+    .select("*")
+    .eq("report_type", params.reportType)
+    .eq("status", "IMPORTED")
+    .is("error_message", null)
+    .order("requested_at", { ascending: false })
+    .limit(1);
+
+  if (error) throw new Error(error.message);
+
+  return (((data ?? []) as AmazonSpApiReportJobRow[])[0] ?? null);
 }
 
 export async function updateReportJob(

@@ -18,6 +18,8 @@ export async function createReport(
     body: {
       reportType: input.reportType,
       marketplaceIds: input.marketplaceIds,
+      ...(input.dataStartTime ? { dataStartTime: input.dataStartTime } : {}),
+      ...(input.dataEndTime ? { dataEndTime: input.dataEndTime } : {}),
       ...(input.reportOptions ? { reportOptions: input.reportOptions } : {}),
     },
   });

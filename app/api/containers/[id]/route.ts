@@ -10,7 +10,7 @@
 import { NextResponse } from "next/server";
 import { getContainerDetailService } from "@/modules/containers/services/getContainerDetailService";
 import { updateContainerService } from "@/modules/containers/services/updateContainerService";
-import { deleteContainerWithLinks } from "@/modules/containers/repositories/containerOrdersRepository";
+import { deleteContainerWithConfirmation } from "@/modules/containers/repositories/containerOrdersRepository";
 import type { UpdateContainerBody } from "@/modules/containers/types/updateContainer.types";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 
@@ -83,7 +83,7 @@ export async function PUT(req: Request, { params }: Params) {
 
 // ─── DELETE ───────────────────────────────────────────────────────────────────
 
-export async function DELETE(_req: Request, { params }: Params) {
+export async function DELETE(req: Request, { params }: Params) {
   const supabase = createSupabaseRouteClient();
 
   const { data: { user } } = await supabase.auth.getUser();
@@ -91,11 +91,33 @@ export async function DELETE(_req: Request, { params }: Params) {
     return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
   }
 
-  const result = await deleteContainerWithLinks(supabase, params.id);
-
-  if (result.ok === false) {
-    return NextResponse.json({ ok: false, error: result.error }, { status: 400 });
+  let body: { unlinkAssignedOrders?: boolean } = {};
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    body = {};
   }
 
-  return NextResponse.json({ ok: true });
+  const result = await deleteContainerWithConfirmation(supabase, params.id, {
+    unlinkAssignedOrders: body.unlinkAssignedOrders === true,
+  });
+
+  if (result.ok === false) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: result.error,
+        message: result.error,
+        requiresConfirmation: result.requiresConfirmation,
+        assignedOrders: result.assignedOrders ?? [],
+      },
+      { status: result.status ?? 400 },
+    );
+  }
+
+  return NextResponse.json({
+    ok: true,
+    deletedContainerId: result.deletedContainerId,
+    unlinkedOrders: result.unlinkedOrders ?? 0,
+  });
 }

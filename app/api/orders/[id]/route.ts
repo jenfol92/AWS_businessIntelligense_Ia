@@ -44,6 +44,7 @@ export async function PUT(req: Request, { params }: Params) {
   if (!user) return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
 
   let body: {
+    tipo_envio?: "propio" | "amazon_agl" | null;
     fob_puerto?: string | null;
     destino?: string | null;
     fecha_orden?: string;
@@ -76,7 +77,13 @@ export async function PUT(req: Request, { params }: Params) {
     return NextResponse.json({ ok: false, error: "JSON invalido" }, { status: 400 });
   }
 
-  const { items, ...header } = body;
+  const { items, tipo_envio, ...restHeader } = body;
+  const header = {
+    ...restHeader,
+    ...(tipo_envio != null
+      ? { tipo_envio: tipo_envio === "amazon_agl" ? "amazon_agl" as const : "propio" as const }
+      : {}),
+  };
 
   try {
     const { orden, warnings } = await updateOrderDraft(params.id, header, items);

@@ -7,6 +7,7 @@ import {
   sortOrdersByDate,
 } from "@/modules/planner/components/ArrivalEventCard";
 import type { ArrivalMonth } from "@/modules/planner/types/arrivals.types";
+import type { ArrivalOrder } from "@/modules/planner/types/arrivals.types";
 
 const MONTH_VISUAL_STYLES = [
   { headerClassName: "border-blue-200 bg-blue-100", bodyClassName: "bg-blue-50/35", counterClassName: "bg-blue-700 text-white" },
@@ -38,9 +39,13 @@ function formatDay(iso: string | null): string {
 export function PlannerArrivalMonthDesktopCard({
   month,
   locale,
+  onOpenDetail,
+  onOpenOrder,
 }: {
   month: ArrivalMonth;
   locale: string;
+  onOpenDetail?: (order: ArrivalOrder) => void;
+  onOpenOrder?: (order: ArrivalOrder) => void;
 }) {
   const datedOrders = sortOrdersByDate([...month.confirmedEtaOrders, ...month.estimatedOrders]);
   const byDestination = groupOrdersByDestination(datedOrders);
@@ -90,7 +95,12 @@ export function PlannerArrivalMonthDesktopCard({
                   </span>
                   <span>{order.hasDefinedEta ? "día ETA" : "mes estimado"}</span>
                 </div>
-                <ArrivalEventCard order={order} locale={locale} />
+                <ArrivalEventCard
+                  order={order}
+                  locale={locale}
+                  onOpenDetail={onOpenDetail}
+                  onOpenOrder={onOpenOrder}
+                />
               </div>
             ))}
           </div>
@@ -100,10 +110,16 @@ export function PlannerArrivalMonthDesktopCard({
           <div className="space-y-2 border-t border-dashed border-slate-200 pt-3">
             <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-amber-700">
               <Clock className="h-3.5 w-3.5" aria-hidden />
-              Pendientes de fecha
+              Pendientes de ETA
             </p>
             {month.pendingDateOrders.map((order) => (
-              <ArrivalEventCard key={order.orderId} order={order} locale={locale} />
+              <ArrivalEventCard
+                key={order.orderId}
+                order={order}
+                locale={locale}
+                onOpenDetail={onOpenDetail}
+                onOpenOrder={onOpenOrder}
+              />
             ))}
           </div>
         ) : null}
@@ -117,11 +133,15 @@ export function PlannerArrivalMonthMobileSection({
   locale,
   expanded,
   onToggle,
+  onOpenDetail,
+  onOpenOrder,
 }: {
   month: ArrivalMonth;
   locale: string;
   expanded: boolean;
   onToggle: () => void;
+  onOpenDetail?: (order: ArrivalOrder) => void;
+  onOpenOrder?: (order: ArrivalOrder) => void;
 }) {
   const datedOrders = sortOrdersByDate([...month.confirmedEtaOrders, ...month.estimatedOrders]);
   const monthStyle = getMonthVisualStyle(month.month);
@@ -150,15 +170,29 @@ export function PlannerArrivalMonthMobileSection({
       {expanded ? (
         <div className={`space-y-3 px-3 pb-3 pt-2 ${monthStyle.bodyClassName}`}>
           {datedOrders.map((order) => (
-            <ArrivalEventCard key={order.orderId} order={order} locale={locale} compact />
+            <ArrivalEventCard
+              key={order.orderId}
+              order={order}
+              locale={locale}
+              compact
+              onOpenDetail={onOpenDetail}
+              onOpenOrder={onOpenOrder}
+            />
           ))}
           {month.pendingDateOrders.length > 0 ? (
             <div className="space-y-2 border-t border-dashed border-slate-200 pt-2">
               <p className="text-xs font-bold uppercase tracking-wide text-amber-700">
-                Pendientes de fecha
+                Pendientes de ETA
               </p>
               {month.pendingDateOrders.map((order) => (
-                <ArrivalEventCard key={order.orderId} order={order} locale={locale} compact />
+                <ArrivalEventCard
+                  key={order.orderId}
+                  order={order}
+                  locale={locale}
+                  compact
+                  onOpenDetail={onOpenDetail}
+                  onOpenOrder={onOpenOrder}
+                />
               ))}
             </div>
           ) : null}

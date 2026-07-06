@@ -26,6 +26,7 @@ async function parseApiResponse<T extends ApiJson>(res: Response): Promise<T> {
 export type ConfirmedOrderSummary = {
   id: string;
   numero_orden: string;
+  tipo_envio?: "propio" | "amazon_agl";
   destino: string | null;
   fob_puerto: string | null;
   etd: string | null;
@@ -41,7 +42,12 @@ export type ConfirmedOrderSummary = {
 export type FetchOrdersParams = {
   estado?: string;
   q?: string;
-  puerto?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  etdFrom?: string;
+  etdTo?: string;
+  etaFrom?: string;
+  etaTo?: string;
   limit?: number;
 };
 
@@ -49,7 +55,12 @@ export async function fetchOrders(params: FetchOrdersParams = {}): Promise<Order
   const search = new URLSearchParams();
   if (params.estado && params.estado !== "ALL") search.set("estado", params.estado);
   if (params.q?.trim()) search.set("q", params.q.trim());
-  if (params.puerto?.trim()) search.set("puerto", params.puerto.trim());
+  if (params.createdFrom?.trim()) search.set("createdFrom", params.createdFrom.trim());
+  if (params.createdTo?.trim()) search.set("createdTo", params.createdTo.trim());
+  if (params.etdFrom?.trim()) search.set("etdFrom", params.etdFrom.trim());
+  if (params.etdTo?.trim()) search.set("etdTo", params.etdTo.trim());
+  if (params.etaFrom?.trim()) search.set("etaFrom", params.etaFrom.trim());
+  if (params.etaTo?.trim()) search.set("etaTo", params.etaTo.trim());
   search.set("limit", String(params.limit ?? 200));
 
   const res = await fetch(`/api/orders?${search}`);
@@ -168,6 +179,7 @@ export async function fetchConfirmedOrders(
   return rows.map((row) => ({
     id: row.id,
     numero_orden: row.numero_orden,
+    tipo_envio: row.tipo_envio,
     destino: row.destino,
     fob_puerto: row.fob_puerto,
     etd: row.etd ?? null,

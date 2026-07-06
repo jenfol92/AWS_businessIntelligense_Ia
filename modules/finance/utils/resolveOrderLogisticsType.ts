@@ -13,9 +13,12 @@ function normalizeTipo(value: string | null | undefined): OrderLogisticsType | n
  * Si no hay contenedor vinculado, devuelve sin_definir.
  */
 export function resolveOrderLogisticsType(params: {
+  orderTipoEnvio?: string | null;
   containerTipoContenedor?: string | null;
 }): OrderLogisticsType {
-  return normalizeTipo(params.containerTipoContenedor) ?? "sin_definir";
+  return normalizeTipo(params.orderTipoEnvio)
+    ?? normalizeTipo(params.containerTipoContenedor)
+    ?? "sin_definir";
 }
 
 export function logisticsTypeToPlanningLabel(type: OrderLogisticsType): "AGL" | "PROPIO" | "SIN_DEFINIR" {

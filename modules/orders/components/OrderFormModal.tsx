@@ -35,6 +35,7 @@ export type OrdenRow = {
   id: string;
   numero_orden: string | null;
   estado: "borrador" | "confirmado";
+  tipo_envio?: "propio" | "amazon_agl";
   fob_puerto: string | null;
   destino: string | null;
   fecha_orden: string;
@@ -127,6 +128,9 @@ export default function OrderFormModal({
 }: OrderFormModalProps) {
   const isEdit   = !!initialOrden;
   const readonly = initialOrden?.estado === "confirmado";
+  const [tipoEnvio, setTipoEnvio] = useState<"propio" | "amazon_agl">(
+    initialOrden?.tipo_envio === "amazon_agl" ? "amazon_agl" : "propio",
+  );
 
   // ─── Estado cabecera ──────────────────────────────────────────────────────
 
@@ -258,6 +262,7 @@ export default function OrderFormModal({
 
   useEffect(() => {
     if (!detailState) return;
+    setTipoEnvio(detailState.tipoEnvio);
     setFob(detailState.fob);
     setDestino(detailState.destino);
     setAgenteId(detailState.agenteId);
@@ -440,6 +445,7 @@ export default function OrderFormModal({
     setError(null);
     setSaveWarnings([]);
     const headerOpts = {
+      tipoEnvio,
       fob,
       destino,
       agenteId,
@@ -472,6 +478,7 @@ export default function OrderFormModal({
       if (showSplit && items2.length > 0) {
         const body2 = buildOrderFormPayload(items2, {
           ...headerOpts,
+          tipoEnvio,
           fob: fob2,
           destino: destino2,
           fecha: fecha2,
@@ -530,7 +537,7 @@ export default function OrderFormModal({
         <div className="p-6 space-y-6">
 
           {/* ── Cabecera de la orden ── */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1">
                 FOB Puerto salida
@@ -551,6 +558,22 @@ export default function OrderFormModal({
               {puertosOrigen.length === 0 && (
                 <p className="mt-1 text-[10px] text-red-500">No se han cargado puertos de origen</p>
               )}
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">
+                Tipo de envio previsto
+              </label>
+              <select
+                disabled={readonly}
+                value={tipoEnvio}
+                onChange={(e) =>
+                  setTipoEnvio(e.target.value === "amazon_agl" ? "amazon_agl" : "propio")
+                }
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white disabled:bg-slate-50 disabled:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="propio">Propio</option>
+                <option value="amazon_agl">Amazon AGL</option>
+              </select>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1">

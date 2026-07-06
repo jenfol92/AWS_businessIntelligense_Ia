@@ -172,11 +172,62 @@ export async function validateOrdersForContainerLink(
 
   const assignments = await fetchOrderContainerAssignments(supabase, uniqueOrdenIds);
 
+  const { data: logisticsAssignments, error: logisticsError } = await supabase
+    .from("orden_logistics_assignments")
+    .select("orden_id, assignment_type, shipment_id, contenedor_id")
+    .in("orden_id", uniqueOrdenIds)
+    .eq("status", "active");
+
+  if (logisticsError) {
+    return {
+      ok: false,
+      code: ORDER_ALREADY_HAS_CONTAINER,
+      error: `No se pudo validar la logistica activa de las ordenes: ${logisticsError.message}`,
+      status: 400,
+    };
+  }
+
   const ordenIdsToLink: string[] = [];
 
 
 
   for (const ordenId of uniqueOrdenIds) {
+
+    const activeLogistics = (logisticsAssignments ?? []).find(
+      (row) => (row as Record<string, unknown>)["orden_id"] === ordenId,
+    ) as Record<string, unknown> | undefined;
+
+    if (activeLogistics) {
+      const assignmentType = String(activeLogistics["assignment_type"] ?? "");
+      const assignedContainerId = String(activeLogistics["contenedor_id"] ?? "");
+
+      if (
+        assignmentType === "contenedor_propio" &&
+        options.targetContenedorId &&
+        assignedContainerId === options.targetContenedorId
+      ) {
+        continue;
+      }
+
+      if (assignmentType === "amazon_inbound") {
+        return {
+          ok: false,
+          code: ORDER_ALREADY_HAS_CONTAINER,
+          error:
+            "La orden ya tiene un shipment Amazon inbound activo. Desvincula esa logistica antes de vincular un contenedor propio.",
+          status: 409,
+        };
+      }
+
+      if (assignmentType && assignmentType !== "contenedor_propio") {
+        return {
+          ok: false,
+          code: ORDER_ALREADY_HAS_CONTAINER,
+          error: `La orden ya tiene una logistica activa (${assignmentType}). Desvinculala antes de vincular un contenedor propio.`,
+          status: 409,
+        };
+      }
+    }
 
     const existing = assignments.find((row) => row.orden_id === ordenId);
 
@@ -294,6 +345,27 @@ export async function linkOrdersToContainer(
 
   }
 
+  const assignmentRows = validation.ordenIdsToLink.map((ordenId) => ({
+    orden_id: ordenId,
+    assignment_type: "contenedor_propio",
+    contenedor_id: contenedorId,
+    shipment_id: null,
+    status: "active",
+  }));
+
+  const { error: assignmentError } = await supabase
+    .from("orden_logistics_assignments")
+    .insert(assignmentRows);
+
+  if (assignmentError) {
+    return {
+      ok: false,
+      code: ORDER_ALREADY_HAS_CONTAINER,
+      error: `El contenedor se vinculo, pero no se pudo registrar la logistica activa: ${assignmentError.message}`,
+      status: 400,
+    };
+  }
+
 
 
   return { ok: true };
@@ -369,5 +441,66 @@ export async function deleteContainerWithLinks(
   }
 
   return { ok: true };
+}
+
+export async function deleteContainerWithConfirmation(
+  supabase: SupabaseClient,
+  contenedorId: string,
+  options: { unlinkAssignedOrders?: boolean } = {},
+): Promise<
+  | { ok: true; deletedContainerId?: string; unlinkedOrders?: number }
+  | {
+      ok: false;
+      error: string;
+      status?: number;
+      requiresConfirmation?: boolean;
+      assignedOrders?: Array<{
+        id: string;
+        numero_orden: string | null;
+        numero_pedido_agente: string | null;
+      }>;
+    }
+> {
+  const { data, error } = await supabase.rpc("delete_container_unlink_orders", {
+    p_contenedor_id: contenedorId,
+    p_unlink_assigned_orders: options.unlinkAssignedOrders === true,
+  });
+
+  if (error) {
+    return {
+      ok: false,
+      error: `No se pudo eliminar el contenedor: ${error.message}`,
+      status: 400,
+    };
+  }
+
+  const result = (data ?? {}) as Record<string, unknown>;
+  if (result.ok === true) {
+    return {
+      ok: true,
+      deletedContainerId: String(result.deletedContainerId ?? contenedorId),
+      unlinkedOrders: Number(result.unlinkedOrders ?? 0),
+    };
+  }
+
+  const assignedOrders = Array.isArray(result.assignedOrders)
+    ? result.assignedOrders.map((row) => {
+        const item = row as Record<string, unknown>;
+        return {
+          id: String(item.id ?? ""),
+          numero_orden: item.numero_orden != null ? String(item.numero_orden) : null,
+          numero_pedido_agente:
+            item.numero_pedido_agente != null ? String(item.numero_pedido_agente) : null,
+        };
+      })
+    : [];
+
+  return {
+    ok: false,
+    error: String(result.message ?? result.error ?? "No se pudo eliminar el contenedor."),
+    status: Number(result.status ?? (result.requiresConfirmation ? 409 : 400)),
+    requiresConfirmation: result.requiresConfirmation === true,
+    assignedOrders,
+  };
 }
 

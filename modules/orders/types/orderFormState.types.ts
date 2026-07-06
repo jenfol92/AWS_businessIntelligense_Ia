@@ -38,6 +38,7 @@ export type OrderFormItemState = {
  * Contiene cabecera y líneas listas para aplicar a los setters del formulario.
  */
 export type OrderFormLoaderState = {
+  tipoEnvio: "propio" | "amazon_agl";
   fob: string;
   destino: string;
   agenteId: string;

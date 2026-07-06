@@ -16,8 +16,8 @@ export function orderMatchesArrivalFilters(
 ): boolean {
   if (!matchesArrivalStatusFilter(filters.status, order.status)) return false;
 
-  if (filters.container === "with" && !order.containerId) return false;
-  if (filters.container === "without" && order.containerId) return false;
+  if (filters.container === "with" && order.logisticsKind === "none") return false;
+  if (filters.container === "without" && order.logisticsKind !== "none") return false;
 
   if (filters.search.trim()) {
     const q = filters.search.trim().toLowerCase();
@@ -26,6 +26,9 @@ export function orderMatchesArrivalFilters(
       order.numeroOrden,
       order.numeroPedidoAgente,
       order.containerNumber,
+      order.amazonInbound?.shipment_id,
+      order.amazonInbound?.shipment_name,
+      order.amazonInbound?.destination_center,
       order.productSummary,
       order.destination,
     ]

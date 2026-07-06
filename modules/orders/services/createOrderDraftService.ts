@@ -66,6 +66,7 @@ function mapDraftToHeaderInput(
 ): InsertOrderHeaderInput {
   return {
     estado: draft.estado,
+    tipo_envio: draft.tipoEnvio === "amazon_agl" ? "amazon_agl" : "propio",
 
     fob_puerto: draft.fobPuerto ?? null,
     destino: draft.destino ?? null,

@@ -3,6 +3,7 @@
 // Detalle completo de inventario para un producto seleccionado.
 
 import type { ProductForecastConfigUpsertBody } from "@/modules/planning/types";
+import { fetchAmazonSyncJobStatus } from "../repositories/inventoryRepository";
 import type { InventoryProductDetailResponse } from "../types/inventory.types";
 import {
   buildCountryRowsForProduct,
@@ -14,9 +15,21 @@ import { resolveCountryScope } from "./inventoryScope";
 import {
   applyScopedProductMetrics,
   findProductInContext,
-  loadInventoryContext,
+  loadInventoryContextForProduct,
 } from "./loadInventoryContext";
 import { buildOperationalStockSummary } from "./resolveOperationalStock";
+
+function logInventoryDetailTiming(
+  productId: string,
+  productIdsCount: number,
+  label: string,
+  start: number,
+) {
+  if (process.env.NODE_ENV !== "development") return;
+  console.log(
+    `[inventory-detail timing] productId=${productId} productIds=${productIdsCount} ${label}: ${Date.now() - start}ms`,
+  );
+}
 
 export type ProductInventoryDetailParams = {
   canal?: string;
@@ -30,25 +43,58 @@ export async function buildProductInventoryDetail(
   productId: string,
   params: ProductInventoryDetailParams = {},
 ): Promise<InventoryProductDetailResponse | null> {
+  const totalStart = Date.now();
+  let productIdsCount = 0;
+
+  try {
   const windowDays = params.windowDays ?? 30;
-  const ctx = await loadInventoryContext(params.canal, windowDays);
+  const contextStart = Date.now();
+  const ctx = await loadInventoryContextForProduct(
+    productId,
+    params.canal,
+    windowDays,
+  );
+  productIdsCount = ctx.productIds.length;
+  logInventoryDetailTiming(
+    productId,
+    productIdsCount,
+    "loadInventoryContextForProduct",
+    contextStart,
+  );
+  const fbaInventorySyncStatus = await fetchAmazonSyncJobStatus(
+    "amazon_fba_inventory_snapshot",
+  );
   const productRow = findProductInContext(ctx, productId);
 
-  async function assembleDetail(
+  const assembleDetail = async (
     targetId: string,
     product: ReturnType<typeof buildProductSummary>,
-  ): Promise<InventoryProductDetailResponse> {
+  ): Promise<InventoryProductDetailResponse> => {
+    const scopedStart = Date.now();
     const scopedProduct = applyScopedProductMetrics(
       product,
       ctx,
       params.pais,
       params.canal,
     );
+    logInventoryDetailTiming(
+      targetId,
+      productIdsCount,
+      "applyScopedProductMetrics",
+      scopedStart,
+    );
     const countryScope = resolveCountryScope(params.pais);
+    const countryRowsStart = Date.now();
     const countries = buildCountryRowsForProduct(targetId, ctx).filter((row) => {
       if (countryScope.countries == null) return true;
       return countryScope.countries.includes(row.pais);
     });
+    logInventoryDetailTiming(
+      targetId,
+      productIdsCount,
+      "buildCountryRowsForProduct",
+      countryRowsStart,
+    );
     const inbound = ctx.inbound.get(targetId) ?? [];
     const inboundUnitsConfirmedTotal = inbound
       .filter((row) => row.usableForPlanning !== false && row.planningKind !== "PURCHASE_ORDER_PROVISIONAL")
@@ -82,11 +128,23 @@ export async function buildProductInventoryDetail(
     const productInvRows = ctx.inventoryRows.filter(
       (r) => r.producto_id === targetId,
     );
-    const operationalStock = buildOperationalStockSummary(
-      productInvRows,
-      ctx.fbaLedgerLatest.get(targetId),
+    const operationalStockStart = Date.now();
+    const operationalStock = {
+      ...buildOperationalStockSummary(
+        productInvRows,
+        ctx.fbaLedgerLatest.get(targetId),
+        ctx.fbaInventorySnapshotLatest.get(targetId),
+      ),
+      fbaInventorySyncStatus,
+    };
+    logInventoryDetailTiming(
+      targetId,
+      productIdsCount,
+      "buildOperationalStockSummary",
+      operationalStockStart,
     );
 
+    const annualForecastStart = Date.now();
     const annualForecast = await buildAnnualInventoryForecast(
       baseProduct,
       ctx.inventoryRows,
@@ -100,7 +158,14 @@ export async function buildProductInventoryDetail(
         operationalStock,
       },
     );
+    logInventoryDetailTiming(
+      targetId,
+      productIdsCount,
+      "buildAnnualInventoryForecast",
+      annualForecastStart,
+    );
 
+    const forecastPanelStart = Date.now();
     const forecast = await buildInventoryForecastPanel(
       scopedProduct,
       stockSuggestion,
@@ -113,6 +178,12 @@ export async function buildProductInventoryDetail(
         stockoutRiskHint,
         annualForecast,
       },
+    );
+    logInventoryDetailTiming(
+      targetId,
+      productIdsCount,
+      "buildInventoryForecastPanel",
+      forecastPanelStart,
     );
 
     return {
@@ -137,13 +208,35 @@ export async function buildProductInventoryDetail(
     const child = ctx.products.find((p) => p.id === productId);
     if (!child) return null;
 
+    const summaryStart = Date.now();
     const product = buildProductSummary(child, ctx);
-    return assembleDetail(productId, product);
-  }
+    logInventoryDetailTiming(
+      productId,
+      productIdsCount,
+      "buildProductSummary",
+      summaryStart,
+    );
+    return await assembleDetail(productId, product);
+  };
 
+  const summaryStart = Date.now();
   const childRows = ctx.products.filter((p) => p.parent_id === productId);
   const variantes = childRows.map((c) => buildProductSummary(c, ctx));
   const product = buildProductSummary(productRow, ctx, variantes);
+  logInventoryDetailTiming(
+    productId,
+    productIdsCount,
+    "buildProductSummary",
+    summaryStart,
+  );
 
-  return assembleDetail(productId, product);
+  return await assembleDetail(productId, product);
+  } finally {
+    logInventoryDetailTiming(
+      productId,
+      productIdsCount,
+      "buildProductInventoryDetail total",
+      totalStart,
+    );
+  }
 }

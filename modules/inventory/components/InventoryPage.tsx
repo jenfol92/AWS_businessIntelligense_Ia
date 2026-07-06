@@ -44,8 +44,23 @@ import type {
   InventoryRiskLevel,
 } from "../types/inventory.types";
 import { inboundPlanningKindLabel } from "@/modules/planner/services/mapForecastInboundToInventoryRow";
+import OrderReadonlyModal from "@/modules/orders/components/OrderReadonlyModal";
 
 type DetailFail = { ok: false; error: string };
+
+type InventoryProductLite = {
+  id: string;
+  sku: string;
+  nombre: string | null;
+  parent_id: string | null;
+  proveedor_id: string | null;
+  estado: string | null;
+};
+
+type InventoryProductsLiteResponse = {
+  ok: true;
+  products: InventoryProductLite[];
+};
 
 function resolveLocale(raw: string | string[] | undefined): string {
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -78,6 +93,16 @@ function fmtDate(iso: string | null | undefined): string {
   const d = new Date(`${iso.slice(0, 10)}T00:00:00`);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("es-ES");
+}
+
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("es-ES", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
 }
 
 const FORECAST_COUNTRY_LABELS: Record<string, string> = {
@@ -173,6 +198,9 @@ export function InventoryPage() {
   const showStockoutDebug =
     process.env.NODE_ENV === "development" &&
     searchParams.get("debugStockout") === "1";
+  const showAmazonImportDiagnostics =
+    process.env.NODE_ENV === "development" ||
+    searchParams.get("debugAmazonImports") === "1";
 
   const [search, setSearch] = useState("");
   const [categoriaFilter, setCategoriaFilter] = useState("ALL");
@@ -185,6 +213,8 @@ export function InventoryPage() {
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [listData, setListData] = useState<InventoryComparisonResponse | null>(null);
+  const [liteProducts, setLiteProducts] = useState<InventoryProductLite[]>([]);
+  const [initialDetailLoaded, setInitialDetailLoaded] = useState(false);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [variantByParent, setVariantByParent] = useState<Record<string, string>>({});
@@ -195,12 +225,16 @@ export function InventoryPage() {
   const [simulationOverride, setSimulationOverride] =
     useState<ProductForecastConfigUpsertBody | null>(null);
   const activeDetailAbortRef = useRef<AbortController | null>(null);
+  const activeListAbortRef = useRef<AbortController | null>(null);
   const detailRequestIdRef = useRef(0);
+  const listRequestIdRef = useRef(0);
   const simulationProductIdRef = useRef<string | null>(null);
 
   const [expandedPais, setExpandedPais] = useState<string | null>(null);
   const [lotesData, setLotesData] = useState<InventoryLotesResponse | null>(null);
   const [lotesLoading, setLotesLoading] = useState(false);
+  const [amazonImportLoading, setAmazonImportLoading] = useState<string | null>(null);
+  const [amazonImportMessage, setAmazonImportMessage] = useState<string | null>(null);
 
   const filterState = useMemo(
     () => ({
@@ -231,29 +265,94 @@ export function InventoryPage() {
   );
 
   const loadList = useCallback(async () => {
+    activeListAbortRef.current?.abort();
+    const requestId = listRequestIdRef.current + 1;
+    listRequestIdRef.current = requestId;
+    const controller = new AbortController();
+    activeListAbortRef.current = controller;
     setListLoading(true);
     setListError(null);
     try {
-      const res = await fetch(comparisonUrl, { cache: "no-store" });
+      const res = await fetch(comparisonUrl, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
       const json = (await res.json()) as InventoryComparisonResponse | DetailFail;
+      if (listRequestIdRef.current !== requestId) return;
       if (!res.ok || json.ok === false) {
         setListData(null);
         setListError("error" in json ? json.error : `HTTP ${res.status}`);
         return;
       }
       setListData(json);
-      setSelectedId((current) => current ?? json.products[0]?.productoId ?? null);
+      setSelectedId((current) => {
+        const flat = flattenProducts(json.products);
+        if (!current) return flat[0]?.productoId ?? null;
+        return flat.some((p) => p.productoId === current)
+          ? current
+          : flat[0]?.productoId ?? null;
+      });
     } catch (e) {
+      if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+        return;
+      }
+      if (listRequestIdRef.current !== requestId) return;
       setListError(e instanceof Error ? e.message : "Error de red");
       setListData(null);
     } finally {
-      setListLoading(false);
+      if (listRequestIdRef.current === requestId) {
+        setListLoading(false);
+        if (activeListAbortRef.current === controller) {
+          activeListAbortRef.current = null;
+        }
+      }
     }
   }, [comparisonUrl]);
 
   useEffect(() => {
-    void loadList();
-  }, [loadList]);
+    const controller = new AbortController();
+
+    async function loadProductsLite() {
+      try {
+        const res = await fetch("/api/inventory/products-lite", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const json = (await res.json()) as InventoryProductsLiteResponse | DetailFail;
+        if (controller.signal.aborted) return;
+        if (!res.ok || json.ok === false) return;
+        setLiteProducts(json.products);
+        setSelectedId((current) => current ?? json.products[0]?.id ?? null);
+      } catch (e) {
+        if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+          return;
+        }
+      }
+    }
+
+    void loadProductsLite();
+    return () => {
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!initialDetailLoaded) return;
+    const timeoutId = window.setTimeout(() => {
+      void loadList();
+    }, 1000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      activeListAbortRef.current?.abort();
+    };
+  }, [initialDetailLoaded, loadList]);
+
+  useEffect(() => {
+    return () => {
+      activeListAbortRef.current?.abort();
+    };
+  }, []);
 
   const selectedProduct = useMemo(
     () =>
@@ -262,10 +361,11 @@ export function InventoryPage() {
         : null,
     [listData, selectedId, variantByParent],
   );
+  const selectedProductId = selectedProduct?.productoId ?? selectedId;
   const isSimulationActiveForSelectedProduct =
     simulationOverride != null &&
-    selectedProduct?.productoId != null &&
-    simulationProductIdRef.current === selectedProduct.productoId;
+    selectedProductId != null &&
+    simulationProductIdRef.current === selectedProductId;
 
   const loadDetail = useCallback(
     async (
@@ -290,6 +390,7 @@ export function InventoryPage() {
         });
         if (detailRequestIdRef.current !== requestId) return;
         setDetail(json);
+        setInitialDetailLoaded(true);
       } catch (e) {
         if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
           return;
@@ -321,18 +422,15 @@ export function InventoryPage() {
   }, []);
 
   useEffect(() => {
-    if (!selectedProduct?.productoId) return;
+    if (!selectedProductId) return;
     const effectiveOverride =
-      simulationProductIdRef.current === selectedProduct.productoId
+      simulationProductIdRef.current === selectedProductId
         ? simulationOverride
         : null;
-    void loadDetail(selectedProduct.productoId, effectiveOverride);
+    void loadDetail(selectedProductId, effectiveOverride);
   }, [
-    selectedProduct?.productoId,
+    selectedProductId,
     loadDetail,
-    canal,
-    pais,
-    windowDays,
     simulationOverride,
   ]);
 
@@ -342,14 +440,14 @@ export function InventoryPage() {
       setLotesData(null);
       return;
     }
-    if (!selectedProduct) return;
+    if (!detail) return;
 
     setExpandedPais(pais);
     setLotesLoading(true);
     setLotesData(null);
     try {
       const q = new URLSearchParams({
-        producto_id: selectedProduct.productoId,
+        producto_id: detail.product.productoId,
         pais,
       });
       const res = await fetch(`/api/inventory/lotes?${q.toString()}`);
@@ -360,7 +458,124 @@ export function InventoryPage() {
     }
   }
 
+  type AmazonForecastImportKind = "sales" | "salesAlt" | "snapshot" | "ledger";
+
+  function formatAmazonImportResult(
+    label: string,
+    json: {
+      ok: boolean;
+      error?: string;
+      summary?: {
+        reportId?: string;
+        status?: string;
+        processingStatus?: string | null;
+        rowsUpserted?: number;
+        ventasDiariasUpserted?: number;
+        warnings?: string[];
+        error?: string;
+      };
+    },
+  ): string {
+    const summary = json.summary;
+    return [
+      `${label}: ${fmtNum(summary?.rowsUpserted ?? 0)} filas actualizadas`,
+      summary?.ventasDiariasUpserted != null
+        ? `ventas_diarias ${fmtNum(summary.ventasDiariasUpserted)}`
+        : null,
+      summary?.status ? `status ${summary.status}` : null,
+      summary?.processingStatus ? `processing ${summary.processingStatus}` : null,
+      summary?.reportId ? `reportId ${summary.reportId}` : null,
+      json.error || summary?.error ? `error ${json.error ?? summary?.error}` : null,
+      ...(summary?.warnings?.slice(0, 3).map((warning) => `warning ${warning}`) ?? []),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  async function runAmazonForecastImport(kind: AmazonForecastImportKind) {
+    const labels = {
+      sales: "ventas FBA",
+      salesAlt: "ventas FBA alt.",
+      snapshot: "stock FBA",
+      ledger: "ledger FBA",
+    };
+    const confirmed = window.confirm(
+      `Importar ${labels[kind]} desde SP-API. No se tocará inventario_paises ni stock manual.`,
+    );
+    if (!confirmed) return;
+
+    const toDate = new Date().toISOString().slice(0, 10);
+    const from = new Date();
+    from.setDate(from.getDate() - 30);
+    const fromDate = from.toISOString().slice(0, 10);
+
+    const endpoint =
+      kind === "sales" || kind === "salesAlt"
+        ? "/api/amazon/reports/fba-sales/import"
+        : kind === "snapshot"
+          ? "/api/amazon/inventory/fba-snapshot/import"
+          : "/api/amazon/reports/fba-ledger/import";
+
+    const body =
+      kind === "snapshot"
+        ? {}
+        : {
+            fromDate,
+            toDate,
+            ...(kind === "salesAlt"
+              ? { reportType: "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL" }
+              : {}),
+          };
+
+    setAmazonImportLoading(kind);
+    setAmazonImportMessage(null);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = (await res.json()) as {
+        ok: boolean;
+        error?: string;
+        summary?: {
+          rowsParsed?: number;
+          rowsUpserted?: number;
+          ventasDiariasUpserted?: number;
+          reportId?: string;
+          status?: string;
+          processingStatus?: string | null;
+          warnings?: string[];
+          error?: string;
+        };
+      };
+      if (!res.ok || !json.ok) {
+        setAmazonImportMessage(formatAmazonImportResult(labels[kind], json));
+        return;
+      }
+      const summary = json.summary;
+      setAmazonImportMessage(
+        `${labels[kind]}: ${fmtNum(summary?.rowsUpserted ?? 0)} filas actualizadas` +
+          (summary?.ventasDiariasUpserted != null
+            ? ` · ventas_diarias ${fmtNum(summary.ventasDiariasUpserted)}`
+            : "") +
+          (summary?.status ? ` · estado ${summary.status}` : ""),
+      );
+      if (selectedProductId) {
+        await loadDetail(selectedProductId, simulationOverride);
+      }
+    } catch (error) {
+      setAmazonImportMessage(
+        error instanceof Error ? error.message : "Importación SP-API fallida.",
+      );
+    } finally {
+      setAmazonImportLoading(null);
+    }
+  }
+
   const flatProducts = listData ? flattenProducts(listData.products) : [];
+  const showLiteProducts = !listData && liteProducts.length > 0;
+  const visibleProductsCount = listData ? flatProducts.length : liteProducts.length;
   const parentOfSelected = listData?.products.find(
     (p) =>
       p.productoId === selectedId ||
@@ -380,6 +595,46 @@ export function InventoryPage() {
           KPIs recientes.
         </Text>
       </div>
+
+      {showAmazonImportDiagnostics ? (
+      <Card className="ring-1 ring-amber-100 bg-amber-50/30 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <Title className="text-base">Diagnóstico SP-API</Title>
+            <Text className="text-xs text-slate-500">
+              Acción manual de diagnóstico. El stock FBA debe actualizarse por tarea programada.
+              No actualiza inventario_paises ni ejecuta cron.
+            </Text>
+            {amazonImportMessage ? (
+              <Text className="mt-1 text-xs text-slate-600">{amazonImportMessage}</Text>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { key: "sales" as const, label: "Importar ventas FBA" },
+              { key: "salesAlt" as const, label: "Importar ventas FBA alt." },
+              { key: "snapshot" as const, label: "Importar stock FBA" },
+              { key: "ledger" as const, label: "Importar ledger FBA" },
+            ].map((action) => (
+              <button
+                key={action.key}
+                type="button"
+                onClick={() => void runAmazonForecastImport(action.key)}
+                disabled={amazonImportLoading != null}
+                className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {amazonImportLoading === action.key ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                {action.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Card>
+      ) : null}
 
       {listData?.summary ? (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
@@ -490,17 +745,17 @@ export function InventoryPage() {
         <Card className="ring-1 ring-slate-100 p-4 lg:col-span-1">
           <Title className="text-base">Productos</Title>
           <Text className="mb-3 text-xs text-slate-500">
-            {listLoading
+            {listLoading && !showLiteProducts
               ? "Cargando…"
-              : `${flatProducts.length} productos visibles`}
+              : `${visibleProductsCount} productos visibles`}
           </Text>
           <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
-            {listLoading ? (
+            {listLoading && !showLiteProducts ? (
               <div className="flex items-center justify-center py-8 text-slate-500">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                 Cargando productos…
               </div>
-            ) : (
+            ) : listData ? (
               (listData?.products ?? []).map((p) => {
                 const active =
                   selectedId === p.productoId ||
@@ -559,6 +814,34 @@ export function InventoryPage() {
                   </button>
                 );
               })
+            ) : (
+              liteProducts.map((p) => {
+                const active = selectedId === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setSelectedId(p.id)}
+                    className={`w-full rounded-xl border p-3 text-left transition ${
+                      active
+                        ? "border-slate-400 bg-slate-50"
+                        : "border-slate-200 bg-white hover:border-slate-300"
+                    }`}
+                  >
+                    <div className="flex min-w-0 items-start gap-2">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-slate-100">
+                        <Package className="h-4 w-4 text-slate-400" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900">
+                          {p.nombre ?? p.sku}
+                        </p>
+                        <p className="text-xs text-slate-500">{p.sku}</p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </Card>
@@ -573,7 +856,7 @@ export function InventoryPage() {
             <Card className="border-rose-200 bg-rose-50 p-4 text-rose-800">
               {detailError}
             </Card>
-          ) : detail && selectedProduct ? (
+          ) : detail ? (
             <>
               <Card className="ring-1 ring-slate-100 p-4">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -607,7 +890,8 @@ export function InventoryPage() {
                         <select
                           value={
                             variantByParent[parentOfSelected.productoId] ??
-                            selectedProduct.productoId
+                            selectedProduct?.productoId ??
+                            detail.product.productoId
                           }
                           onChange={(e) => {
                             const v = e.target.value;
@@ -776,6 +1060,8 @@ function operationalFbaSourceLabel(
   source: NonNullable<InventoryProductDetailResponse["operationalStock"]>["stockOperationalFbaSource"],
 ): string {
   switch (source) {
+    case "fba_inventory_snapshot":
+      return "snapshot FBA operativo";
     case "country_inventory":
       return "stock por país actualizado";
     case "ledger":
@@ -790,6 +1076,7 @@ function OperationalStockPanel({
 }: {
   stock: NonNullable<InventoryProductDetailResponse["operationalStock"]>;
 }) {
+  const syncStatus = stock.fbaInventorySyncStatus;
   const countrySummary = stock.stockFbaAppByCountry
     .map((row) => `${row.pais} ${fmtNum(row.stockFba + row.stockFbm)}`)
     .join(" · ");
@@ -807,6 +1094,36 @@ function OperationalStockPanel({
         <p className="text-xs text-slate-500">
           Fuente: {operationalFbaSourceLabel(stock.stockOperationalFbaSource)}
         </p>
+        <p className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-950">
+          El stock FBA se actualiza automáticamente por tarea programada. Esta
+          pantalla muestra el último snapshot disponible.
+        </p>
+        {stock.stockFbaLatestSnapshot != null && stock.stockFbaLatestSnapshotAt ? (
+          <p className="text-xs text-slate-500">
+            Snapshot FBA operativo: {fmtNum(stock.stockFbaLatestSnapshot)} uds ·{" "}
+            {fmtDate(stock.stockFbaLatestSnapshotAt)}
+            <span className="block text-[11px] text-slate-400">
+              Fuente principal: {stock.stockFbaLatestSnapshotSource ?? "SP-API FBA Inventory"}. FBA Country queda como distribución auxiliar.
+            </span>
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500">
+            Sin snapshot FBA operativo importado. Se usa fallback ledger/stock por país.
+          </p>
+        )}
+        {syncStatus ? (
+          <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            <p className="font-medium text-slate-800">Sincronización automática FBA</p>
+            <p>Última ejecución: {fmtDateTime(syncStatus.lastRunAt)}</p>
+            <p>Último éxito: {fmtDateTime(syncStatus.lastSuccessAt)}</p>
+            <p>Estado: {syncStatus.lastStatus ?? "—"}</p>
+            <p>Filas actualizadas: {fmtNum(syncStatus.lastRowsUpserted)}</p>
+            {syncStatus.nextRunHint ? <p>Próxima ejecución: {syncStatus.nextRunHint}</p> : null}
+            {syncStatus.lastError ? (
+              <p className="mt-1 text-rose-700">Error: {syncStatus.lastError}</p>
+            ) : null}
+          </div>
+        ) : null}
         <p>
           <span className="text-slate-500">FBM: </span>
           <span className="font-semibold">{fmtNum(stock.stockOperationalFbm)} uds</span>
@@ -859,9 +1176,10 @@ function CountryStockTable({
   }
 
   return (
-    <ResponsiveTable
-      desktop={
-        <table className="min-w-full text-sm">
+    <>
+      <ResponsiveTable
+        desktop={
+          <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-left text-slate-500">
               <th className="py-2 pr-2 w-8" />
@@ -970,7 +1288,8 @@ function CountryStockTable({
           ))}
         </div>
       }
-    />
+      />
+    </>
   );
 }
 
@@ -1041,6 +1360,16 @@ function inboundTypeBadgeClass(kind?: InventoryInboundPlanningKind): string {
   }
 }
 
+function inboundSeguimiento(row: InventoryInboundRow): string {
+  if (row.logisticsKind === "amazon_inbound") {
+    return row.amazonShipmentId ?? row.seguimiento ?? "Sin seguimiento";
+  }
+  if (row.logisticsKind === "contenedor_propio" || row.contenedorId) {
+    return row.seguimiento ?? row.contenedorIdentificador ?? row.contenedorId ?? "Sin seguimiento";
+  }
+  return row.seguimiento ?? "Sin seguimiento";
+}
+
 function InboundSection({
   inbound,
   locale,
@@ -1048,6 +1377,10 @@ function InboundSection({
   inbound: InventoryInboundRow[];
   locale: string;
 }) {
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [selectedLogisticsRow, setSelectedLogisticsRow] =
+    useState<InventoryInboundRow | null>(null);
+
   if (inbound.length === 0) {
     return (
       <Text className="text-sm text-slate-500">
@@ -1057,14 +1390,15 @@ function InboundSection({
   }
 
   return (
-    <ResponsiveTable
-      desktop={
-        <table className="min-w-full text-sm">
+    <>
+      <ResponsiveTable
+        desktop={
+          <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-left text-slate-500">
               <th className="py-2 pr-3">Orden</th>
               <th className="py-2 pr-3">Pedido agente</th>
-              <th className="py-2 pr-3">Contenedor</th>
+              <th className="py-2 pr-3">Seguimiento</th>
               <th className="py-2 pr-3">ETA</th>
               <th className="py-2 pr-3">Tipo de entrada</th>
               <th className="py-2 pr-3 text-right">Uds</th>
@@ -1077,7 +1411,7 @@ function InboundSection({
               <tr key={`${row.ordenId}-${row.ordenItemId ?? row.loteProducto ?? ""}`} className="border-b border-slate-100">
                 <td className="py-2 pr-3">{row.numeroOrden ?? row.ordenId.slice(0, 8)}</td>
                 <td className="py-2 pr-3">{row.numeroPedidoAgente ?? "—"}</td>
-                <td className="py-2 pr-3">{row.contenedorIdentificador ?? "—"}</td>
+                <td className="py-2 pr-3">{inboundSeguimiento(row)}</td>
                 <td className="py-2 pr-3">
                   {fmtDate(row.eta)}
                   {row.etaSource === "container" ? (
@@ -1094,21 +1428,23 @@ function InboundSection({
                 <td className="py-2 pr-3 text-right">{fmtNum(row.cantidadPendiente)}</td>
                 <td className="py-2 pr-3 capitalize">{row.estado}</td>
                 <td className="py-2 pr-3">
-                  <Link
-                    href={`/${locale}/pedidos?orden=${encodeURIComponent(row.ordenId)}`}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedOrderId(row.ordenId)}
                     className="text-blue-700 hover:underline"
                   >
                     Pedido
-                  </Link>
-                  {row.contenedorId ? (
+                  </button>
+                  {row.contenedorId || row.logisticsKind === "amazon_inbound" ? (
                     <>
                       {" · "}
-                      <Link
-                        href={`/${locale}/logistica?containerId=${encodeURIComponent(row.contenedorId)}`}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedLogisticsRow(row)}
                         className="text-blue-700 hover:underline"
                       >
                         Logística
-                      </Link>
+                      </button>
                     </>
                   ) : null}
                 </td>
@@ -1125,7 +1461,7 @@ function InboundSection({
               title={row.numeroOrden ?? row.ordenId.slice(0, 8)}
               subtitle={row.numeroPedidoAgente ?? undefined}
               fields={[
-                { label: "Contenedor", value: row.contenedorIdentificador ?? "—" },
+                { label: "Seguimiento", value: inboundSeguimiento(row) },
                 {
                   label: "ETA",
                   value: `${fmtDate(row.eta)}${row.confidence === "provisional" ? " (orden)" : row.etaSource === "container" ? " (contenedor)" : ""}`,
@@ -1136,27 +1472,122 @@ function InboundSection({
               ]}
               actions={
                 <>
-                  <Link
-                    href={`/${locale}/pedidos?orden=${encodeURIComponent(row.ordenId)}`}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedOrderId(row.ordenId)}
                     className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700"
                   >
                     Ver pedido
-                  </Link>
-                  {row.contenedorId ? (
-                    <Link
-                      href={`/${locale}/logistica?containerId=${encodeURIComponent(row.contenedorId)}`}
+                  </button>
+                  {row.contenedorId || row.logisticsKind === "amazon_inbound" ? (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedLogisticsRow(row)}
                       className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700"
                     >
                       Logística
-                    </Link>
+                    </button>
                   ) : null}
                 </>
               }
             />
           ))}
         </div>
-      }
-    />
+        }
+      />
+      {selectedOrderId ? (
+        <OrderReadonlyModal
+          ordenId={selectedOrderId}
+          onClose={() => setSelectedOrderId(null)}
+        />
+      ) : null}
+      {selectedLogisticsRow ? (
+        <InventoryLogisticsModal
+          row={selectedLogisticsRow}
+          locale={locale}
+          onClose={() => setSelectedLogisticsRow(null)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function InventoryLogisticsModal({
+  row,
+  locale,
+  onClose,
+}: {
+  row: InventoryInboundRow;
+  locale: string;
+  onClose: () => void;
+}) {
+  const isAmazon = row.logisticsKind === "amazon_inbound";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+      <div className="w-full max-w-xl rounded-xl bg-white p-5 shadow-xl">
+        <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              {isAmazon ? "Envío Amazon inbound" : "Seguimiento logístico"}
+            </h2>
+            <p className="mt-1 font-mono text-xs text-slate-500">
+              {inboundSeguimiento(row)}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-500"
+          >
+            Cerrar
+          </button>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+          {[
+            { label: "Orden", value: row.numeroOrden ?? row.ordenId.slice(0, 8) },
+            { label: "Pedido agente", value: row.numeroPedidoAgente ?? "—" },
+            { label: "Tipo", value: isAmazon ? "Amazon inbound/FBA" : "Contenedor propio" },
+            { label: "Seguimiento", value: inboundSeguimiento(row) },
+            { label: "ETA", value: fmtDate(row.eta) },
+            { label: "Unidades pendientes", value: fmtNum(row.cantidadPendiente) },
+            { label: "Estado", value: isAmazon ? row.amazonStatus ?? "—" : row.estado },
+            {
+              label: "Destino",
+              value: isAmazon
+                ? row.amazonDestinationCenter ?? "—"
+                : row.destinoOrden ?? "—",
+            },
+            ...(isAmazon
+              ? [{ label: "Nombre shipment", value: row.amazonShipmentName ?? "—" }]
+              : [{ label: "Contenedor", value: row.contenedorIdentificador ?? "—" }]),
+          ].map((item) => (
+            <div key={item.label}>
+              <p className="text-[10px] font-medium uppercase text-slate-400">
+                {item.label}
+              </p>
+              <p className="mt-0.5 text-slate-800">{item.value}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          {isAmazon ? (
+            <Link
+              href={`/${locale}/amazon/envios`}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700"
+            >
+              Abrir Amazon Envíos
+            </Link>
+          ) : row.contenedorId ? (
+            <Link
+              href={`/${locale}/logistica?containerId=${encodeURIComponent(row.contenedorId)}`}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700"
+            >
+              Abrir página completa
+            </Link>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
 

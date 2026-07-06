@@ -20,6 +20,7 @@ export function buildOrderFormPayload(
 ): OrderFormPayload {
   const tc = opts.tipoCambio === "" ? null : Number(opts.tipoCambio);
   return {
+    tipo_envio:  opts.tipoEnvio,
     fob_puerto:  opts.fob     || null,
     destino:     opts.destino || null,
     agente_id:   opts.agenteId || null,

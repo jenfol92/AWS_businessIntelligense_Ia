@@ -18,6 +18,7 @@ import type {
   SalesAgg,
   SalesByProductCountry,
 } from "../types/inventory.types";
+import type { AmazonSyncJobStatus } from "../services/resolveOperationalStock";
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -40,14 +41,31 @@ function salesKeyGlobal(productoId: string): string {
   return `${productoId}::__ALL__`;
 }
 
+type AmazonSyncJobRow = {
+  job_key: string;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  last_rows_upserted: number | null;
+  next_run_hint: string | null;
+};
+
+const PRODUCT_BASE_SELECT =
+  "id, sku, nombre, estado, proveedor_id, parent_id, stock_seguridad_minimo";
+
+function dedupeProductsById(products: ProductBaseRow[]): ProductBaseRow[] {
+  return Array.from(new Map(products.map((p) => [p.id, p])).values()).sort(
+    (a, b) => a.sku.localeCompare(b.sku),
+  );
+}
+
 /** Productos activos para el dashboard de inventario. */
 export async function fetchActiveProducts(): Promise<ProductBaseRow[]> {
   const supabase = createSupabaseRouteClient();
   const { data, error } = await supabase
     .from("productos")
-    .select(
-      "id, sku, nombre, estado, proveedor_id, parent_id, stock_seguridad_minimo",
-    )
+    .select(PRODUCT_BASE_SELECT)
     .eq("estado", "activo")
     .order("sku", { ascending: true });
 
@@ -55,7 +73,102 @@ export async function fetchActiveProducts(): Promise<ProductBaseRow[]> {
   return (data ?? []) as ProductBaseRow[];
 }
 
-/** Inventario por país para un conjunto de productos. */
+/** Lista ligera de productos activos para seleccionar un detalle sin cargar dashboard. */
+export async function fetchInventoryProductsLite(): Promise<ProductBaseRow[]> {
+  return fetchActiveProducts();
+}
+
+export async function fetchAmazonSyncJobStatus(
+  jobKey: string,
+): Promise<AmazonSyncJobStatus | null> {
+  const supabase = createSupabaseRouteClient();
+  const { data, error } = await supabase
+    .from("amazon_sync_jobs")
+    .select(
+      "job_key, last_run_at, last_success_at, last_status, last_error, last_rows_upserted, next_run_hint",
+    )
+    .eq("job_key", jobKey)
+    .maybeSingle();
+
+  if (error) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[inventory] amazon_sync_jobs status unavailable", {
+        jobKey,
+        error,
+      });
+    }
+    return null;
+  }
+
+  const row = data as AmazonSyncJobRow | null;
+  if (!row) return null;
+
+  return {
+    jobKey: row.job_key,
+    lastRunAt: row.last_run_at,
+    lastSuccessAt: row.last_success_at,
+    lastStatus: row.last_status,
+    lastError: row.last_error,
+    lastRowsUpserted: row.last_rows_upserted,
+    nextRunHint: row.next_run_hint,
+  };
+}
+
+/** Producto activo seleccionado y su familia minima para el detalle de inventario. */
+export async function fetchInventoryProductScope(
+  productId: string,
+): Promise<ProductBaseRow[]> {
+  const supabase = createSupabaseRouteClient();
+  const { data: selected, error: selectedError } = await supabase
+    .from("productos")
+    .select(PRODUCT_BASE_SELECT)
+    .eq("id", productId)
+    .eq("estado", "activo")
+    .maybeSingle();
+
+  if (selectedError) throw new Error(selectedError.message);
+  if (!selected) return [];
+
+  const selectedProduct = selected as ProductBaseRow;
+  const products: ProductBaseRow[] = [selectedProduct];
+
+  if (selectedProduct.parent_id) {
+    const [parentResult, siblingsResult] = await Promise.all([
+      supabase
+        .from("productos")
+        .select(PRODUCT_BASE_SELECT)
+        .eq("id", selectedProduct.parent_id)
+        .eq("estado", "activo")
+        .maybeSingle(),
+      supabase
+        .from("productos")
+        .select(PRODUCT_BASE_SELECT)
+        .eq("parent_id", selectedProduct.parent_id)
+        .eq("estado", "activo")
+        .order("sku", { ascending: true }),
+    ]);
+
+    if (parentResult.error) throw new Error(parentResult.error.message);
+    if (siblingsResult.error) throw new Error(siblingsResult.error.message);
+
+    if (parentResult.data) products.push(parentResult.data as ProductBaseRow);
+    products.push(...((siblingsResult.data ?? []) as ProductBaseRow[]));
+  } else {
+    const { data: children, error: childrenError } = await supabase
+      .from("productos")
+      .select(PRODUCT_BASE_SELECT)
+      .eq("parent_id", selectedProduct.id)
+      .eq("estado", "activo")
+      .order("sku", { ascending: true });
+
+    if (childrenError) throw new Error(childrenError.message);
+    products.push(...((children ?? []) as ProductBaseRow[]));
+  }
+
+  return dedupeProductsById(products);
+}
+
+/** Inventario por pais para un conjunto de productos. */
 export async function fetchInventoryRows(
   productIds: string[],
 ): Promise<InventoryRow[]> {
@@ -311,12 +424,100 @@ export async function fetchInboundByProductIds(
   if (productIds.length === 0) return result;
 
   const items = await fetchForecastInboundItems({ productoIds: productIds });
+  const supabase = createSupabaseRouteClient();
 
   for (const item of items) {
     const row = mapForecastInboundToInventoryRow(item);
     const list = result.get(item.producto_id) ?? [];
     list.push(row);
     result.set(item.producto_id, list);
+  }
+
+  const allRows = Array.from(result.values()).flat();
+  const orderIds = Array.from(new Set(allRows.map((row) => row.ordenId).filter(Boolean)));
+
+  if (orderIds.length > 0) {
+    const { data: orders, error: ordersError } = await supabase
+      .from("ordenes_compra")
+      .select("id, numero_pedido_agente")
+      .in("id", orderIds);
+
+    if (!ordersError) {
+      const orderAgent = new Map<string, string | null>();
+      for (const order of orders ?? []) {
+        const row = order as { id: string; numero_pedido_agente: string | null };
+        orderAgent.set(row.id, row.numero_pedido_agente);
+      }
+      for (const row of allRows) {
+        row.numeroPedidoAgente = orderAgent.get(row.ordenId) ?? row.numeroPedidoAgente;
+      }
+    } else if (process.env.NODE_ENV === "development") {
+      console.error("[inventory] fetch numero_pedido_agente failed", {
+        orderIdsCount: orderIds.length,
+        error: ordersError,
+      });
+    }
+
+    const { data: assignments, error: assignmentsError } = await supabase
+      .from("orden_logistics_assignments")
+      .select(
+        `orden_id, assignment_type, shipment_id, contenedor_id,
+         amazon_inbound_shipments(
+           shipment_id, shipment_name, estado_amazon, destination_center
+         )`,
+      )
+      .in("orden_id", orderIds);
+
+    if (!assignmentsError) {
+      const assignmentByOrder = new Map<string, Record<string, unknown>>();
+      for (const assignment of assignments ?? []) {
+        const row = assignment as Record<string, unknown>;
+        const orderId = String(row.orden_id ?? "");
+        if (orderId && !assignmentByOrder.has(orderId)) assignmentByOrder.set(orderId, row);
+      }
+
+      for (const row of allRows) {
+        const assignment = assignmentByOrder.get(row.ordenId);
+        const assignmentType = assignment ? String(assignment.assignment_type ?? "") : "";
+        if (assignmentType === "amazon_inbound") {
+          const shipment = firstRelation(
+            assignment?.amazon_inbound_shipments as
+              | {
+                  shipment_id: string | null;
+                  shipment_name: string | null;
+                  estado_amazon: string | null;
+                  destination_center: string | null;
+                }
+              | Array<{
+                  shipment_id: string | null;
+                  shipment_name: string | null;
+                  estado_amazon: string | null;
+                  destination_center: string | null;
+                }>
+              | null
+              | undefined,
+          );
+          const shipmentId = String(assignment?.shipment_id ?? shipment?.shipment_id ?? "").trim();
+          row.logisticsKind = "amazon_inbound";
+          row.amazonShipmentId = shipmentId || null;
+          row.amazonShipmentName = shipment?.shipment_name ?? null;
+          row.amazonStatus = shipment?.estado_amazon ?? null;
+          row.amazonDestinationCenter = shipment?.destination_center ?? null;
+          row.seguimiento = shipmentId || "Sin seguimiento";
+        } else if (row.contenedorId) {
+          row.logisticsKind = "contenedor_propio";
+          row.seguimiento = row.contenedorIdentificador ?? row.contenedorId;
+        } else {
+          row.logisticsKind = "none";
+          row.seguimiento = null;
+        }
+      }
+    } else if (process.env.NODE_ENV === "development") {
+      console.error("[inventory] fetch logistics assignments failed", {
+        orderIdsCount: orderIds.length,
+        error: assignmentsError,
+      });
+    }
   }
 
   for (const [productId, rows] of Array.from(result.entries())) {
@@ -720,9 +921,12 @@ export async function fetchLatestFbaLedgerStockByProductIds(
     );
 
     if (error) {
-      throw new Error(
+      console.error(
+        "[inventory-detail timing] fetchLatestFbaLedgerStockByProductIds failed",
+        error,
         "No se pudo obtener latest FBA ledger stock. Revisa que la migración get_latest_fba_ledger_stock_by_products esté aplicada.",
       );
+      return new Map();
     }
 
     const rows = (data ?? []) as LatestFbaLedgerStockRpcRow[];
@@ -732,6 +936,88 @@ export async function fetchLatestFbaLedgerStockByProductIds(
         snapshotDate: row.snapshot_date.slice(0, 10),
         stockSellable: Number(row.stock_sellable ?? 0),
         stockTotal: Number(row.stock_total ?? 0),
+      });
+    }
+  }
+
+  return result;
+}
+
+type LatestFbaInventorySnapshotRow = {
+  producto_id: string;
+  snapshot_at: string;
+  fulfillable_quantity: number | null;
+  reserved_quantity: number | null;
+  inbound_quantity: number | null;
+  unfulfillable_quantity: number | null;
+  source: string | null;
+};
+
+export async function fetchLatestFbaInventorySnapshotByProductIds(
+  productIds: string[],
+): Promise<
+  Map<
+    string,
+    import("../services/resolveOperationalStock").LatestFbaInventorySnapshotStock
+  >
+> {
+  const result = new Map<
+    string,
+    import("../services/resolveOperationalStock").LatestFbaInventorySnapshotStock
+  >();
+  if (productIds.length === 0) return result;
+
+  const supabase = createSupabaseRouteClient();
+
+  for (const chunk of chunkArray(productIds, 100)) {
+    const { data, error } = await supabase
+      .from("v_latest_amazon_fba_inventory_snapshot")
+      .select(
+        "producto_id, snapshot_at, fulfillable_quantity, reserved_quantity, inbound_quantity, unfulfillable_quantity, source",
+      )
+      .in("producto_id", chunk);
+
+    if (error) {
+      console.error(
+        "[inventory] latest FBA inventory snapshot failed",
+        error,
+        "No se pudo obtener v_latest_amazon_fba_inventory_snapshot. Revisa que la migraciÃ³n SP-API forecast estÃ© aplicada.",
+      );
+      return new Map();
+    }
+
+    const grouped = new Map<string, LatestFbaInventorySnapshotRow[]>();
+    for (const row of (data ?? []) as LatestFbaInventorySnapshotRow[]) {
+      if (!row.producto_id || !row.snapshot_at) continue;
+      const list = grouped.get(row.producto_id) ?? [];
+      list.push(row);
+      grouped.set(row.producto_id, list);
+    }
+
+    for (const [productId, rows] of Array.from(grouped.entries())) {
+      const sorted = rows.sort((a, b) => b.snapshot_at.localeCompare(a.snapshot_at));
+      const latestAt = sorted[0]?.snapshot_at ?? null;
+      if (!latestAt) continue;
+      const sameSnapshotRows = sorted.filter((row) => row.snapshot_at === latestAt);
+      result.set(productId, {
+        snapshotAt: latestAt,
+        fulfillableQuantity: sameSnapshotRows.reduce(
+          (sum, row) => sum + Number(row.fulfillable_quantity ?? 0),
+          0,
+        ),
+        reservedQuantity: sameSnapshotRows.reduce(
+          (sum, row) => sum + Number(row.reserved_quantity ?? 0),
+          0,
+        ),
+        inboundQuantity: sameSnapshotRows.reduce(
+          (sum, row) => sum + Number(row.inbound_quantity ?? 0),
+          0,
+        ),
+        unfulfillableQuantity: sameSnapshotRows.reduce(
+          (sum, row) => sum + Number(row.unfulfillable_quantity ?? 0),
+          0,
+        ),
+        source: sameSnapshotRows[0]?.source ?? "spapi_fba_inventory_summaries",
       });
     }
   }

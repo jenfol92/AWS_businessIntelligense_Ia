@@ -62,5 +62,16 @@ export async function DELETE(req: Request, { params }: Params) {
     .from("contenedor_ordenes").delete().eq("contenedor_id", params.id).eq("orden_id", orden_id);
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
 
+  const { error: assignmentError } = await supabase
+    .from("orden_logistics_assignments")
+    .update({ status: "inactive" })
+    .eq("orden_id", orden_id)
+    .eq("contenedor_id", params.id)
+    .eq("assignment_type", "contenedor_propio")
+    .eq("status", "active");
+  if (assignmentError) {
+    return NextResponse.json({ ok: false, error: assignmentError.message }, { status: 400 });
+  }
+
   return NextResponse.json({ ok: true });
 }

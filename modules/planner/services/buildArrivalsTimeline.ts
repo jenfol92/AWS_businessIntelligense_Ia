@@ -1,3 +1,4 @@
+import { supabaseAdmin } from "@/server/supabase/adminClient";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import {
   fetchPortCountryMap,
@@ -27,6 +28,7 @@ type OrderRow = {
   numero_orden: string | null;
   numero_pedido_agente: string | null;
   estado: string;
+  tipo_envio: string | null;
   destino: string | null;
   fecha_orden: string | null;
   etd: string | null;
@@ -101,6 +103,72 @@ type ContainerLinkRow = {
   contenedores: ContainerRelation;
 };
 
+type AmazonInboundRelation =
+  | {
+      shipment_id: string | null;
+      shipment_name: string | null;
+      estado_amazon: string | null;
+      destination_center: string | null;
+      destination_country: string | null;
+      logistics_flow: string | null;
+      transport_provider: string | null;
+      eta_estimada: string | null;
+      fecha_salida: string | null;
+      fecha_entrega_real: string | null;
+      tracking_number: string | null;
+      agl_tracking_number: string | null;
+      amazon_container_number: string | null;
+      raw: Record<string, unknown> | null;
+    }
+  | Array<{
+      shipment_id: string | null;
+      shipment_name: string | null;
+      estado_amazon: string | null;
+      destination_center: string | null;
+      destination_country: string | null;
+      logistics_flow: string | null;
+      transport_provider: string | null;
+      eta_estimada: string | null;
+      fecha_salida: string | null;
+      fecha_entrega_real: string | null;
+      tracking_number: string | null;
+      agl_tracking_number: string | null;
+      amazon_container_number: string | null;
+      raw: Record<string, unknown> | null;
+    }>
+  | null;
+
+type AmazonInboundAssignmentRow = {
+  id: string;
+  orden_id: string;
+  assignment_type: string;
+  contenedor_id: string | null;
+  shipment_id: string | null;
+  status: string;
+};
+
+type AmazonInboundShipmentRow = {
+  shipment_id: string | null;
+  shipment_name: string | null;
+  estado_amazon: string | null;
+  destination_center: string | null;
+  destination_country: string | null;
+  logistics_flow: string | null;
+  transport_provider: string | null;
+  fecha_salida: string | null;
+  eta_estimada: string | null;
+  fecha_entrega_real: string | null;
+  tracking_number: string | null;
+  agl_tracking_number: string | null;
+  amazon_container_number: string | null;
+};
+
+type AmazonInboundLinkRow = {
+  orden_id: string;
+  shipment_id: string | null;
+  amazon_inbound_shipments: AmazonInboundRelation;
+};
+
 type StandaloneContainerRow = {
   id: string;
   identificador_embarque: string | null;
@@ -141,6 +209,40 @@ function normalizeText(value: string): string {
 function firstRelation<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function str(value: unknown): string | null {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function pick(value: unknown, keys: string[]): unknown {
+  const record = asRecord(value);
+  for (const key of keys) {
+    if (record[key] != null) return record[key];
+  }
+  return null;
+}
+
+function formatShipFromAddress(raw: unknown): string | null {
+  const address = asRecord(pick(raw, ["ShipFromAddress", "shipFromAddress"]));
+  const parts = [
+    pick(address, ["Name", "name"]),
+    pick(address, ["City", "city"]),
+    pick(address, ["DistrictOrCounty", "districtOrCounty"]),
+    pick(address, ["StateOrProvinceCode", "stateOrProvinceCode"]),
+    pick(address, ["CountryCode", "countryCode"]),
+  ]
+    .map(str)
+    .filter((value): value is string => Boolean(value));
+
+  return parts.length > 0 ? parts.join(", ") : null;
 }
 
 function parseMonthStart(fromMonth?: string | null): Date {
@@ -230,6 +332,7 @@ function resolveDateState(
   order: OrderRow,
   items: ItemRow[],
   container: ContainerLinkRow | undefined,
+  amazonInbound: AmazonInboundLinkRow | undefined,
 ): {
   etaVisible: string;
   estimatedMonthDate: string | null;
@@ -249,6 +352,18 @@ function resolveDateState(
     };
   }
 
+  const amazonRow = firstRelation(amazonInbound?.amazon_inbound_shipments);
+  const amazonEta = normalizeDateOnly(amazonRow?.eta_estimada ?? null);
+  if (amazonEta) {
+    return {
+      etaVisible: amazonEta,
+      estimatedMonthDate: amazonEta,
+      hasDefinedEta: true,
+      dateLabel: "ETA Amazon inbound",
+      dateSource: "amazon_inbound_eta",
+    };
+  }
+
   if (order.eta) {
     return {
       etaVisible: order.eta,
@@ -256,6 +371,16 @@ function resolveDateState(
       hasDefinedEta: true,
       dateLabel: "ETA orden",
       dateSource: "order_eta",
+    };
+  }
+
+  if (amazonRow || amazonInbound?.shipment_id) {
+    return {
+      etaVisible: "ETA no disponible en fuente Amazon actual",
+      estimatedMonthDate: null,
+      hasDefinedEta: false,
+      dateLabel: "Pendiente de ETA Amazon",
+      dateSource: "unknown",
     };
   }
 
@@ -358,6 +483,150 @@ function pushArrivalToMonth(
   }
 }
 
+async function loadAmazonInboundMaps(orderIds: string[]): Promise<{
+  amazonAssignmentByOrderId: Map<string, AmazonInboundAssignmentRow>;
+  amazonShipmentByShipmentId: Map<string, AmazonInboundShipmentRow>;
+}> {
+  const amazonAssignmentByOrderId = new Map<string, AmazonInboundAssignmentRow>();
+  const amazonShipmentByShipmentId = new Map<string, AmazonInboundShipmentRow>();
+
+  if (orderIds.length === 0) {
+    return { amazonAssignmentByOrderId, amazonShipmentByShipmentId };
+  }
+
+  const { data: assignments, error: assignmentsError } = await supabaseAdmin
+    .from("orden_logistics_assignments")
+    .select("id, orden_id, assignment_type, contenedor_id, shipment_id, status")
+    .in("orden_id", orderIds)
+    .eq("status", "active")
+    .eq("assignment_type", "amazon_inbound");
+
+  if (assignmentsError) throw new Error(assignmentsError.message);
+
+  const assignmentRows = (assignments ?? []) as unknown as AmazonInboundAssignmentRow[];
+
+  if (process.env.NODE_ENV === "development") {
+    console.log("[llegadas] amazon assignments raw", assignmentRows);
+  }
+
+  for (const row of assignmentRows) {
+    if (row.orden_id && !amazonAssignmentByOrderId.has(row.orden_id)) {
+      amazonAssignmentByOrderId.set(row.orden_id, row);
+    }
+  }
+
+  const shipmentIds = Array.from(
+    new Set(
+      assignmentRows
+        .map((row) => row.shipment_id?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  if (shipmentIds.length === 0) {
+    return { amazonAssignmentByOrderId, amazonShipmentByShipmentId };
+  }
+
+  const { data: shipments, error: shipmentsError } = await supabaseAdmin
+    .from("amazon_inbound_shipments")
+    .select(
+      [
+        "shipment_id",
+        "shipment_name",
+        "estado_amazon",
+        "destination_center",
+        "destination_country",
+        "logistics_flow",
+        "transport_provider",
+        "fecha_salida",
+        "eta_estimada",
+        "fecha_entrega_real",
+        "tracking_number",
+        "agl_tracking_number",
+        "amazon_container_number",
+      ].join(", "),
+    )
+    .in("shipment_id", shipmentIds);
+
+  if (shipmentsError) throw new Error(shipmentsError.message);
+
+  const shipmentRows = (shipments ?? []) as unknown as AmazonInboundShipmentRow[];
+
+  if (process.env.NODE_ENV === "development") {
+    console.log("[llegadas] amazon shipments raw", shipmentRows);
+  }
+
+  for (const shipment of shipmentRows) {
+    const shipmentId = shipment.shipment_id?.trim() ?? "";
+    if (shipmentId) {
+      amazonShipmentByShipmentId.set(shipmentId, shipment);
+    }
+  }
+
+  return { amazonAssignmentByOrderId, amazonShipmentByShipmentId };
+}
+
+function buildAmazonInboundDto(
+  assignment: AmazonInboundAssignmentRow | undefined,
+  shipment: AmazonInboundShipmentRow | undefined,
+): ArrivalOrder["amazonInbound"] {
+  if (!assignment || assignment.assignment_type !== "amazon_inbound") return null;
+
+  const shipmentId = String(assignment.shipment_id ?? "").trim();
+  if (!shipmentId) return null;
+
+  if (!shipment && process.env.NODE_ENV === "development") {
+    console.warn("[llegadas] amazon_inbound assignment sin header", {
+      orderId: assignment.orden_id,
+      shipmentId,
+    });
+  }
+
+  return {
+    shipment_id: shipmentId,
+    shipment_name: shipment?.shipment_name ?? null,
+    estado_amazon: shipment?.estado_amazon ?? null,
+    destination_center: shipment?.destination_center ?? null,
+    destination_country: shipment?.destination_country ?? null,
+    logistics_flow: shipment?.logistics_flow ?? null,
+    transport_provider: shipment?.transport_provider ?? null,
+    eta_estimada: normalizeDateOnly(shipment?.eta_estimada ?? null),
+    fecha_salida: normalizeDateOnly(shipment?.fecha_salida ?? null),
+    fecha_entrega_real: normalizeDateOnly(shipment?.fecha_entrega_real ?? null),
+    ship_from_address: null,
+    tracking_number: shipment?.tracking_number ?? null,
+    agl_tracking_number: shipment?.agl_tracking_number ?? null,
+    amazon_container_number: shipment?.amazon_container_number ?? null,
+  };
+}
+
+function resolveLogisticsKind(
+  amazonAssignment: AmazonInboundAssignmentRow | undefined,
+  hasContainerLink: boolean,
+): ArrivalOrder["logisticsKind"] {
+  if (amazonAssignment) return "amazon_inbound";
+  if (hasContainerLink) return "contenedor_propio";
+  return "none";
+}
+
+function toAmazonInboundLinkRow(
+  assignment: AmazonInboundAssignmentRow | undefined,
+  shipment: AmazonInboundShipmentRow | undefined,
+): AmazonInboundLinkRow | undefined {
+  if (!assignment || assignment.assignment_type !== "amazon_inbound") return undefined;
+
+  return {
+    orden_id: assignment.orden_id,
+    shipment_id: assignment.shipment_id,
+    amazon_inbound_shipments: shipment
+      ? {
+          ...shipment,
+          raw: null,
+        }
+      : null,
+  };
+}
+
 function buildStandaloneArrivalOrder(
   container: StandaloneContainerRow,
   portCountryByPort: Map<string, string>,
@@ -383,6 +652,8 @@ function buildStandaloneArrivalOrder(
     orderId: container.id,
     numeroOrden: null,
     numeroPedidoAgente: null,
+    proveedor: null,
+    tipoEnvio: null,
     displayCode: identificador,
     productLines: [],
     productSummary: "Sin orden vinculada",
@@ -398,6 +669,8 @@ function buildStandaloneArrivalOrder(
     containerId: container.id,
     containerNumber: container.identificador_embarque,
     containerType: container.tipo_contenedor,
+    logisticsKind: "contenedor_propio",
+    amazonInbound: null,
     logisticsUrl: `/logistica?containerId=${encodeURIComponent(container.id)}`,
     ordenesCount: 0,
   };
@@ -420,7 +693,7 @@ export async function buildArrivalsTimeline(
   const { data: rawOrders, error: orderError } = await supabase
     .from("ordenes_compra")
     .select(
-      "id, numero_orden, numero_pedido_agente, estado, destino, fecha_orden, etd, eta, lead_time_produccion, lead_time_transito",
+      "id, numero_orden, numero_pedido_agente, estado, tipo_envio, destino, fecha_orden, etd, eta, lead_time_produccion, lead_time_transito",
     )
     .eq("estado", "confirmado")
     .order("fecha_orden", { ascending: true })
@@ -452,6 +725,9 @@ export async function buildArrivalsTimeline(
 
     if (containerError) throw new Error(containerError.message);
 
+    const { amazonAssignmentByOrderId, amazonShipmentByShipmentId } =
+      await loadAmazonInboundMaps(orderIds);
+
     const items = (rawItems ?? []) as unknown as ItemRow[];
     const containerByOrder = new Map(
       ((rawContainers ?? []) as unknown as ContainerLinkRow[]).map((link) => [link.orden_id, link]),
@@ -468,31 +744,59 @@ export async function buildArrivalsTimeline(
       if (seenOrderIds.has(order.id)) continue;
 
       const orderItems = itemsByOrder.get(order.id) ?? [];
-      const container = containerByOrder.get(order.id);
-      const containerId = container?.contenedor_id ?? null;
+      const amazonAssignment = amazonAssignmentByOrderId.get(order.id);
+      const containerLink = containerByOrder.get(order.id);
+      const containerRow = firstRelation(containerLink?.contenedores);
+      const containerId = containerLink?.contenedor_id ?? null;
+      const logisticsKind = resolveLogisticsKind(amazonAssignment, Boolean(containerLink));
+      const effectiveContainerId =
+        logisticsKind === "contenedor_propio" ? containerId : null;
+      const amazonShipment = amazonAssignment?.shipment_id
+        ? amazonShipmentByShipmentId.get(amazonAssignment.shipment_id.trim())
+        : undefined;
+      const amazonInboundLink = toAmazonInboundLinkRow(amazonAssignment, amazonShipment);
+      const amazonInboundDto = buildAmazonInboundDto(amazonAssignment, amazonShipment);
 
-      if (containerId && seenContainerIds.has(containerId)) continue;
+      if (effectiveContainerId && seenContainerIds.has(effectiveContainerId)) continue;
 
-      const dateState = resolveDateState(order, orderItems, container);
-      const containerRow = firstRelation(container?.contenedores);
+      if (
+        process.env.NODE_ENV === "development"
+        && order.tipo_envio === "amazon_agl"
+        && logisticsKind !== "amazon_inbound"
+      ) {
+        console.warn("[llegadas] amazon_agl sin assignment activo", {
+          orderId: order.id,
+          numeroOrden: order.numero_orden,
+        });
+      }
+
+      const dateState = resolveDateState(order, orderItems, containerLink, amazonInboundLink);
       const resolved = resolveArrivalDestination({
-        puertoLlegada: containerRow?.puerto_llegada ?? null,
+        puertoLlegada: containerRow?.puerto_llegada ?? amazonInboundDto?.destination_center ?? null,
         destinoOrden: order.destino,
-        tipoContenedor: containerRow?.tipo_contenedor ?? null,
+        tipoContenedor:
+          containerRow?.tipo_contenedor
+          ?? (logisticsKind === "amazon_inbound" ? "amazon_agl" : null),
         portCountryByPort,
       });
-      const status = resolveStatus(container, dateState.hasDefinedEta);
+      const status = resolveStatus(containerLink, dateState.hasDefinedEta);
       const flags = computeArrivalFlags({
         hasDefinedEta: dateState.hasDefinedEta,
         estimatedMonthDate: dateState.estimatedMonthDate,
         status,
       });
       const productLines = buildArrivalProductLines(orderItems);
+      const proveedor =
+        orderItems
+          .map((item) => firstRelation(item.proveedores)?.nombre ?? null)
+          .find((name): name is string => Boolean(name)) ?? null;
 
       const orderDto: ArrivalOrder = {
         orderId: order.id,
         numeroOrden: order.numero_orden,
         numeroPedidoAgente: order.numero_pedido_agente,
+        proveedor,
+        tipoEnvio: order.tipo_envio,
         displayCode: order.numero_pedido_agente || order.numero_orden || order.id.slice(0, 8),
         productLines,
         productSummary: buildArrivalProductSummary(productLines),
@@ -505,17 +809,38 @@ export async function buildArrivalsTimeline(
         status,
         isDelivered: flags.isDelivered,
         isDelayed: flags.isDelayed,
-        containerId,
+        containerId: effectiveContainerId,
         containerNumber: containerRow?.identificador_embarque ?? null,
         containerType: containerRow?.tipo_contenedor ?? null,
-        logisticsUrl: containerId ? `/logistica?containerId=${encodeURIComponent(containerId)}` : null,
-        ordenesCount: containerId ? 1 : undefined,
+        logisticsKind,
+        amazonInbound: logisticsKind === "amazon_inbound" ? amazonInboundDto : null,
+        logisticsUrl:
+          logisticsKind === "contenedor_propio" && effectiveContainerId
+            ? `/logistica?containerId=${encodeURIComponent(effectiveContainerId)}`
+            : amazonInboundDto?.shipment_id
+              ? `/amazon/envios?shipmentId=${encodeURIComponent(amazonInboundDto.shipment_id)}`
+              : null,
+        ordenesCount: effectiveContainerId ? 1 : undefined,
       };
+
+      if (
+        process.env.NODE_ENV === "development"
+        && (order.numero_pedido_agente === "BM-2616" || order.numero_orden === "ORD-2026-011")
+      ) {
+        console.log("[llegadas] BM-2616 mapped", {
+          orderId: orderDto.orderId,
+          numeroOrden: orderDto.numeroOrden,
+          numeroPedidoAgente: orderDto.numeroPedidoAgente,
+          tipoEnvio: orderDto.tipoEnvio,
+          logisticsKind: orderDto.logisticsKind,
+          amazonInbound: orderDto.amazonInbound,
+        });
+      }
 
       if (!shouldIncludeArrival(orderDto, params)) continue;
 
       seenOrderIds.add(order.id);
-      if (containerId) seenContainerIds.add(containerId);
+      if (effectiveContainerId) seenContainerIds.add(effectiveContainerId);
 
       pushArrivalToMonth(orderDto, monthList, monthMap, allowedMonths, byDestination);
     }

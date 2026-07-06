@@ -2,6 +2,7 @@
 export type CreateContainerFromOrderPayload = {
   identificador_embarque: string;
   tipo_contenedor?: string | null;
+  destino_pais_id?: string | null;
   transitario?: string | null;
   puerto_salida?: string | null;
   puerto_llegada?: string | null;

@@ -9,13 +9,25 @@
 
 import { NextResponse } from "next/server";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
-import { fetchContainerInfoByOrderIds } from "@/modules/orders/repositories/orderContainerRepository";
+import {
+  fetchAmazonInboundInfoByOrderIds,
+  fetchContainerInfoByOrderIds,
+} from "@/modules/orders/repositories/orderContainerRepository";
 import {
   listOrders,
   insertOrderHeader,
   insertOrderItems,
   deleteOrderById,
 } from "@/modules/orders/repositories/ordersRepository";
+
+function dateInRange(value: string | null | undefined, from: string, to: string): boolean {
+  if (!from && !to) return true;
+  if (!value) return false;
+  const day = value.slice(0, 10);
+  if (from && day < from.slice(0, 10)) return false;
+  if (to && day > to.slice(0, 10)) return false;
+  return true;
+}
 
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
 
@@ -25,7 +37,9 @@ import {
  * Query params:
  * @param estado  - "ALL" | "borrador" | "confirmado" | "cancelado" | "recibido"
  * @param q       - Búsqueda en numero_orden, numero_pedido_agente, SKU y nombre de producto
- * @param puerto  - Filtro parcial por fob_puerto (ilike)
+ * @param createdFrom/createdTo - Rango por fecha de creacion.
+ * @param etdFrom/etdTo         - Rango por fecha de salida logistica.
+ * @param etaFrom/etaTo         - Rango por ETA logistica.
  * @param limit   - Máx. filas (default 200, máx. 500)
  */
 export async function GET(req: Request) {
@@ -37,10 +51,15 @@ export async function GET(req: Request) {
   }
 
   const { searchParams } = new URL(req.url);
-  const estado = searchParams.get("estado") ?? "ALL";
-  const q      = (searchParams.get("q") ?? "").trim();
-  const puerto = (searchParams.get("puerto") ?? "").trim();
-  const limit  = Math.min(Number(searchParams.get("limit") ?? "200"), 500);
+  const estado      = searchParams.get("estado") ?? "ALL";
+  const q           = (searchParams.get("q") ?? "").trim();
+  const createdFrom = (searchParams.get("createdFrom") ?? "").trim();
+  const createdTo   = (searchParams.get("createdTo") ?? "").trim();
+  const etdFrom     = (searchParams.get("etdFrom") ?? "").trim();
+  const etdTo       = (searchParams.get("etdTo") ?? "").trim();
+  const etaFrom     = (searchParams.get("etaFrom") ?? "").trim();
+  const etaTo       = (searchParams.get("etaTo") ?? "").trim();
+  const limit       = Math.min(Number(searchParams.get("limit") ?? "200"), 500);
 
   try {
     // Si hay texto de búsqueda, se resuelven los IDs de órdenes que contienen
@@ -68,15 +87,39 @@ export async function GET(req: Request) {
       }
     }
 
-    const rows = await listOrders({ estado, q, puerto, limit, extraOrderIds });
-    const containerByOrder = await fetchContainerInfoByOrderIds(
-      supabase,
-      rows.map((row) => row.id),
-    );
+    const rows = await listOrders({ estado, q, createdFrom, createdTo, limit, extraOrderIds });
+    const orderIds = rows.map((row) => row.id);
+    const [containerByOrder, amazonInboundByOrder] = await Promise.all([
+      fetchContainerInfoByOrderIds(supabase, orderIds),
+      fetchAmazonInboundInfoByOrderIds(supabase, orderIds),
+    ]);
+  
+
+
     const enrichedRows = rows.map((row) => ({
       ...row,
       contenedor: containerByOrder.get(row.id) ?? null,
-    }));
+      amazon_inbound: amazonInboundByOrder.get(row.id) ?? null,
+    })).filter((row) => {
+      if (
+        process.env.NODE_ENV === "development"
+        && row.tipo_envio === "amazon_agl"
+        && !row.amazon_inbound
+      ) {
+        console.warn("[pedidos] amazon_agl sin assignment activo", {
+          orderId: row.id,
+          numeroOrden: row.numero_orden,
+        });
+      }
+
+      const logisticsEtd =
+        row.contenedor?.fecha_salida ?? row.amazon_inbound?.fecha_salida ?? row.etd ?? null;
+      const logisticsEta =
+        row.contenedor?.fecha_eta_estimada ?? row.amazon_inbound?.eta_estimada ?? row.eta ?? null;
+
+      return dateInRange(logisticsEtd, etdFrom, etdTo)
+        && dateInRange(logisticsEta, etaFrom, etaTo);
+    });
     return NextResponse.json({ ok: true, rows: enrichedRows });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Error al listar pedidos.";
@@ -108,6 +151,7 @@ export async function POST(req: Request) {
   }
 
   let body: {
+    tipo_envio?: "propio" | "amazon_agl" | null;
     fob_puerto?: string | null;
     destino?: string | null;
     fecha_orden?: string;
@@ -146,6 +190,7 @@ export async function POST(req: Request) {
     // Insertar cabecera — el trigger genera numero_orden automáticamente
     const orden = await insertOrderHeader({
       estado: "borrador",
+      tipo_envio: cabecera.tipo_envio === "amazon_agl" ? "amazon_agl" : "propio",
       fob_puerto: cabecera.fob_puerto ?? null,
       destino: cabecera.destino ?? null,
       fecha_orden: cabecera.fecha_orden ?? new Date().toISOString().slice(0, 10),

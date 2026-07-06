@@ -87,6 +87,48 @@ function EstadoBadge({ estado }: { estado: string }) {
   );
 }
 
+function tipoEnvioLabel(tipoEnvio: string | null | undefined): string {
+  return tipoEnvio === "amazon_agl" ? "Amazon AGL" : "Envio propio";
+}
+
+function amazonInboundRouteLabel(value: string | null | undefined): string {
+  switch (value) {
+    case "fabrica_a_amazon":
+    case "proveedor_a_amazon":
+      return "Fábrica → Amazon";
+    case "almacen_a_amazon":
+      return "Almacén → Amazon";
+    default:
+      return "Amazon inbound";
+  }
+}
+
+function amazonInboundTransportLabel(value: string | null | undefined): string | null {
+  switch (value) {
+    case "amazon_agl":
+      return "Amazon AGL";
+    case "propio":
+    case "fabrica":
+    case "transitario":
+    case "desconocido":
+      return "Logística propia";
+    default:
+      return null;
+  }
+}
+
+function amazonInboundLogisticsLabel(
+  inbound: OrderListRow["amazon_inbound"],
+  tipoEnvioOrden?: string | null,
+): string {
+  if (!inbound) return "Amazon inbound";
+  const route = amazonInboundRouteLabel(inbound.logistics_flow);
+  const transport =
+    amazonInboundTransportLabel(inbound.transport_provider) ??
+    (tipoEnvioOrden === "amazon_agl" ? "Amazon AGL" : null);
+  return transport ? `${route} · ${transport}` : route;
+}
+
 // ─── Subcomponente: celda de proforma inline ─────────────────────────────────
 
 /**
@@ -94,6 +136,61 @@ function EstadoBadge({ estado }: { estado: string }) {
  * Si la orden ya tiene proforma firmada → botón de ver/descargar.
  * Si no la tiene → botón de subir PDF (abre input oculto).
  */
+function OrderLogisticsSummary({
+  orden,
+  locale,
+  compact,
+}: {
+  orden: OrderListRow;
+  locale: string;
+  compact?: boolean;
+}) {
+  if (orden.amazon_inbound) {
+    const inbound = orden.amazon_inbound;
+    return (
+      <div className="text-xs text-slate-700">
+        <p className="font-mono font-semibold text-blue-700">{inbound.shipment_id}</p>
+        {!compact ? (
+          <p className="text-slate-500">
+            {amazonInboundLogisticsLabel(inbound, orden.tipo_envio)} · {inbound.estado_amazon ?? "Sin estado"} ·{" "}
+            {inbound.destination_center ?? "Sin centro"}
+          </p>
+        ) : null}
+        {!compact ? (
+          <p className="text-slate-500">
+            ETA Amazon {inbound.eta_estimada ?? "—"} · Tracking{" "}
+            {inbound.tracking_number ??
+              inbound.agl_tracking_number ??
+              inbound.amazon_container_number ??
+              "—"}
+          </p>
+        ) : null}
+        {!compact ? (
+          <p className="text-slate-400">
+            Docs {inbound.documents_count} · Costes {inbound.costs_count}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (orden.tipo_envio === "amazon_agl") {
+    return <span className="text-purple-600">Amazon AGL pendiente vínculo</span>;
+  }
+
+  if (orden.contenedor) {
+    return (
+      <OrderContainerSummary
+        contenedor={orden.contenedor}
+        locale={locale}
+        compact={compact}
+      />
+    );
+  }
+
+  return <span className="text-slate-300">—</span>;
+}
+
 function ProformaCell({
   orden,
   onUploaded,
@@ -222,12 +319,29 @@ function OrdenAcciones({
           <Eye className="h-3.5 w-3.5" />
           {mobile ? <span className="sr-only">Ver</span> : null}
         </button>
-        <OrderContainerActions
-          contenedor={orden.contenedor}
-          locale={locale}
-          mobile={mobile}
-          onCreateContainer={onCreateContainer}
-        />
+        {orden.amazon_inbound ? (
+          <a
+            href={`/${locale}/amazon/envios?shipmentId=${encodeURIComponent(orden.amazon_inbound.shipment_id)}`}
+            title="Abrir Amazon Envíos"
+            className={`${iconBtn} bg-blue-50 text-blue-600 hover:bg-blue-100`}
+          >
+            <Package className="h-3.5 w-3.5" />
+          </a>
+        ) : orden.tipo_envio === "amazon_agl" ? (
+          <span
+            title="Amazon AGL: se vinculara desde Amazon Envios"
+            className={`${iconBtn} bg-purple-50 text-purple-600`}
+          >
+            <Package className="h-3.5 w-3.5" />
+          </span>
+        ) : (
+          <OrderContainerActions
+            contenedor={orden.contenedor}
+            locale={locale}
+            mobile={mobile}
+            onCreateContainer={onCreateContainer}
+          />
+        )}
         <button
           type="button"
           onClick={onReopen}
@@ -292,6 +406,7 @@ function OrdenMobileCard({
       fields={[
         { label: "Fecha", value: fmtDate(orden.fecha_orden) },
         { label: "Puerto FOB", value: orden.fob_puerto ?? "—" },
+        { label: "Tipo envio", value: tipoEnvioLabel(orden.tipo_envio) },
         { label: "Destino", value: orden.destino ?? "—" },
         {
           label: "ETA",
@@ -306,10 +421,10 @@ function OrdenMobileCard({
           label: "EUR",
           value: `€${Number(orden.coste_total_eur).toLocaleString("es-ES", { maximumFractionDigits: 0 })}`,
         },
-        ...(orden.contenedor
+        ...(orden.contenedor || orden.amazon_inbound || orden.tipo_envio === "amazon_agl"
           ? [{
-              label: "Contenedor",
-              value: <OrderContainerSummary contenedor={orden.contenedor} locale={locale} compact />,
+              label: "Logistica vinculada",
+              value: <OrderLogisticsSummary orden={orden} locale={locale} compact />,
               className: "col-span-2",
             }]
           : []),
@@ -630,21 +745,6 @@ export default function PedidosPage() {
           </select>
         </div>
 
-        {/* Puerto FOB — opciones desde puerto_china (BD) */}
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">Puerto FOB</label>
-          <select
-            value={ordersList.filterPuerto}
-            onChange={(e) => ordersList.setFilterPuerto(e.target.value)}
-            className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px]"
-          >
-            <option value="">Todos los puertos</option>
-            {ordersList.originPorts.map((p) => (
-              // El valor del filtro es el nombre del puerto (fob_puerto almacena texto, no UUID)
-              <option key={p.id} value={p.name}>{p.name}</option>
-            ))}
-          </select>
-        </div>
 
         {/* Búsqueda */}
         <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
@@ -660,6 +760,27 @@ export default function PedidosPage() {
             />
           </div>
         </div>
+
+        {[
+          ["Creada desde", ordersList.filterCreatedFrom, ordersList.setFilterCreatedFrom],
+          ["Creada hasta", ordersList.filterCreatedTo, ordersList.setFilterCreatedTo],
+          ["ETD desde", ordersList.filterEtdFrom, ordersList.setFilterEtdFrom],
+          ["ETD hasta", ordersList.filterEtdTo, ordersList.setFilterEtdTo],
+          ["ETA desde", ordersList.filterEtaFrom, ordersList.setFilterEtaFrom],
+          ["ETA hasta", ordersList.filterEtaTo, ordersList.setFilterEtaTo],
+        ].map(([label, value, setter]) => (
+          <div key={String(label)} className="flex flex-col gap-1">
+            <label className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">
+              {String(label)}
+            </label>
+            <input
+              type="date"
+              value={String(value)}
+              onChange={(e) => (setter as (next: string) => void)(e.target.value)}
+              className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+        ))}
 
         <button
           onClick={ordersList.refresh}
@@ -696,7 +817,8 @@ export default function PedidosPage() {
                     <tr className="bg-slate-50 border-b border-slate-200">
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Nº Orden</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Estado</th>
-                      <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Contenedor</th>
+                      <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Logistica vinculada</th>
+                      <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Tipo envio</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Fecha</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Puerto FOB</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Destino</th>
@@ -719,11 +841,10 @@ export default function PedidosPage() {
                           <EstadoBadge estado={o.estado} />
                         </td>
                         <td className="px-4 py-2.5 text-xs">
-                          {o.contenedor ? (
-                            <OrderContainerSummary contenedor={o.contenedor} locale={locale} compact />
-                          ) : (
-                            <span className="text-slate-300">—</span>
-                          )}
+                          <OrderLogisticsSummary orden={o} locale={locale} compact />
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-700 text-xs">
+                          {tipoEnvioLabel(o.tipo_envio)}
                         </td>
                         <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap text-xs">
                           {fmtDate(o.fecha_orden)}
@@ -795,7 +916,16 @@ export default function PedidosPage() {
           {/* Pie de tabla */}
           <div className="px-4 py-2.5 border-t border-slate-100 bg-slate-50 text-[11px] text-slate-400">
             {ordersList.ordenes.length} orden{ordersList.ordenes.length !== 1 ? "es" : ""}
-            {ordersList.filterEstado !== "ALL" || ordersList.filterQ || ordersList.filterPuerto ? " (filtrado)" : ""}
+            {ordersList.filterEstado !== "ALL"
+              || ordersList.filterQ
+              || ordersList.filterCreatedFrom
+              || ordersList.filterCreatedTo
+              || ordersList.filterEtdFrom
+              || ordersList.filterEtdTo
+              || ordersList.filterEtaFrom
+              || ordersList.filterEtaTo
+              ? " (filtrado)"
+              : ""}
           </div>
         </div>
       )}

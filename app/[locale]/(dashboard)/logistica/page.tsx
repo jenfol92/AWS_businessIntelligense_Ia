@@ -40,6 +40,7 @@ import {
   MapPin,
   Pencil,
   Search,
+  Trash2,
 } from "lucide-react";
 
 import { LogisticaCreateContainerTrigger } from "@/modules/containers/components/LogisticaCreateContainerTrigger";
@@ -59,7 +60,11 @@ import type {
   ContenedorRow,
   EstadoFiltro,
 } from "@/modules/containers/types/containerUiTypes";
-import { fetchContainers } from "@/modules/containers/api/containerClient";
+import {
+  deleteContainer,
+  fetchContainers,
+  type DeleteContainerAssignedOrder,
+} from "@/modules/containers/api/containerClient";
 import OrderReadonlyModal            from "@/modules/orders/components/OrderReadonlyModal";
 import { ResponsiveTable }           from "@/shared/ui/ResponsiveTable";
 
@@ -125,6 +130,11 @@ export default function LogisticaPage() {
   // Modal para ver detalle de orden (OrderReadonlyModal)
   const [verOrdenId, setVerOrdenId] = useState<string | null>(null);
   const [editContainerId, setEditContainerId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    contenedor: ContenedorRow;
+    assignedOrders: DeleteContainerAssignedOrder[];
+  } | null>(null);
+  const [deletingContainerId, setDeletingContainerId] = useState<string | null>(null);
   const containerIdFromUrl = searchParams.get("containerId");
 
   // ── Carga de datos ────────────────────────────────────────────────────────
@@ -215,6 +225,32 @@ export default function LogisticaPage() {
     window.open("https://www.findteu.com/", "_blank", "noopener,noreferrer");
   }
 
+  async function handleDeleteContainer(
+    contenedor: ContenedorRow,
+    unlinkAssignedOrders = false,
+  ) {
+    setDeletingContainerId(contenedor.id);
+    try {
+      const result = await deleteContainer(contenedor.id, unlinkAssignedOrders);
+      if (result.ok === false && result.requiresConfirmation) {
+        setDeleteTarget({
+          contenedor,
+          assignedOrders: result.assignedOrders ?? [],
+        });
+        return;
+      }
+
+      setDeleteTarget(null);
+      setExpandedId((current) => (current === contenedor.id ? null : current));
+      await fetchContenedores();
+      showToast("Contenedor eliminado. Las ordenes no se han eliminado.");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "No se pudo eliminar el contenedor.");
+    } finally {
+      setDeletingContainerId(null);
+    }
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -248,6 +284,52 @@ export default function LogisticaPage() {
           }}
         />
       )}
+
+      {deleteTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl">
+            <div className="border-b border-slate-100 px-5 py-4">
+              <h2 className="text-base font-semibold text-slate-900">Eliminar contenedor</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                El contenedor {deleteTarget.contenedor.identificador_embarque} tiene ordenes
+                asignadas. Puedes desvincularlas y eliminar solo el contenedor.
+              </p>
+            </div>
+            <div className="max-h-64 overflow-auto px-5 py-4">
+              <ul className="space-y-2 text-sm text-slate-600">
+                {deleteTarget.assignedOrders.map((order) => (
+                  <li key={order.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                    <span className="font-semibold text-slate-800">
+                      {order.numero_orden ?? order.id.slice(0, 8)}
+                    </span>
+                    {order.numero_pedido_agente ? (
+                      <span className="text-slate-500"> - {order.numero_pedido_agente}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deletingContainerId === deleteTarget.contenedor.id}
+                onClick={() => void handleDeleteContainer(deleteTarget.contenedor, true)}
+                className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+              >
+                <Trash2 className="h-4 w-4" />
+                Desvincular y eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Encabezado */}
       <div className="flex items-start justify-between">
@@ -545,6 +627,19 @@ export default function LogisticaPage() {
                                     FindTEU
                                   </span>
                                 )}
+                                <button
+                                  type="button"
+                                  disabled={deletingContainerId === c.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleDeleteContainer(c);
+                                  }}
+                                  title="Eliminar contenedor"
+                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-red-50 px-1.5 py-1 text-[11px] font-medium text-red-700 transition hover:bg-red-100 disabled:opacity-60"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                  Eliminar
+                                </button>
                               </div>
                             </td>
                           </tr>

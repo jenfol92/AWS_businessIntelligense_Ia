@@ -11,6 +11,15 @@ export type LatestFbaLedgerStock = {
   stockTotal: number;
 };
 
+export type LatestFbaInventorySnapshotStock = {
+  snapshotAt: string;
+  fulfillableQuantity: number;
+  reservedQuantity: number | null;
+  inboundQuantity: number | null;
+  unfulfillableQuantity: number | null;
+  source: string;
+};
+
 export type InventarioPaisStockRow = {
   pais: string;
   stockFba: number;
@@ -18,7 +27,21 @@ export type InventarioPaisStockRow = {
   updatedAt: string | null;
 };
 
-export type OperationalStockFbaSource = "country_inventory" | "ledger" | "none";
+export type OperationalStockFbaSource =
+  | "fba_inventory_snapshot"
+  | "country_inventory"
+  | "ledger"
+  | "none";
+
+export type AmazonSyncJobStatus = {
+  jobKey: string;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  lastRowsUpserted: number | null;
+  nextRunHint: string | null;
+};
 
 export type OperationalStockSummary = {
   stockFbaApp: number;
@@ -27,6 +50,9 @@ export type OperationalStockSummary = {
   stockFbaLatestLedger: number | null;
   stockFbaLatestLedgerDate: string | null;
   stockFbaLatestLedgerTotal: number | null;
+  stockFbaLatestSnapshot: number | null;
+  stockFbaLatestSnapshotAt: string | null;
+  stockFbaLatestSnapshotSource: string | null;
   /** Máximo updated_at entre filas inventario_paises del producto. */
   stockFbaAppLatestUpdatedAt: string | null;
   stockFbaDiscrepancy: boolean;
@@ -35,6 +61,7 @@ export type OperationalStockSummary = {
   stockOperationalFbm: number;
   stockOperationalTotal: number;
   discrepancyMessage: string | null;
+  fbaInventorySyncStatus?: AmazonSyncJobStatus | null;
 };
 
 export type BuildOperationalStockOptions = {
@@ -96,15 +123,22 @@ function isCountryInventoryNewerThanLedger(
 }
 
 function resolveOperationalFbaSource(params: {
+  hasSnapshot: boolean;
   hasLedger: boolean;
   hasCountryRows: boolean;
   countryNewerThanLedger: boolean;
   preferLedgerSource: boolean;
 }): OperationalStockFbaSource {
-  const { hasLedger, hasCountryRows, countryNewerThanLedger, preferLedgerSource } =
-    params;
+  const {
+    hasSnapshot,
+    hasLedger,
+    hasCountryRows,
+    countryNewerThanLedger,
+    preferLedgerSource,
+  } = params;
 
   if (preferLedgerSource && hasLedger) return "ledger";
+  if (hasSnapshot) return "fba_inventory_snapshot";
   if (!hasCountryRows && !hasLedger) return "none";
   if (!hasCountryRows && hasLedger) return "ledger";
   if (hasCountryRows && !hasLedger) return "country_inventory";
@@ -114,10 +148,13 @@ function resolveOperationalFbaSource(params: {
 
 function resolveOperationalFba(
   source: OperationalStockFbaSource,
+  stockFbaLatestSnapshot: number | null,
   stockFbaApp: number,
   stockFbaLatestLedger: number | null,
 ): number {
   switch (source) {
+    case "fba_inventory_snapshot":
+      return stockFbaLatestSnapshot ?? 0;
     case "country_inventory":
       return stockFbaApp;
     case "ledger":
@@ -130,10 +167,15 @@ function resolveOperationalFba(
 function buildDiscrepancyMessage(
   stockFbaDiscrepancy: boolean,
   source: OperationalStockFbaSource,
+  stockFbaLatestSnapshot: number | null,
   stockFbaApp: number,
   stockFbaLatestLedger: number | null,
 ): string | null {
   if (!stockFbaDiscrepancy) return null;
+
+  if (source === "fba_inventory_snapshot" && stockFbaLatestSnapshot != null) {
+    return `Se usa snapshot FBA operativo como fuente principal (${stockFbaLatestSnapshot} uds). FBA Country es distribuciÃ³n auxiliar y ledger queda como auditorÃ­a.`;
+  }
 
   if (
     source === "country_inventory" &&
@@ -160,6 +202,7 @@ function buildDiscrepancyMessage(
 export function buildOperationalStockSummary(
   inventoryRows: InventoryRow[],
   ledger: LatestFbaLedgerStock | null | undefined,
+  snapshot: LatestFbaInventorySnapshotStock | null | undefined,
   options: BuildOperationalStockOptions = {},
 ): OperationalStockSummary {
   const stockFbaApp = sumInventarioFba(inventoryRows);
@@ -177,8 +220,13 @@ export function buildOperationalStockSummary(
   const stockFbaLatestLedger = ledger?.stockSellable ?? null;
   const stockFbaLatestLedgerDate = ledger?.snapshotDate ?? null;
   const stockFbaLatestLedgerTotal = ledger?.stockTotal ?? null;
+  const stockFbaLatestSnapshot = snapshot?.fulfillableQuantity ?? null;
+  const stockFbaLatestSnapshotAt = snapshot?.snapshotAt ?? null;
+  const stockFbaLatestSnapshotSource = snapshot?.source ?? null;
   const stockFbaAppLatestUpdatedAt = latestInventarioPaisesUpdatedAt(inventoryRows);
 
+  const hasSnapshot =
+    stockFbaLatestSnapshot != null && stockFbaLatestSnapshotAt != null;
   const hasLedger =
     stockFbaLatestLedger != null && stockFbaLatestLedgerDate != null;
   const hasCountryRows = hasCountryInventoryRows(inventoryRows);
@@ -188,6 +236,7 @@ export function buildOperationalStockSummary(
   );
 
   const stockOperationalFbaSource = resolveOperationalFbaSource({
+    hasSnapshot,
     hasLedger,
     hasCountryRows,
     countryNewerThanLedger,
@@ -196,6 +245,7 @@ export function buildOperationalStockSummary(
 
   const stockOperationalFba = resolveOperationalFba(
     stockOperationalFbaSource,
+    stockFbaLatestSnapshot,
     stockFbaApp,
     stockFbaLatestLedger,
   );
@@ -203,11 +253,13 @@ export function buildOperationalStockSummary(
   const stockOperationalTotal = stockOperationalFba + stockOperationalFbm;
 
   const stockFbaDiscrepancy =
-    hasLedger && hasCountryRows && Math.abs(stockFbaApp - stockFbaLatestLedger) > 0;
+    (hasSnapshot && hasCountryRows && Math.abs(stockFbaApp - stockFbaLatestSnapshot) > 0) ||
+    (hasLedger && hasCountryRows && Math.abs(stockFbaApp - stockFbaLatestLedger) > 0);
 
   const discrepancyMessage = buildDiscrepancyMessage(
     stockFbaDiscrepancy,
     stockOperationalFbaSource,
+    stockFbaLatestSnapshot,
     stockFbaApp,
     stockFbaLatestLedger,
   );
@@ -219,6 +271,9 @@ export function buildOperationalStockSummary(
     stockFbaLatestLedger,
     stockFbaLatestLedgerDate,
     stockFbaLatestLedgerTotal,
+    stockFbaLatestSnapshot,
+    stockFbaLatestSnapshotAt,
+    stockFbaLatestSnapshotSource,
     stockFbaAppLatestUpdatedAt,
     stockFbaDiscrepancy,
     stockOperationalFba,

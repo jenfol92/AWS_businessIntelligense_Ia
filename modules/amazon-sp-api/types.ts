@@ -12,6 +12,8 @@ export type SpApiReport = {
   createdTime?: string;
   processingStartTime?: string;
   processingEndTime?: string;
+  dataStartTime?: string;
+  dataEndTime?: string;
   marketplaceIds?: string[];
 };
 
@@ -54,6 +56,8 @@ export type AmazonSpApiReportJobRow = {
 export type CreateReportInput = {
   reportType: string;
   marketplaceIds: string[];
+  dataStartTime?: string;
+  dataEndTime?: string;
   reportOptions?: Record<string, string>;
 };
 

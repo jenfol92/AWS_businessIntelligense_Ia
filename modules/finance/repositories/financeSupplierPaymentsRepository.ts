@@ -22,6 +22,7 @@ function formatSupabaseError(error: {
 export type OrderForSupplierPayments = {
   id: string;
   estado: string;
+  tipo_envio: string | null;
   numero_orden: string | null;
   numero_pedido_agente: string | null;
   fecha_confirmacion: string | null;
@@ -55,6 +56,11 @@ export type ContainerForSupplierPayments = {
   fecha_eta_estimada: string | null;
 };
 
+export type AmazonInboundForSupplierPayments = {
+  shipment_id: string;
+  fecha_salida: string | null;
+};
+
 function firstRelation<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
@@ -67,7 +73,7 @@ export async function fetchOrderForSupplierPayments(
   const { data, error } = await supabase
     .from("ordenes_compra")
     .select(
-      `id, estado, numero_orden, numero_pedido_agente,
+      `id, estado, tipo_envio, numero_orden, numero_pedido_agente,
        fecha_confirmacion, fecha_orden, eta, eta_real, etd,
        moneda_compra, tipo_cambio_moneda_eur, tipo_cambio_usd_eur,
        coste_total_eur, coste_total_usd,
@@ -80,6 +86,36 @@ export async function fetchOrderForSupplierPayments(
 
   if (error) throw new Error(formatSupabaseError(error));
   return (data as OrderForSupplierPayments | null) ?? null;
+}
+
+export async function fetchAmazonInboundForOrder(
+  ordenId: string,
+): Promise<AmazonInboundForSupplierPayments | null> {
+  const supabase = createSupabaseRouteClient();
+  const { data, error } = await supabase
+    .from("orden_logistics_assignments")
+    .select(
+      `shipment_id,
+       amazon_inbound_shipments(shipment_id, fecha_salida)`,
+    )
+    .eq("orden_id", ordenId)
+    .eq("status", "active")
+    .eq("assignment_type", "amazon_inbound")
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(formatSupabaseError(error));
+  const rawShipment = (data as {
+    shipment_id?: string | null;
+    amazon_inbound_shipments?:
+      | AmazonInboundForSupplierPayments
+      | AmazonInboundForSupplierPayments[]
+      | null;
+  } | null)?.amazon_inbound_shipments;
+  const shipment = firstRelation(rawShipment);
+  if (shipment) return shipment;
+  const shipmentId = (data as { shipment_id?: string | null } | null)?.shipment_id;
+  return shipmentId ? { shipment_id: shipmentId, fecha_salida: null } : null;
 }
 
 export async function fetchContainerForSupplierPayments(

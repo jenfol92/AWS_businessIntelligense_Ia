@@ -12,9 +12,13 @@ import {
 
   fetchBenchmarkFlags,
 
+  fetchInventoryProductScope,
+
   fetchInboundByProductIds,
 
   fetchInventoryRows,
+
+  fetchLatestFbaInventorySnapshotByProductIds,
 
   fetchLatestFbaLedgerStockByProductIds,
 
@@ -59,23 +63,108 @@ import {
   stockForChannelRow,
 
 } from "./inventoryScope";
-import {
-  buildOperationalStockSummary,
-} from "./resolveOperationalStock";
 
 
 
-export async function loadInventoryContext(
+async function timed<T>(
+
+  productId: string | null,
+
+  productIdsCount: number,
+
+  label: string,
+
+  fn: () => Promise<T>,
+
+): Promise<T> {
+
+  const start = Date.now();
+
+  try {
+
+    return await fn();
+
+  } finally {
+
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+
+        `[inventory-detail timing] productId=${productId ?? "ALL"} productIds=${productIdsCount} ${label}: ${Date.now() - start}ms`,
+
+      );
+    }
+
+  }
+
+}
+
+
+async function fetchLatestFbaLedgerStockWithTimeout(
+
+  productIds: string[],
+
+) {
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const ledgerPromise = fetchLatestFbaLedgerStockByProductIds(productIds).catch(
+
+    (error) => {
+
+      console.error(
+
+        "[inventory] latest FBA ledger failed",
+
+        { productIdsCount: productIds.length, error },
+
+      );
+
+      return new Map();
+
+    },
+
+  );
+
+  const timeoutPromise = new Promise<Awaited<typeof ledgerPromise>>((resolve) => {
+
+    timeoutId = setTimeout(() => {
+
+      console.warn("[inventory] latest FBA ledger skipped by timeout", {
+
+        productIdsCount: productIds.length,
+
+      });
+
+      resolve(new Map());
+
+    }, 700);
+
+  });
+
+  const result = await Promise.race([ledgerPromise, timeoutPromise]);
+
+  if (timeoutId) clearTimeout(timeoutId);
+
+  return result;
+
+}
+
+
+async function loadInventoryContextFromProducts(
+
+  products: ProductBaseRow[],
 
   canalRaw?: string,
 
   windowDays: number = 30,
 
+  productIdForLog?: string | null,
+
 ) {
 
-  const canal = normalizeCanal(canalRaw);
+  const totalStart = Date.now();
 
-  const products = await fetchActiveProducts();
+  const canal = normalizeCanal(canalRaw);
 
   const productIds = products.map((p) => p.id);
 
@@ -99,29 +188,59 @@ export async function loadInventoryContext(
 
     fbaLedgerLatest,
 
+    fbaInventorySnapshotLatest,
+
   ] = await Promise.all([
 
-    fetchInventoryRows(productIds),
-
-    fetchSalesAggregates(productIds, canal, windowDays),
-
-    fetchProductDetailsMap(productIds),
-
-    fetchSuppliersMap(
-
-      products.map((p) => p.proveedor_id).filter(Boolean) as string[],
-
+    timed(productIdForLog ?? null, productIds.length, "fetchInventoryRows", () =>
+      fetchInventoryRows(productIds),
     ),
 
-    fetchStockSuggestionsMap(productIds),
+    timed(productIdForLog ?? null, productIds.length, "fetchSalesAggregates", () =>
+      fetchSalesAggregates(productIds, canal, windowDays),
+    ),
 
-    fetchInboundByProductIds(productIds),
+    timed(productIdForLog ?? null, productIds.length, "fetchProductDetailsMap", () =>
+      fetchProductDetailsMap(productIds),
+    ),
 
-    fetchBenchmarkFlags(products),
+    timed(productIdForLog ?? null, productIds.length, "fetchSuppliersMap", () =>
+      fetchSuppliersMap(
 
-    fetchLatestFbaLedgerStockByProductIds(productIds),
+        products.map((p) => p.proveedor_id).filter(Boolean) as string[],
+
+      ),
+    ),
+
+    timed(productIdForLog ?? null, productIds.length, "fetchStockSuggestionsMap", () =>
+      fetchStockSuggestionsMap(productIds),
+    ),
+
+    timed(productIdForLog ?? null, productIds.length, "fetchInboundByProductIds", () =>
+      fetchInboundByProductIds(productIds),
+    ),
+
+    timed(productIdForLog ?? null, productIds.length, "fetchBenchmarkFlags", () =>
+      fetchBenchmarkFlags(products),
+    ),
+
+    timed(productIdForLog ?? null, productIds.length, "fetchLatestFbaLedgerStockByProductIds", () =>
+      fetchLatestFbaLedgerStockWithTimeout(productIds),
+    ),
+
+    timed(productIdForLog ?? null, productIds.length, "fetchLatestFbaInventorySnapshotByProductIds", () =>
+      fetchLatestFbaInventorySnapshotByProductIds(productIds),
+    ),
 
   ]);
+
+  if (process.env.NODE_ENV === "development") {
+    console.log(
+
+      `[inventory-detail timing] productId=${productIdForLog ?? "ALL"} products=${products.length} productIds=${productIds.length} loadInventoryContextFromProducts total: ${Date.now() - totalStart}ms`,
+
+    );
+  }
 
 
 
@@ -151,7 +270,47 @@ export async function loadInventoryContext(
 
     fbaLedgerLatest,
 
+    fbaInventorySnapshotLatest,
+
   };
+
+}
+
+
+
+export async function loadInventoryContext(
+
+  canalRaw?: string,
+
+  windowDays: number = 30,
+
+) {
+
+  const products = await fetchActiveProducts();
+
+  return loadInventoryContextFromProducts(products, canalRaw, windowDays);
+
+}
+
+
+export async function loadInventoryContextForProduct(
+
+  productId: string,
+
+  canalRaw?: string,
+
+  windowDays: number = 30,
+
+) {
+
+  const products = await fetchInventoryProductScope(productId);
+
+  return loadInventoryContextFromProducts(
+    products,
+    canalRaw,
+    windowDays,
+    productId,
+  );
 
 }
 
@@ -196,10 +355,7 @@ export function applyScopedProductMetrics(
 
 
   const invRows = ctx.inventoryRows.filter((r) => r.producto_id === product.productoId);
-  const operational = buildOperationalStockSummary(
-    invRows,
-    ctx.fbaLedgerLatest.get(product.productoId),
-  );
+  
 
   const scopedInv =
 
@@ -211,33 +367,15 @@ export function applyScopedProductMetrics(
 
 
 
-  let stockFba = 0;
-  let stockFbm = 0;
-  let stockTotal = 0;
-
-  if (
-    countryScope.filter === "ALL" &&
-    channelScope.filter === "ALL"
-  ) {
-    stockFba = operational.stockOperationalFba;
-    stockFbm = operational.stockOperationalFbm;
-    stockTotal = operational.stockOperationalTotal;
-  } else if (
-    countryScope.filter === "ALL" &&
-    channelScope.filter === "AMAZON_FBA" &&
-    operational.stockFbaLatestLedger != null
-  ) {
-    stockFba = operational.stockOperationalFba;
-    stockFbm = 0;
-    stockTotal = operational.stockOperationalFba;
-  } else {
-    for (const row of scopedInv) {
-      stockFba += Number(row.stock_fba ?? 0);
-      stockFbm += Number(row.stock_fbm ?? 0);
-      stockTotal += stockForChannelRow(row, channelScope);
-    }
-  }
-
+      let stockFba = 0;
+      let stockFbm = 0;
+      let stockTotal = 0;
+      
+      for (const row of scopedInv) {
+        stockFba += Number(row.stock_fba ?? 0);
+        stockFbm += Number(row.stock_fbm ?? 0);
+        stockTotal += stockForChannelRow(row, channelScope);
+      }
 
 
   let salesUnitsWindow = 0;
@@ -305,4 +443,3 @@ export function applyScopedProductMetrics(
   };
 
 }
-

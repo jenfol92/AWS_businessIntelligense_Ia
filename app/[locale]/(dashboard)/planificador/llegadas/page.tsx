@@ -19,14 +19,17 @@ import {
   Search,
 } from "lucide-react";
 import { DEFAULT_LOCALE, isLocale } from "@/config/i18n";
+import { ArrivalLogisticsDetailModal } from "@/modules/planner/components/ArrivalLogisticsDetailModal";
 import {
   PlannerArrivalMonthDesktopCard,
   PlannerArrivalMonthMobileSection,
 } from "@/modules/planner/components/PlannerArrivalMonthViews";
+import OrderReadonlyModal from "@/modules/orders/components/OrderReadonlyModal";
 import { usePlannerArrivals } from "@/modules/planner/hooks/usePlannerArrivals";
 import { usePlannerDestinationOptions } from "@/modules/planner/hooks/usePlannerDestinationOptions";
 import {
   ARRIVAL_LOGISTIC_STATUS_OPTIONS,
+  type ArrivalOrder,
   type ArrivalOrderStatus,
 } from "@/modules/planner/types/arrivals.types";
 import { computeArrivalKpis } from "@/modules/planner/utils/computeArrivalKpis";
@@ -62,6 +65,8 @@ export default function PlanificadorLlegadasPage() {
   }));
 
   const [expandedMonths, setExpandedMonths] = useState<Set<string>>(() => new Set([currentMonthKey()]));
+  const [detailOrder, setDetailOrder] = useState<ArrivalOrder | null>(null);
+  const [readonlyOrderId, setReadonlyOrderId] = useState<string | null>(null);
 
   const { options: destinationOptions } = usePlannerDestinationOptions();
 
@@ -225,7 +230,7 @@ export default function PlanificadorLlegadasPage() {
           </label>
 
           <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-[11px] font-medium text-slate-500">Contenedor</span>
+            <span className="text-[11px] font-medium text-slate-500">Logistica</span>
             <select
               value={filters.container}
               onChange={(e) =>
@@ -237,8 +242,8 @@ export default function PlanificadorLlegadasPage() {
               className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm text-slate-700"
             >
               <option value="ALL">Todos</option>
-              <option value="with">Con contenedor</option>
-              <option value="without">Sin contenedor</option>
+              <option value="with">Con logistica vinculada</option>
+              <option value="without">Sin logística vinculada</option>
             </select>
           </label>
 
@@ -289,7 +294,13 @@ export default function PlanificadorLlegadasPage() {
         <>
           <div className="hidden lg:grid lg:grid-cols-2 lg:gap-4 xl:grid-cols-3 2xl:grid-cols-4">
             {filteredMonths.map((month) => (
-              <PlannerArrivalMonthDesktopCard key={month.month} month={month} locale={locale} />
+              <PlannerArrivalMonthDesktopCard
+                key={month.month}
+                month={month}
+                locale={locale}
+                onOpenDetail={setDetailOrder}
+                onOpenOrder={(order) => setReadonlyOrderId(order.orderId)}
+              />
             ))}
           </div>
 
@@ -301,6 +312,8 @@ export default function PlanificadorLlegadasPage() {
                 locale={locale}
                 expanded={expandedMonths.has(month.month)}
                 onToggle={() => toggleMonth(month.month)}
+                onOpenDetail={setDetailOrder}
+                onOpenOrder={(order) => setReadonlyOrderId(order.orderId)}
               />
             ))}
           </div>
@@ -315,6 +328,23 @@ export default function PlanificadorLlegadasPage() {
             </span>
           </p>
         </>
+      ) : null}
+      {detailOrder ? (
+        <ArrivalLogisticsDetailModal
+          order={detailOrder}
+          locale={locale}
+          onClose={() => setDetailOrder(null)}
+          onOpenOrder={(orderId) => {
+            setDetailOrder(null);
+            setReadonlyOrderId(orderId);
+          }}
+        />
+      ) : null}
+      {readonlyOrderId ? (
+        <OrderReadonlyModal
+          ordenId={readonlyOrderId}
+          onClose={() => setReadonlyOrderId(null)}
+        />
       ) : null}
     </div>
   );

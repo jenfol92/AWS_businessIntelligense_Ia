@@ -2,14 +2,17 @@
 
 import { TIPO_CONTENEDOR_LABELS } from "@/modules/containers/constants/estadoContenedor";
 import type { ContainerGeneralFormValues } from "@/modules/containers/hooks/useContainerGeneralForm";
+import type { DestinationCountry } from "@/app/api/logistics/ports/route";
 
 export type ContainerGeneralDataFormProps = {
   values: ContainerGeneralFormValues;
+  destinationCountries?: DestinationCountry[];
   onChange: (patch: Partial<ContainerGeneralFormValues>) => void;
 };
 
 export function ContainerGeneralDataForm({
   values,
+  destinationCountries = [],
   onChange,
 }: ContainerGeneralDataFormProps) {
   return (
@@ -36,6 +39,21 @@ export function ContainerGeneralDataForm({
           >
             <option value="propio">{TIPO_CONTENEDOR_LABELS.propio}</option>
             <option value="amazon_agl">{TIPO_CONTENEDOR_LABELS.amazon_agl}</option>
+          </select>
+        </div>
+        <div className="sm:col-span-2">
+          <label className="text-[10px] uppercase text-slate-400 block mb-0.5">País destino</label>
+          <select
+            value={values.destino_pais_id}
+            onChange={(e) => onChange({ destino_pais_id: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Sin país destino</option>
+            {destinationCountries.map((country) => (
+              <option key={country.id} value={country.id}>
+                {country.code} · {country.name}
+              </option>
+            ))}
           </select>
         </div>
         <div className="sm:col-span-2">

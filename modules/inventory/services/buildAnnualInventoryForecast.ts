@@ -512,7 +512,7 @@ export async function buildAnnualInventoryForecast(
   const productInvRows = inventoryRows.filter((r) => r.producto_id === product.id);
   const operationalStock =
     params.operationalStock ??
-    buildOperationalStockSummary(productInvRows, null);
+    buildOperationalStockSummary(productInvRows, null, null);
   const openingStock = computeScopedStock(
     productInvRows,
     countryScope,

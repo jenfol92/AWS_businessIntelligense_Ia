@@ -203,6 +203,9 @@ export type OrderDraft = {
   /** DB: ordenes_compra.estado = 'borrador' */
   estado: "borrador";
 
+  /** DB: ordenes_compra.tipo_envio */
+  tipoEnvio?: "propio" | "amazon_agl";
+
   // ── Supplier / agent ──────────────────────────────────────────────────────
 
   /** DB: ordenes_compra.created_by (will be set from session on insert) */

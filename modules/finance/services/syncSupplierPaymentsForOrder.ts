@@ -6,6 +6,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  fetchAmazonInboundForOrder,
   fetchContainerForOrder,
   fetchContainerForSupplierPayments,
   fetchOrderForSupplierPayments,
@@ -78,12 +79,14 @@ function paymentStatus(dueDate: string | null): "pendiente" | "vencido" {
 function balanceNotes(
   logisticsType: OrderLogisticsType,
   dueDate: string | null,
+  balanceDaysBeforeEta: number,
 ): string | null {
-  if (dueDate) return null;
   if (logisticsType === "amazon_agl") {
-    return "Balance 70 % sin fecha: falta ETD o fecha_salida del contenedor.";
+    if (dueDate) return "70% calculado en ETD / fecha salida Amazon AGL.";
+    return "Falta ETD/fecha salida Amazon AGL para calcular 70%.";
   }
   if (logisticsType === "propio") {
+    if (dueDate) return `70% calculado ${balanceDaysBeforeEta} dias antes de ETA.`;
     return "Balance 70 % sin fecha: falta ETA o días balance antes de ETA.";
   }
   return "Balance 70 % sin fecha: tipo de contenedor no definido.";
@@ -101,7 +104,10 @@ export async function syncSupplierPaymentsForOrder(
   if (!order || order.estado !== "confirmado") return;
 
   const container = options?.container ?? (await fetchContainerForOrder(ordenId));
+  const amazonInbound =
+    order.tipo_envio === "amazon_agl" ? await fetchAmazonInboundForOrder(ordenId) : null;
   const logisticsType = resolveOrderLogisticsType({
+    orderTipoEnvio: order.tipo_envio,
     containerTipoContenedor: container?.tipo_contenedor,
   });
 
@@ -121,34 +127,8 @@ export async function syncSupplierPaymentsForOrder(
         : asNumber(order.coste_total_eur);
 
   const depositDate = resolveDepositDueDate(order);
-  const balanceDate = resolveBalanceDueDate({ logisticsType, order, container });
-  console.log("[backfill] syncing order", ordenId);
-  console.log("[backfill] payload preview", {
-    orden_id: ordenId,
-    payment_type: "DEPOSITO_30",
-    due_date: depositDate,
-    amount_original: baseOriginal * (depositPct / 100),
-    original_currency: originalCurrency,
-    planned_fx_rate: plannedFx,
-    amount_eur: baseEur * (depositPct / 100),
-    logistics_type: logisticsType,
-    contenedor_id: container?.id ?? null,
-    status: paymentStatus(depositDate),
-    notes: null,
-  });
-  console.log("[backfill] payload preview", {
-    orden_id: ordenId,
-    payment_type: "BALANCE_70",
-    due_date: balanceDate,
-    amount_original: baseOriginal * (balancePct / 100),
-    original_currency: originalCurrency,
-    planned_fx_rate: plannedFx,
-    amount_eur: baseEur * (balancePct / 100),
-    logistics_type: logisticsType,
-    contenedor_id: container?.id ?? null,
-    status: paymentStatus(balanceDate),
-    notes: balanceNotes(logisticsType, balanceDate),
-  });
+  const balanceDate = resolveBalanceDueDate({ logisticsType, order, container, amazonInbound });
+  const balanceDaysBeforeEta = Math.max(0, Number(order.balance_dias_antes_eta ?? 10));
 
   await upsertSupplierPayment({
     orden_id: ordenId,
@@ -174,7 +154,7 @@ export async function syncSupplierPaymentsForOrder(
     logistics_type: logisticsType,
     contenedor_id: container?.id ?? null,
     status: paymentStatus(balanceDate),
-    notes: balanceNotes(logisticsType, balanceDate),
+    notes: balanceNotes(logisticsType, balanceDate, balanceDaysBeforeEta),
   });
 }
 

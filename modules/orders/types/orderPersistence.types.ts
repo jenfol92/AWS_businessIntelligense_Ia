@@ -34,6 +34,7 @@ export type OrdenCompraRow = {
   id: string;
   numero_orden: string | null;
   estado: string;
+  tipo_envio: "propio" | "amazon_agl";
   fob_puerto: string | null;
   destino: string | null;
   fecha_orden: string;
@@ -104,6 +105,7 @@ export type OrdenWithItems = {
  */
 export type InsertOrderHeaderInput = {
   estado: "borrador";
+  tipo_envio?: "propio" | "amazon_agl";
 
   // Ports
   fob_puerto?: string | null;
@@ -180,20 +182,23 @@ export type UpdateOrderDraftResult = {
  *
  * @property estado        - Estado a filtrar. "ALL" desactiva el filtro.
  * @property q             - Texto a buscar en numero_orden y numero_pedido_agente (ilike).
- * @property puerto        - Puerto FOB parcial (ilike).
+ * @property createdFrom   - Fecha minima de created_at.
+ * @property createdTo     - Fecha maxima de created_at.
  * @property limit         - Número máximo de filas (default 200, techo 500).
  * @property extraOrderIds - IDs adicionales a incluir (búsqueda por SKU/nombre resuelta en API).
  */
 export type ListOrdersInput = {
   estado?: string | null;
   q?: string | null;
-  puerto?: string | null;
+  createdFrom?: string | null;
+  createdTo?: string | null;
   limit?: number;
   extraOrderIds?: string[];
 };
 
 /** Campos actualizables en la cabecera de un borrador. */
 export type UpdateOrderDraftInput = {
+  tipo_envio?: "propio" | "amazon_agl";
   fob_puerto?: string | null;
   destino?: string | null;
   fecha_orden?: string;

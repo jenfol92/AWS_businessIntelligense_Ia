@@ -170,6 +170,12 @@ export type InventoryInboundRow = {
   numeroPedidoAgente: string | null;
   contenedorId: string | null;
   contenedorIdentificador: string | null;
+  logisticsKind?: "contenedor_propio" | "amazon_inbound" | "none";
+  seguimiento?: string | null;
+  amazonShipmentId?: string | null;
+  amazonShipmentName?: string | null;
+  amazonStatus?: string | null;
+  amazonDestinationCenter?: string | null;
   destinoOrden?: string | null;
   eta: string | null;
   etaSource: "container" | "order_real" | "order" | null;

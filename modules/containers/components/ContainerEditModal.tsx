@@ -8,6 +8,7 @@ import { ContainerGeneralDataForm } from "@/modules/containers/components/Contai
 import { ContainerOrderLinksSection } from "@/modules/containers/components/ContainerOrderLinksSection";
 import { useContainerGeneralForm } from "@/modules/containers/hooks/useContainerGeneralForm";
 import type { ContenedorRow, OrdenDetalle } from "@/modules/containers/types/containerUiTypes";
+import type { DestinationCountry } from "@/app/api/logistics/ports/route";
 
 export type ContainerEditModalProps = {
   contenedorId: string;
@@ -26,6 +27,7 @@ export function ContainerEditModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [ordenes, setOrdenes] = useState<OrdenDetalle[]>([]);
+  const [destinationCountries, setDestinationCountries] = useState<DestinationCountry[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -35,6 +37,15 @@ export function ContainerEditModal({
       const contenedor = json.contenedor as ContenedorRow;
       generalForm.applyFromContenedor(contenedor);
       setOrdenes((json.ordenes ?? []) as OrdenDetalle[]);
+
+      const portsRes = await fetch("/api/logistics/ports");
+      const portsJson = (await portsRes.json()) as {
+        ok?: boolean;
+        destinationCountries?: DestinationCountry[];
+      };
+      if (portsJson.ok) {
+        setDestinationCountries(portsJson.destinationCountries ?? []);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Error cargando contenedor");
     } finally {
@@ -87,6 +98,7 @@ export function ContainerEditModal({
             <>
               <ContainerGeneralDataForm
                 values={generalForm.values}
+                destinationCountries={destinationCountries}
                 onChange={generalForm.patchValues}
               />
               <ContainerOrderLinksSection

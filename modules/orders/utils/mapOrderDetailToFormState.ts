@@ -18,6 +18,7 @@ export function mapOrderDetailToFormState(detail: RawOrderDetail): OrderFormLoad
   const tc    = (orden.tipo_cambio_moneda_eur ?? orden.tipo_cambio_usd_eur) as number | null;
 
   return {
+    tipoEnvio:          orden.tipo_envio === "amazon_agl" ? "amazon_agl" : "propio",
     fob:                (orden.fob_puerto as string | null) ?? "",
     destino:            (orden.destino    as string | null) ?? "",
     agenteId:           (orden.agente_id  as string | null) ?? "",

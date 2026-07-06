@@ -11,6 +11,7 @@ export type RegisteredCountry = {
 };
 
 const FALLBACK_COUNTRIES: RegisteredCountry[] = [
+  { code: "ES", name: "España" },
   { code: "DE", name: "Alemania" },
   { code: "FR", name: "Francia" },
   { code: "IT", name: "Italia" },
@@ -18,7 +19,7 @@ const FALLBACK_COUNTRIES: RegisteredCountry[] = [
   { code: "NL", name: "Países Bajos" },
   { code: "BE", name: "Bélgica" },
   { code: "PL", name: "Polonia" },
-  { code: "UK", name: "Reino Unido" },
+  { code: "GB", name: "Reino Unido" },
 ];
 
 function normalizeCountryRow(row: Record<string, unknown>): RegisteredCountry | null {
@@ -34,7 +35,7 @@ export async function fetchRegisteredCountries(
   const { data, error } = await supabase
     .from("paises")
     .select("*")
-    .order("nombre", { ascending: true });
+    .order("code", { ascending: true });
 
   if (error || !data || data.length === 0) {
     return FALLBACK_COUNTRIES;
@@ -50,14 +51,8 @@ export async function fetchRegisteredCountries(
 export async function fetchPortCountryMap(
   supabase: SupabaseClient,
 ): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
-  const { data } = await supabase.from("puerto_pais").select("puerto, pais");
-  for (const row of (data ?? []) as Array<{ puerto: string; pais: string }>) {
-    if (row.puerto && row.pais) {
-      map.set(row.puerto.trim().toLowerCase(), row.pais.trim().toUpperCase());
-    }
-  }
-  return map;
+  await fetchRegisteredCountries(supabase);
+  return new Map<string, string>();
 }
 
 export async function buildPlannerDestinationOptions(

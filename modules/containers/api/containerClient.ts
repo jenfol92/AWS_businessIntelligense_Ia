@@ -56,6 +56,28 @@ export type CreateContainerResult = {
   contenedor: { id?: string } & Record<string, unknown>;
 };
 
+export type DeleteContainerAssignedOrder = {
+  id: string;
+  numero_orden: string | null;
+  numero_pedido_agente: string | null;
+};
+
+export type DeleteContainerResult =
+  | { ok: true; deletedContainerId?: string; unlinkedOrders?: number }
+  | {
+      ok: false;
+      error?: string;
+      message?: string;
+      requiresConfirmation?: boolean;
+      assignedOrders?: DeleteContainerAssignedOrder[];
+    };
+
+type DeleteContainerApiResponse = DeleteContainerResult & {
+  requiresConfirmation?: boolean;
+  error?: string;
+  message?: string;
+};
+
 export async function createContainerFromOrder(
   payload: CreateContainerFromOrderPayload,
 ): Promise<CreateContainerResult> {
@@ -123,4 +145,26 @@ export async function unlinkContainerOrder(
     { method: "DELETE" },
   );
   return parseApiResponse<{ ok: true }>(res);
+}
+
+export async function deleteContainer(
+  contenedorId: string,
+  unlinkAssignedOrders = false,
+): Promise<DeleteContainerResult> {
+  const res = await fetch(`/api/containers/${contenedorId}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ unlinkAssignedOrders }),
+  });
+  const json = await readJsonSafe<DeleteContainerApiResponse>(res);
+
+  if (res.status === 409 && json.requiresConfirmation) {
+    return json;
+  }
+
+  if (!res.ok || json.ok === false) {
+    throw new Error(json.error ?? json.message ?? `Error HTTP ${res.status}`);
+  }
+
+  return json;
 }

@@ -31,12 +31,15 @@ export function resolveBalanceDueDate(params: {
     fecha_salida?: string | null;
     fecha_eta_estimada?: string | null;
   } | null;
+  amazonInbound?: {
+    fecha_salida?: string | null;
+  } | null;
 }): string | null {
-  const { logisticsType, order, container } = params;
+  const { logisticsType, order, container, amazonInbound } = params;
 
   if (logisticsType === "amazon_agl") {
     return (
-      normalizeDate(container?.fecha_salida)
+      normalizeDate(amazonInbound?.fecha_salida)
       ?? normalizeDate(order.etd)
       ?? null
     );

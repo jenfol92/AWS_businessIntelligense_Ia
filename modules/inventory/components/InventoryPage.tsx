@@ -803,6 +803,9 @@ export function InventoryPage() {
                               ? ` · ${p.variantes.length} variantes`
                               : ""}
                           </p>
+                          <p className="mt-1 text-[10px] font-medium text-slate-400">
+                            {p.hasFbaSnapshot ? "FBA SP-API" : "Legacy país"}
+                          </p>
                         </div>
                       </div>
                       <span

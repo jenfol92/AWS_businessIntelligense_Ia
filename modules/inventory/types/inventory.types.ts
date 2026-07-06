@@ -129,6 +129,12 @@ export type InventoryProductSummary = {
   stockTotal: number;
   stockFba: number;
   stockFbm: number;
+  stockFbaOperationalSource?: string | null;
+  stockFbaLatestSnapshot?: number | null;
+  stockFbaLatestSnapshotAt?: string | null;
+  stockOperationalTotal?: number | null;
+  stockOperationalSource?: string | null;
+  hasFbaSnapshot?: boolean;
   salesUnits30: number;
   salesUnits90: number;
   coverageDays: number | null;

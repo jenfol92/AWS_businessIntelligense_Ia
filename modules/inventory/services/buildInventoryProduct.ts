@@ -20,6 +20,20 @@ import {
   salesKey,
   salesKeyGlobal,
 } from "./inventoryMetrics";
+import { resolveChannelScope } from "./inventoryScope";
+
+let snapshotAlignmentLogCount = 0;
+
+function stockTotalForCurrentChannel(params: {
+  canal: string;
+  stockFba: number;
+  stockFbm: number;
+}): number {
+  const channelScope = resolveChannelScope(params.canal);
+  if (channelScope.filter === "AMAZON_FBA") return params.stockFba;
+  if (channelScope.filter === "AMAZON_FBM") return params.stockFbm;
+  return params.stockFba + params.stockFbm;
+}
 
 function inferForecastMethod(
   hasHistory: boolean,
@@ -82,20 +96,55 @@ export function buildProductSummary(
     : undefined;
   const stockView = ctx.stockSuggestions.get(product.id);
   const countries = buildCountryRowsForProduct(product.id, ctx);
+  const fbaSnapshot = ctx.fbaInventorySnapshotLatest.get(product.id);
+  const hasFbaSnapshot = fbaSnapshot != null;
 
   let stockFba = 0;
   let stockFbm = 0;
   let stockTotal = 0;
+  let legacyFba = 0;
 
   if (stockView) {
-    stockFba = stockView.stock_fba;
+    legacyFba = stockView.stock_fba;
+    stockFba = legacyFba;
     stockFbm = stockView.stock_fbm;
     stockTotal = stockView.stock_actual;
   } else {
     for (const c of countries) {
+      legacyFba += c.stockFba;
       stockFba += c.stockFba;
       stockFbm += c.stockFbm;
       stockTotal += c.stockTotal;
+    }
+  }
+
+  const stockFbaOperationalSource = hasFbaSnapshot
+    ? "SP-API FBA Inventory"
+    : stockView
+      ? "Legacy país"
+      : "Fallback país/ledger";
+
+  if (hasFbaSnapshot) {
+    stockFba = fbaSnapshot.fulfillableQuantity;
+    stockTotal = stockTotalForCurrentChannel({
+      canal: ctx.canal,
+      stockFba,
+      stockFbm,
+    });
+    if (
+      process.env.NODE_ENV === "development" &&
+      snapshotAlignmentLogCount < 10 &&
+      legacyFba !== stockFba
+    ) {
+      snapshotAlignmentLogCount += 1;
+      console.log("[inventory] stock summary aligned with FBA snapshot", {
+        productId: product.id,
+        sku: product.sku,
+        legacyFba,
+        snapshotFba: stockFba,
+        stockOperationalTotal: stockTotal,
+        source: stockFbaOperationalSource,
+      });
     }
   }
 
@@ -107,16 +156,19 @@ export function buildProductSummary(
   const hasBenchmark = ctx.benchmarkIds.has(product.id);
   const inboundRows = ctx.inbound.get(product.id) ?? [];
   const hasInbound = inboundRows.length > 0;
-
-  const countryRisks = countries.map((c) => c.risk);
-  const risk = productRisk(countryRisks, stockView?.riesgo);
+  const avgDailyDemand = Math.max(
+    avgDaily(globalSales.units30, 30),
+    avgDaily(globalSales.units90, 90),
+  );
 
   const coverage =
-    stockView?.dias_cobertura ??
-    coverageDays(
-      stockTotal,
-      Math.max(avgDaily(globalSales.units30, 30), avgDaily(globalSales.units90, 90)),
-    );
+    hasFbaSnapshot
+      ? coverageDays(stockTotal, avgDailyDemand)
+      : stockView?.dias_cobertura ?? coverageDays(stockTotal, avgDailyDemand);
+  const countryRisks = countries.map((c) => c.risk);
+  const risk = hasFbaSnapshot
+    ? countryRisk(stockTotal, coverage)
+    : productRisk(countryRisks, stockView?.riesgo);
 
   return {
     productoId: product.id,
@@ -131,6 +183,14 @@ export function buildProductSummary(
     stockTotal,
     stockFba,
     stockFbm,
+    stockFbaOperationalSource,
+    stockFbaLatestSnapshot: fbaSnapshot?.fulfillableQuantity ?? null,
+    stockFbaLatestSnapshotAt: fbaSnapshot?.snapshotAt ?? null,
+    stockOperationalTotal: stockTotal,
+    stockOperationalSource: hasFbaSnapshot
+      ? "SP-API FBA Inventory"
+      : stockFbaOperationalSource,
+    hasFbaSnapshot,
     salesUnits30: globalSales.units30,
     salesUnits90: globalSales.units90,
     coverageDays: coverage,

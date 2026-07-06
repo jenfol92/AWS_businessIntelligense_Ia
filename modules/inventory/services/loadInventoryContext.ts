@@ -44,6 +44,8 @@ import {
 
   avgDaily,
 
+  countryRisk,
+
   coverageDays,
 
   normalizeCanal,
@@ -377,6 +379,20 @@ export function applyScopedProductMetrics(
         stockTotal += stockForChannelRow(row, channelScope);
       }
 
+      const snapshot = ctx.fbaInventorySnapshotLatest.get(product.productoId);
+      const useGlobalSnapshot =
+        countryScope.countries == null && snapshot?.fulfillableQuantity != null;
+      if (useGlobalSnapshot) {
+        stockFba = snapshot.fulfillableQuantity;
+        if (channelScope.filter === "AMAZON_FBA") {
+          stockTotal = stockFba;
+        } else if (channelScope.filter === "AMAZON_FBM") {
+          stockTotal = stockFbm;
+        } else {
+          stockTotal = stockFba + stockFbm;
+        }
+      }
+
 
   let salesUnitsWindow = 0;
 
@@ -424,6 +440,8 @@ export function applyScopedProductMetrics(
 
 
 
+  const scopedCoverage = coverageDays(stockTotal, avgUsed);
+
   return {
 
     ...product,
@@ -438,7 +456,18 @@ export function applyScopedProductMetrics(
 
     salesUnits90,
 
-    coverageDays: coverageDays(stockTotal, avgUsed),
+    coverageDays: scopedCoverage,
+    risk: useGlobalSnapshot ? countryRisk(stockTotal, scopedCoverage) : product.risk,
+    stockFbaOperationalSource: useGlobalSnapshot
+      ? "SP-API FBA Inventory"
+      : product.stockFbaOperationalSource,
+    stockFbaLatestSnapshot: snapshot?.fulfillableQuantity ?? product.stockFbaLatestSnapshot ?? null,
+    stockFbaLatestSnapshotAt: snapshot?.snapshotAt ?? product.stockFbaLatestSnapshotAt ?? null,
+    stockOperationalTotal: stockTotal,
+    stockOperationalSource: useGlobalSnapshot
+      ? "SP-API FBA Inventory"
+      : product.stockOperationalSource,
+    hasFbaSnapshot: Boolean(snapshot ?? product.hasFbaSnapshot),
 
   };
 

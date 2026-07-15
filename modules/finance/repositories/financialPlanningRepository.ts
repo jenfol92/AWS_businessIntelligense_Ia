@@ -76,7 +76,9 @@ export async function findFinancialPlanningData(
         `*,
          ordenes_compra(
            id, numero_orden, numero_pedido_agente, estado,
-           moneda_compra, tipo_cambio_moneda_eur,
+           moneda_compra, tipo_cambio_moneda_eur, coste_total_eur, coste_total_usd,
+           deposito_porcentaje,
+           orden_items(cantidad, coste_unitario_moneda),
            agentes_compra(contacto)
          ),
          contenedores(id, identificador_embarque, tipo_contenedor)`,

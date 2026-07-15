@@ -59,6 +59,7 @@ import { suggestionToPreloadedItem } from "@/modules/orders/utils/suggestionToPr
 import { DEFAULT_LOCALE, isLocale }  from "@/config/i18n";
 import { ResponsiveDataCard }        from "@/shared/ui/ResponsiveDataCard";
 import { ResponsiveTable }           from "@/shared/ui/ResponsiveTable";
+import { formatCurrency, formatEur } from "@/shared/utils/currency";
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
 
@@ -136,6 +137,42 @@ function amazonInboundLogisticsLabel(
  * Si la orden ya tiene proforma firmada → botón de ver/descargar.
  * Si no la tiene → botón de subir PDF (abre input oculto).
  */
+function orderPaymentCurrency(orden: OrderListRow): string {
+  return (orden.moneda_compra ?? "USD").trim().toUpperCase() || "USD";
+}
+
+function orderOriginalTotal(orden: OrderListRow): number | null {
+  const total = Number(orden.coste_total_moneda ?? 0);
+  if (Number.isFinite(total) && total > 0) return total;
+  const currency = orderPaymentCurrency(orden);
+  if (currency === "EUR") return Number(orden.coste_total_eur ?? 0);
+  return null;
+}
+
+function CosteProveedorCell({ orden }: { orden: OrderListRow }) {
+  const currency = orderPaymentCurrency(orden);
+  const totalOriginal = orderOriginalTotal(orden);
+  const totalEur = Number(orden.coste_total_eur ?? 0);
+
+  if (currency === "EUR") {
+    return (
+      <span className="font-semibold text-slate-800">
+        {formatEur(totalOriginal ?? totalEur)}
+      </span>
+    );
+  }
+
+  return (
+    <div className="space-y-0.5">
+      <p className="font-semibold text-slate-800">
+        {totalOriginal != null ? formatCurrency(totalOriginal, currency) : "—"}
+      </p>
+      <p className="text-[11px] font-medium text-slate-500">
+        EUR previsto: {formatEur(totalEur)}
+      </p>
+    </div>
+  );
+}
 function OrderLogisticsSummary({
   orden,
   locale,
@@ -418,8 +455,8 @@ function OrdenMobileCard({
         },
         { label: "CBM", value: Number(orden.cbm_total).toFixed(2) },
         {
-          label: "EUR",
-          value: `€${Number(orden.coste_total_eur).toLocaleString("es-ES", { maximumFractionDigits: 0 })}`,
+          label: "Coste proveedor",
+          value: <CosteProveedorCell orden={orden} />,
         },
         ...(orden.contenedor || orden.amazon_inbound || orden.tipo_envio === "amazon_agl"
           ? [{
@@ -717,7 +754,7 @@ export default function PedidosPage() {
           { label: "Borradores",   value: kpiBorradores,                    color: "text-amber-600" },
           { label: "Confirmados",  value: kpiConfirmados,                   color: "text-emerald-600" },
           { label: "CBM total",    value: `${kpiCbm.toFixed(1)} m³`,        color: "text-slate-700" },
-          { label: "Coste EUR",    value: `€${kpiEurTotal.toLocaleString("es-ES", { maximumFractionDigits: 0 })}`, color: "text-blue-700" },
+          { label: "EUR previsto", value: formatEur(kpiEurTotal), color: "text-blue-700" },
           { label: "ETA ≤30d",     value: kpiProxEta,                       color: "text-violet-600" },
         ].map((k) => (
           <div key={k.label} className="bg-white rounded-xl border border-slate-100 shadow-sm px-4 py-3">
@@ -824,7 +861,7 @@ export default function PedidosPage() {
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Destino</th>
                       <th className="px-4 py-2.5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">ETA</th>
                       <th className="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-400">CBM</th>
-                      <th className="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-400">EUR</th>
+                      <th className="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-400">Coste proveedor</th>
                       <th className="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-400">Acciones</th>
                     </tr>
                   </thead>
@@ -865,8 +902,8 @@ export default function PedidosPage() {
                         <td className="px-4 py-2.5 text-right text-slate-700 text-xs font-medium tabular-nums">
                           {Number(o.cbm_total).toFixed(2)}
                         </td>
-                        <td className="px-4 py-2.5 text-right text-slate-800 text-xs font-semibold tabular-nums">
-                          €{Number(o.coste_total_eur).toLocaleString("es-ES", { maximumFractionDigits: 0 })}
+                        <td className="px-4 py-2.5 text-right text-xs tabular-nums">
+                          <CosteProveedorCell orden={o} />
                         </td>
                         <td className="px-3 py-2 text-right">
                           <OrdenAcciones

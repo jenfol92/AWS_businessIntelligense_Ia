@@ -24,6 +24,12 @@ export type ContainerPaymentSummary = {
   pagadoFecha: string | null;
   pendienteImporteEur: number;
   pendienteFechaPrevista: string | null;
+  supplierOriginalCurrency: string | null;
+  supplierTotalOriginal: number | null;
+  supplierPaidOriginal: number | null;
+  supplierPendingOriginal: number | null;
+  supplierPaidRealEur: number | null;
+  supplierPlannedEur: number | null;
 };
 
 /** Fila de contenedor tal como devuelve GET /api/containers. */

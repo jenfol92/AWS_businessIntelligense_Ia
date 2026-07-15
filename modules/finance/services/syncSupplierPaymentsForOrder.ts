@@ -80,16 +80,17 @@ function balanceNotes(
   logisticsType: OrderLogisticsType,
   dueDate: string | null,
   balanceDaysBeforeEta: number,
+  balancePercent: number,
 ): string | null {
   if (logisticsType === "amazon_agl") {
-    if (dueDate) return "70% calculado en ETD / fecha salida Amazon AGL.";
-    return "Falta ETD/fecha salida Amazon AGL para calcular 70%.";
+    if (dueDate) return `${balancePercent}% calculado en ETD / fecha salida Amazon AGL.`;
+    return `Falta ETD/fecha salida Amazon AGL para calcular ${balancePercent}%.`;
   }
   if (logisticsType === "propio") {
-    if (dueDate) return `70% calculado ${balanceDaysBeforeEta} dias antes de ETA.`;
-    return "Balance 70 % sin fecha: falta ETA o días balance antes de ETA.";
+    if (dueDate) return `${balancePercent}% calculado ${balanceDaysBeforeEta} dias antes de ETA.`;
+    return `Balance ${balancePercent} % sin fecha: falta ETA o días balance antes de ETA.`;
   }
-  return "Balance 70 % sin fecha: tipo de contenedor no definido.";
+  return `Balance ${balancePercent} % sin fecha: tipo de contenedor no definido.`;
 }
 
 /**
@@ -113,10 +114,7 @@ export async function syncSupplierPaymentsForOrder(
 
   const depositPct = asNumber(order.deposito_porcentaje, 30);
   const balancePct = Math.max(0, 100 - depositPct);
-  const rawCurrency = (order.moneda_compra ?? "USD").toUpperCase();
-  const originalCurrency = ["USD", "EUR", "GBP", "CNY"].includes(rawCurrency)
-    ? rawCurrency
-    : "USD";
+  const originalCurrency = (order.moneda_compra ?? "USD").trim().toUpperCase() || "USD";
   const plannedFx = readPlannedFx(order, originalCurrency);
   const baseOriginal = originalOrderAmount(order, originalCurrency);
   const baseEur =
@@ -154,7 +152,7 @@ export async function syncSupplierPaymentsForOrder(
     logistics_type: logisticsType,
     contenedor_id: container?.id ?? null,
     status: paymentStatus(balanceDate),
-    notes: balanceNotes(logisticsType, balanceDate, balanceDaysBeforeEta),
+    notes: balanceNotes(logisticsType, balanceDate, balanceDaysBeforeEta, balancePct),
   });
 }
 

@@ -15,7 +15,10 @@ export type SupplierPaymentRow = {
   planned_fx_rate: number | null;
   actual_fx_rate: number | null;
   amount_eur: number;
+  actual_amount_original: number | null;
+  actual_amount_eur: number | null;
   bank_fee_eur: number | null;
+  ff_fee_eur: number | null;
   logistics_type: string | null;
   contenedor_id: string | null;
   payment_source: string | null;
@@ -29,6 +32,16 @@ export const SUPPLIER_PAYMENT_TYPE_LABELS: Record<SupplierPaymentType, string> =
   DEPOSITO_30: "Depósito 30 %",
   BALANCE_70: "Balance 70 %",
 };
+
+export function getSupplierPaymentPercentLabel(
+  paymentType: SupplierPaymentType,
+  depositPercent: number | null | undefined,
+): string {
+  const deposit = Number.isFinite(Number(depositPercent)) ? Number(depositPercent) : 30;
+  const balance = 100 - deposit;
+  if (paymentType === "DEPOSITO_30") return `Depósito ${deposit} %`;
+  return `Balance ${balance} %`;
+}
 
 export const LOGISTICS_TYPE_LABELS: Record<OrderLogisticsType, string> = {
   amazon_agl: "Amazon AGL",

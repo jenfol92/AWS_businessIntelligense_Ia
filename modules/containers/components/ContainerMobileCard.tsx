@@ -2,7 +2,10 @@ import { ChevronDown, ChevronRight, MapPin, Pencil } from "lucide-react";
 
 import { ContainerDetailPanel } from "@/modules/containers/components/ContainerDetailPanel";
 import { ContenedorEstadosBadges } from "@/modules/containers/components/ContainerEstadosBadges";
-import { ContainerPaymentSummaryBadge } from "@/modules/containers/components/ContainerPaymentSummaryBadge";
+import {
+  ContainerPaymentSummaryBadge,
+  ContainerSupplierCostSummary,
+} from "@/modules/containers/components/ContainerPaymentSummaryBadge";
 import { EtaBar } from "@/modules/containers/components/EtaBar";
 import { TIPO_CONTENEDOR_LABELS } from "@/modules/containers/constants/estadoContenedor";
 import type { ContenedorRow } from "@/modules/containers/types/containerUiTypes";
@@ -120,8 +123,13 @@ export function ContainerMobileCard({
             className: "col-span-2",
           },
           {
-            label: "Coste EUR",
-            value: `€${Number(contenedor.coste_total_eur ?? 0).toLocaleString("es-ES", { maximumFractionDigits: 0 })}`,
+            label: "Coste proveedor",
+            value: (
+              <ContainerSupplierCostSummary
+                pagos={contenedor.pagos}
+                fallbackEur={contenedor.coste_total_eur}
+              />
+            ),
           },
           { label: "Salida", value: fmtShortDate(contenedor.fecha_salida) },
           { label: "ETA", value: fmtShortDate(contenedor.fecha_eta_estimada) },

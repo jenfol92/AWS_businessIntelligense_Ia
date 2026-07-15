@@ -29,6 +29,11 @@ function dateInRange(value: string | null | undefined, from: string, to: string)
   return true;
 }
 
+function asNumber(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
 
 /**
@@ -89,15 +94,30 @@ export async function GET(req: Request) {
 
     const rows = await listOrders({ estado, q, createdFrom, createdTo, limit, extraOrderIds });
     const orderIds = rows.map((row) => row.id);
-    const [containerByOrder, amazonInboundByOrder] = await Promise.all([
+    const [containerByOrder, amazonInboundByOrder, orderItemsResult] = await Promise.all([
       fetchContainerInfoByOrderIds(supabase, orderIds),
       fetchAmazonInboundInfoByOrderIds(supabase, orderIds),
+      orderIds.length > 0
+        ? supabase
+            .from("orden_items")
+            .select("orden_id, cantidad, coste_unitario_moneda")
+            .in("orden_id", orderIds)
+        : Promise.resolve({ data: [], error: null }),
     ]);
-  
 
+    if (orderItemsResult.error) throw new Error(orderItemsResult.error.message);
+    const totalOriginalByOrder = new Map<string, number>();
+    for (const item of orderItemsResult.data ?? []) {
+      const orderId = String((item as { orden_id: string }).orden_id);
+      const lineTotal =
+        asNumber((item as { cantidad: unknown }).cantidad) *
+        asNumber((item as { coste_unitario_moneda: unknown }).coste_unitario_moneda);
+      totalOriginalByOrder.set(orderId, (totalOriginalByOrder.get(orderId) ?? 0) + lineTotal);
+    }
 
     const enrichedRows = rows.map((row) => ({
       ...row,
+      coste_total_moneda: totalOriginalByOrder.get(row.id) ?? null,
       contenedor: containerByOrder.get(row.id) ?? null,
       amazon_inbound: amazonInboundByOrder.get(row.id) ?? null,
     })).filter((row) => {

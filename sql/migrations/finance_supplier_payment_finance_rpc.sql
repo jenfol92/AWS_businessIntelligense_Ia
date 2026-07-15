@@ -8,6 +8,18 @@ create unique index if not exists ux_finance_cash_movements_supplier_payment_sou
     and source_id is not null
     and movement_type = 'supplier_payment';
 
+alter table public.finance_supplier_payments
+  add column if not exists actual_amount_eur numeric(14, 2) null;
+
+alter table public.finance_supplier_payments
+  add column if not exists actual_amount_original numeric(14, 4) null;
+
+alter table public.finance_supplier_payments
+  add column if not exists bank_fee_eur numeric(14, 2) null;
+
+alter table public.finance_supplier_payments
+  add column if not exists ff_fee_eur numeric(14, 2) null;
+
 create or replace function public.finance_finance_supplier_payment(
   p_supplier_payment_id uuid,
   p_source_type text,
@@ -29,14 +41,15 @@ declare
   v_credit_line_movement_id uuid;
   v_repayment_group_id uuid;
   v_legacy_payment_source text;
+  v_payment_amount_eur numeric;
   v_notes text;
 begin
   if p_supplier_payment_id is null then
     raise exception 'SUPPLIER_PAYMENT_NOT_FOUND: supplier payment id is required';
   end if;
 
-  if p_source_type is null or p_source_type not in ('cash_account', 'credit_line', 'manual') then
-    raise exception 'INVALID_SOURCE_TYPE: source_type must be cash_account, credit_line or manual';
+  if p_source_type is null or p_source_type not in ('cash_account', 'credit_line') then
+    raise exception 'INVALID_SOURCE_TYPE: source_type must be cash_account or credit_line';
   end if;
 
   if p_movement_date is null then
@@ -57,8 +70,13 @@ begin
     raise exception 'SUPPLIER_PAYMENT_NOT_PAID: supplier payment must be paid before financing';
   end if;
 
-  if v_payment.amount_eur is null or v_payment.amount_eur <= 0 then
-    raise exception 'INVALID_AMOUNT: supplier payment amount_eur must be greater than 0';
+  v_payment_amount_eur :=
+    coalesce(v_payment.actual_amount_eur, v_payment.amount_eur)
+    + coalesce(v_payment.bank_fee_eur, 0)
+    + coalesce(v_payment.ff_fee_eur, 0);
+
+  if v_payment_amount_eur is null or v_payment_amount_eur <= 0 then
+    raise exception 'INVALID_AMOUNT: supplier payment financed amount must be greater than 0';
   end if;
 
   if v_payment.payment_source_type is not null then
@@ -66,7 +84,6 @@ begin
       and (
         (p_source_type = 'cash_account' and v_payment.cash_account_id = p_cash_account_id)
         or (p_source_type = 'credit_line' and v_payment.credit_line_id = p_credit_line_id)
-        or p_source_type = 'manual'
       )
     then
       select *
@@ -101,7 +118,7 @@ begin
         'cash_movement_id', v_cash_movement.id,
         'credit_line_movement_id', v_credit_line_movement_id,
         'repayment_group_id', v_repayment_group_id,
-        'amount_eur', v_payment.amount_eur,
+        'amount_eur', v_payment_amount_eur,
         'idempotent', true
       );
     end if;
@@ -130,7 +147,7 @@ begin
       raise exception 'MISSING_CASH_ACCOUNT: cash account not found';
     end if;
 
-    if v_cash_account.balance < v_payment.amount_eur then
+    if v_cash_account.balance < v_payment_amount_eur then
       raise exception 'INSUFFICIENT_CASH: cash account balance is lower than supplier payment amount';
     end if;
 
@@ -149,7 +166,7 @@ begin
       p_cash_account_id,
       'supplier_payment',
       'out',
-      v_payment.amount_eur,
+      v_payment_amount_eur,
       'supplier_payment',
       v_payment.id,
       p_movement_date,
@@ -160,7 +177,7 @@ begin
 
     update public.finance_cash_accounts
     set
-      balance = balance - v_payment.amount_eur,
+      balance = balance - v_payment_amount_eur,
       updated_at = now()
     where id = p_cash_account_id
     returning * into v_cash_account;
@@ -184,7 +201,7 @@ begin
       'cash_movement_id', v_cash_movement.id,
       'credit_line_movement_id', null,
       'repayment_group_id', null,
-      'amount_eur', v_payment.amount_eur,
+      'amount_eur', v_payment_amount_eur,
       'idempotent', false
     );
   end if;
@@ -196,7 +213,7 @@ begin
 
     v_drawdown_result := public.finance_create_credit_line_drawdown(
       p_credit_line_id,
-      v_payment.amount_eur,
+      v_payment_amount_eur,
       p_movement_date,
       'supplier_payment',
       v_payment.id,
@@ -216,7 +233,7 @@ begin
       when lower(coalesce(v_credit_line.bank_name, '')) like '%rural%' then 'caja_rural'
       when lower(coalesce(v_credit_line.bank_name, '')) like '%caixa%' then 'la_caixa'
       when lower(coalesce(v_credit_line.bank_name, '')) like '%bbva%' then 'bbva'
-      else 'manual'
+      else null
     end;
 
     update public.finance_supplier_payments
@@ -238,33 +255,12 @@ begin
       'cash_movement_id', null,
       'credit_line_movement_id', v_credit_line_movement_id,
       'repayment_group_id', v_repayment_group_id,
-      'amount_eur', v_payment.amount_eur,
+      'amount_eur', v_payment_amount_eur,
       'idempotent', coalesce((v_drawdown_result ->> 'idempotent')::boolean, false)
     );
   end if;
 
-  update public.finance_supplier_payments
-  set
-    payment_source_type = 'manual',
-    cash_account_id = null,
-    credit_line_id = null,
-    payment_source = 'manual',
-    notes = v_notes,
-    updated_at = now()
-  where id = v_payment.id
-  returning * into v_payment;
-
-  return jsonb_build_object(
-    'supplier_payment_id', v_payment.id,
-    'source_type', v_payment.payment_source_type,
-    'cash_account_id', v_payment.cash_account_id,
-    'credit_line_id', v_payment.credit_line_id,
-    'cash_movement_id', null,
-    'credit_line_movement_id', null,
-    'repayment_group_id', null,
-    'amount_eur', v_payment.amount_eur,
-    'idempotent', false
-  );
+  raise exception 'INVALID_SOURCE_TYPE: source_type must be cash_account or credit_line';
 end;
 $$;
 
@@ -277,4 +273,4 @@ comment on function public.finance_finance_supplier_payment(
   text,
   text
 ) is
-  'Registra de forma transaccional como se financio un pago proveedor: caja, linea de credito o manual.';
+  'Registra de forma transaccional como se financio un pago proveedor: caja o linea de credito.';

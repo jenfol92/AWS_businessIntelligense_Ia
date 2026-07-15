@@ -8,11 +8,14 @@ type Params = {
 };
 
 type MarkPaidPayload = {
+  actualAmountOriginal?: unknown;
   actualFxRate?: unknown;
   paymentSource?: unknown;
   paidAt?: unknown;
   bankFeeEur?: unknown;
+  ffFeeEur?: unknown;
   notes?: unknown;
+  mode?: unknown;
 };
 
 function asPositiveNumber(value: unknown): number | null {
@@ -34,27 +37,11 @@ function asRequiredString(value: unknown): string | null {
 }
 
 function roundCurrency(value: number): number {
-  return Math.round(value * 10000) / 10000;
+  return Math.round(value * 100) / 100;
 }
 
-function calculateAmountEur(params: {
-  amountOriginal: unknown;
-  originalCurrency: unknown;
-  actualFxRate: number;
-  currentAmountEur: unknown;
-}): number {
-  const current = Number(params.currentAmountEur);
-  const amountOriginal = Number(params.amountOriginal);
-  if (!Number.isFinite(amountOriginal)) {
-    return Number.isFinite(current) ? current : 0;
-  }
-
-  const currency = String(params.originalCurrency ?? "USD").trim().toUpperCase();
-  if (currency === "EUR") {
-    return roundCurrency(amountOriginal);
-  }
-
-  return roundCurrency(amountOriginal * params.actualFxRate);
+function roundQuantity(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }
 
 function resolveCurrency(value: unknown): string {
@@ -77,9 +64,12 @@ export async function PATCH(req: Request, { params }: Params) {
   }
 
   const actualFxRate = asPositiveNumber(body.actualFxRate);
+  const actualAmountOriginal = asPositiveNumber(body.actualAmountOriginal);
   const paidAt = asRequiredString(body.paidAt);
   const paymentSource = asRequiredString(body.paymentSource);
   const bankFeeEur = asNonNegativeNumber(body.bankFeeEur);
+  const ffFeeEur = asNonNegativeNumber(body.ffFeeEur);
+  const mode = body.mode === "replace" ? "replace" : "add";
   const notes =
     typeof body.notes === "string" && body.notes.trim() ? body.notes.trim() : null;
 
@@ -97,14 +87,41 @@ export async function PATCH(req: Request, { params }: Params) {
     );
   }
 
+  if (!["cash", "caja_rural", "la_caixa", "bbva"].includes(paymentSource)) {
+    return NextResponse.json(
+      { ok: false, error: "paymentSource debe ser cash, caja_rural, la_caixa o bbva" },
+      { status: 400 },
+    );
+  }
+
+  if (actualAmountOriginal == null) {
+    return NextResponse.json(
+      { ok: false, error: "actualAmountOriginal debe ser mayor que 0" },
+      { status: 400 },
+    );
+  }
+
   const { data: payment, error: paymentError } = await supabase
     .from("finance_supplier_payments")
-    .select("id, amount_original, original_currency, amount_eur")
+    .select(
+      "id, original_currency, actual_amount_original, actual_amount_eur, bank_fee_eur, ff_fee_eur, payment_source_type",
+    )
     .eq("id", params.id)
     .maybeSingle();
 
   if (paymentError) {
     return NextResponse.json({ ok: false, error: paymentError.message }, { status: 500 });
+  }
+
+  if (mode === "replace" && payment.payment_source_type != null) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "No se puede corregir este pago desde la UI porque ya tiene financiacion registrada. Revisa primero los movimientos de caja/linea.",
+      },
+      { status: 400 },
+    );
   }
 
   if (!payment) {
@@ -136,23 +153,58 @@ export async function PATCH(req: Request, { params }: Params) {
     );
   }
 
-  const amountEur = calculateAmountEur({
-    amountOriginal: payment.amount_original,
-    originalCurrency,
-    actualFxRate: actualFxRateResolved,
-    currentAmountEur: payment.amount_eur,
-  });
+  if (
+    body.ffFeeEur !== null &&
+    body.ffFeeEur !== undefined &&
+    body.ffFeeEur !== "" &&
+    ffFeeEur == null
+  ) {
+    return NextResponse.json(
+      { ok: false, error: "ffFeeEur debe ser mayor o igual que 0" },
+      { status: 400 },
+    );
+  }
+
+  const calculatedActualAmountEur = roundCurrency(
+    actualAmountOriginal * actualFxRateResolved,
+  );
+  const previousActualOriginal = asNonNegativeNumber(payment.actual_amount_original) ?? 0;
+  const previousActualEur = asNonNegativeNumber(payment.actual_amount_eur) ?? 0;
+  const previousBankFeeEur = asNonNegativeNumber(payment.bank_fee_eur);
+  const previousFfFeeEur = asNonNegativeNumber(payment.ff_fee_eur);
+  const nextActualOriginal =
+    mode === "replace"
+      ? roundQuantity(actualAmountOriginal)
+      : roundQuantity(previousActualOriginal + actualAmountOriginal);
+  const nextActualEur =
+    mode === "replace"
+      ? calculatedActualAmountEur
+      : roundCurrency(previousActualEur + calculatedActualAmountEur);
+  const nextBankFeeEur =
+    mode === "replace"
+      ? bankFeeEur
+      : bankFeeEur == null
+        ? previousBankFeeEur
+        : roundCurrency((previousBankFeeEur ?? 0) + bankFeeEur);
+  const nextFfFeeEur =
+    mode === "replace"
+      ? ffFeeEur
+      : ffFeeEur == null
+        ? previousFfFeeEur
+        : roundCurrency((previousFfFeeEur ?? 0) + ffFeeEur);
 
   const { data: updated, error: updateError } = await supabase
     .from("finance_supplier_payments")
     .update({
+      actual_amount_original: nextActualOriginal,
+      actual_amount_eur: nextActualEur,
       actual_fx_rate: actualFxRateResolved,
       paid_at: paidAt,
       payment_source: paymentSource,
-      bank_fee_eur: bankFeeEur,
+      bank_fee_eur: nextBankFeeEur,
+      ff_fee_eur: nextFfFeeEur,
       notes,
       status: "pagado",
-      amount_eur: amountEur,
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.id)

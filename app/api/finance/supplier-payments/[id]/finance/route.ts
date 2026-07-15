@@ -27,11 +27,21 @@ export async function POST(req: Request, { params }: Params) {
   } catch {
     return NextResponse.json({ ok: false, error: "JSON invalido" }, { status: 400 });
   }
+  const sourceType = typeof body.sourceType === "string" ? body.sourceType.trim() : "";
 
+  if (sourceType !== "cash_account" && sourceType !== "credit_line") {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "La financiación manual no está permitida para pagos proveedor. Usa caja/cuenta o línea de crédito.",
+      },
+      { status: 400 },
+    );
+  }
   try {
     const input = normalizeFinanceSupplierPaymentInput({
       supplierPaymentId: params.id,
-      sourceType: body.sourceType,
+      sourceType,
       movementDate: body.movementDate,
       cashAccountId: body.cashAccountId,
       creditLineId: body.creditLineId,

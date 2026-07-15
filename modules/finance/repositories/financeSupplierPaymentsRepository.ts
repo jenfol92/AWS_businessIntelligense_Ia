@@ -188,7 +188,8 @@ export async function fetchSupplierPaymentsByOrderIds(
     .from("finance_supplier_payments")
     .select(
       `id, orden_id, contenedor_id, payment_type,
-       amount_original, original_currency, amount_eur,
+       amount_original, original_currency, planned_fx_rate, amount_eur,
+       actual_amount_original, actual_amount_eur, actual_fx_rate, bank_fee_eur, ff_fee_eur,
        due_date, paid_at, status`,
     )
     .in("orden_id", uniqueOrderIds);
@@ -269,6 +270,8 @@ export async function fetchSupplierPaymentsInRange(
        ordenes_compra(
          id, numero_orden, numero_pedido_agente, estado,
          moneda_compra, tipo_cambio_moneda_eur,
+         deposito_porcentaje, coste_total_eur,
+         orden_items(cantidad, coste_unitario_moneda),
          agentes_compra(contacto)
        ),
        contenedores(id, identificador_embarque, tipo_contenedor)`,

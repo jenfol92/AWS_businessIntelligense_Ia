@@ -45,6 +45,9 @@ export type OrderListRow = {
   cbm_limite: number | null;
   coste_total_usd: number;
   coste_total_eur: number;
+  coste_total_moneda: number | null;
+  moneda_compra: string | null;
+  tipo_cambio_moneda_eur: number | null;
   notas: string | null;
   lead_time_produccion: number | null;
   lead_time_transito: number | null;

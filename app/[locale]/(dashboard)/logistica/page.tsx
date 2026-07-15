@@ -47,7 +47,10 @@ import { LogisticaCreateContainerTrigger } from "@/modules/containers/components
 import { ContainerDetailPanel }      from "@/modules/containers/components/ContainerDetailPanel";
 import { ContainerEditModal }        from "@/modules/containers/components/ContainerEditModal";
 import { ContainerMobileCard }       from "@/modules/containers/components/ContainerMobileCard";
-import { ContainerPaymentSummaryBadge } from "@/modules/containers/components/ContainerPaymentSummaryBadge";
+import {
+  ContainerPaymentSummaryBadge,
+  ContainerSupplierCostSummary,
+} from "@/modules/containers/components/ContainerPaymentSummaryBadge";
 import { ContenedorEstadosBadges }   from "@/modules/containers/components/ContainerEstadosBadges";
 import { EtaBar }                    from "@/modules/containers/components/EtaBar";
 import {
@@ -580,9 +583,11 @@ export default function LogisticaPage() {
                               className="px-2 py-3 text-right cursor-pointer"
                               onClick={() => setExpandedId(expanded ? null : c.id)}
                             >
-                              <span className="text-xs font-semibold text-slate-800 tabular-nums">
-                                €{Number(c.coste_total_eur ?? 0).toLocaleString("es-ES", { maximumFractionDigits: 0 })}
-                              </span>
+                              <ContainerSupplierCostSummary
+                                pagos={c.pagos}
+                                fallbackEur={c.coste_total_eur}
+                                align="right"
+                              />
                             </td>
                             <td className="px-2 py-3 text-center">
                               <div className="flex flex-col items-stretch justify-center gap-1">

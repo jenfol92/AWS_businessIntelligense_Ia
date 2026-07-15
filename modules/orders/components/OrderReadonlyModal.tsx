@@ -22,6 +22,7 @@ import {
   FileText,
   ExternalLink,
 } from "lucide-react";
+import { formatCurrency, formatEur } from "@/shared/utils/currency";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -83,14 +84,9 @@ function fmtDate(d: string | null): string {
   return new Date(d).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function fmtEur(n: number | null): string {
-  if (n == null) return "—";
-  return Number(n).toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
-}
-
 function fmtMoney(n: number | null, currency: string): string {
   if (n == null) return "—";
-  return `${Number(n).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+  return formatCurrency(n, currency);
 }
 
 const ESTADO_STYLE: Record<string, string> = {
@@ -100,6 +96,20 @@ const ESTADO_STYLE: Record<string, string> = {
   recibido:   "bg-blue-50 text-blue-700",
 };
 
+function orderOriginalTotal(orden: OrdenDetalle): number {
+  return orden.items.reduce(
+    (s, i) => s + Number(i.coste_unitario_moneda ?? i.coste_unitario_usd ?? 0) * Number(i.cantidad ?? 0),
+    0,
+  );
+}
+
+function orderEurTotal(orden: OrdenDetalle, totalOriginal: number): number | null {
+  if (orden.coste_total_eur != null) return Number(orden.coste_total_eur);
+  const currency = (orden.moneda_compra ?? "USD").toUpperCase();
+  if (currency === "EUR") return totalOriginal;
+  const fx = orden.tipo_cambio_moneda_eur ?? orden.tipo_cambio_usd_eur;
+  return fx != null ? totalOriginal * Number(fx) : null;
+}
 function tipoEnvioLabel(tipoEnvio: string | null | undefined): string {
   return tipoEnvio === "amazon_agl" ? "Amazon AGL" : "Envio propio";
 }
@@ -127,6 +137,10 @@ export default function OrderReadonlyModal({ ordenId, onClose }: OrderReadonlyMo
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }, [ordenId]);
+
+  const totalOriginal = orden ? orderOriginalTotal(orden) : 0;
+  const totalEur = orden ? orderEurTotal(orden, totalOriginal) : null;
+  const isOrderCurrencyEur = (orden?.moneda_compra ?? "USD").toUpperCase() === "EUR";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
@@ -190,9 +204,11 @@ export default function OrderReadonlyModal({ ordenId, onClose }: OrderReadonlyMo
                   { label: "ETA",          value: fmtDate(orden.eta) },
                   { label: "CBM total",    value: orden.cbm_total != null ? `${Number(orden.cbm_total).toFixed(2)} m³` : "—" },
                   { label: "CBM límite",   value: orden.cbm_limite != null ? `${orden.cbm_limite} m³` : "—" },
-                  { label: `Coste ${orden.moneda_compra ?? "USD"}`, value: fmtMoney(orden.items.reduce((s, i) => s + Number(i.coste_unitario_moneda ?? i.coste_unitario_usd ?? 0) * Number(i.cantidad ?? 0), 0), orden.moneda_compra ?? "USD") },
+                  ...(!isOrderCurrencyEur
+                    ? [{ label: `Total moneda de pago / ${orden.moneda_compra ?? "USD"}`, value: fmtMoney(totalOriginal, orden.moneda_compra ?? "USD") }]
+                    : []),
                   { label: "Cambio a EUR", value: orden.moneda_compra === "EUR" ? "1" : orden.tipo_cambio_moneda_eur ?? orden.tipo_cambio_usd_eur ?? "Cambio pendiente" },
-                  { label: "Coste EUR",    value: fmtEur(orden.coste_total_eur) },
+                  { label: "EUR previsto", value: totalEur != null ? formatEur(totalEur) : "EUR pendiente: falta tipo de cambio" },
                 ].map(({ label, value }) => (
                   <div key={label}>
                     <p className="text-[10px] uppercase tracking-wide text-slate-400 font-medium">{label}</p>
@@ -240,7 +256,7 @@ export default function OrderReadonlyModal({ ordenId, onClose }: OrderReadonlyMo
                           <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wide text-slate-400 font-semibold">Cant.</th>
                           <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wide text-slate-400 font-semibold">CBM</th>
                           <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wide text-slate-400 font-semibold">Coste unit. {orden.moneda_compra ?? "USD"}</th>
-                          <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wide text-slate-400 font-semibold">Equiv. EUR</th>
+                          <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wide text-slate-400 font-semibold">EUR previsto unit.</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
@@ -270,7 +286,7 @@ export default function OrderReadonlyModal({ ordenId, onClose }: OrderReadonlyMo
                               {fmtMoney(item.coste_unitario_moneda ?? item.coste_unitario_usd, orden.moneda_compra ?? "USD")}
                             </td>
                             <td className="px-3 py-2 text-right text-slate-600 tabular-nums">
-                              {item.coste_unitario_eur != null ? fmtEur(item.coste_unitario_eur) : "Cambio pendiente"}
+                              {item.coste_unitario_eur != null ? formatEur(item.coste_unitario_eur) : "Cambio pendiente"}
                             </td>
                           </tr>
                         ))}
@@ -287,12 +303,22 @@ export default function OrderReadonlyModal({ ordenId, onClose }: OrderReadonlyMo
                     {Number(orden.cbm_total ?? 0).toFixed(2)} m³
                   </strong>
                 </span>
+                {!isOrderCurrencyEur ? (
+                  <span>
+                    Total moneda de pago: <strong className="text-slate-800">
+                      {fmtMoney(totalOriginal, orden.moneda_compra ?? "USD")}
+                    </strong>
+                  </span>
+                ) : null}
                 <span>
-                  Coste total: <strong className="text-slate-800">
-                    {fmtEur(orden.coste_total_eur)}
+                  EUR previsto: <strong className="text-slate-800">
+                    {totalEur != null ? formatEur(totalEur) : "EUR pendiente: falta tipo de cambio"}
                   </strong>
                 </span>
               </div>
+              <p className="pt-1 text-right text-[11px] text-slate-400">
+                EUR previsto segun cambio de la orden. El coste real se calcula al registrar pagos proveedor.
+              </p>
             </>
           )}
         </div>

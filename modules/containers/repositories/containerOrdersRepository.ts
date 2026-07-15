@@ -44,7 +44,14 @@ export async function fetchContainerOrderLinks(
 
     .select(
 
-      "contenedor_id, orden_id, ordenes_compra(id, numero_orden, numero_pedido_agente, agente_id, coste_total_eur, cbm_total, fob_puerto, destino, eta, agentes_compra(contacto))",
+      `contenedor_id, orden_id,
+       ordenes_compra(
+         id, numero_orden, numero_pedido_agente, agente_id,
+         moneda_compra, coste_total_eur, tipo_cambio_moneda_eur,
+         cbm_total, fob_puerto, destino, eta,
+         orden_items(cantidad, coste_unitario_moneda),
+         agentes_compra(contacto)
+       )`,
 
     )
 

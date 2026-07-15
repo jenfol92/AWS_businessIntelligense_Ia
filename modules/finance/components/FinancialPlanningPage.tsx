@@ -11,14 +11,14 @@ import {
   Euro,
   Landmark,
   Package,
+  Search,
   TrendingUp,
+  X,
 } from "lucide-react";
 import type {
   FinanceCashAccount,
-  FinanceCreditLine,
   FinancePlanningEvent,
   FinancePlanningResponse,
-  FinanceSupplierPaymentSourceType,
 } from "../types/planning.types";
 import { LOGISTICS_LABELS } from "../utils/logisticsLabels";
 
@@ -27,8 +27,42 @@ const PAYMENT_SOURCE_OPTIONS = [
   { value: "caja_rural", label: "Caja Rural" },
   { value: "la_caixa", label: "La Caixa" },
   { value: "bbva", label: "BBVA" },
-  { value: "manual", label: "Revision manual" },
 ];
+
+function normalizePaymentSourceForUi(
+  source: FinancePlanningEvent["recommendedSource"],
+): string {
+  if (source === "cash") return "cash";
+  if (source === "caja_rural") return "caja_rural";
+  if (source === "la_caixa") return "la_caixa";
+  if (source === "bbva") return "bbva";
+  return "cash";
+}
+
+const STATUS_FILTER_OPTIONS = [
+  { value: "ALL", label: "Todos" },
+  { value: "pendiente", label: "Pendiente" },
+  { value: "pagado", label: "Pagado" },
+  { value: "vencido", label: "Vencido" },
+  { value: "previsto", label: "Previsto" },
+  { value: "proximos_30", label: "Proximos 30 dias" },
+] as const;
+
+type StatusFilter = (typeof STATUS_FILTER_OPTIONS)[number]["value"];
+
+type FinanceFiltersState = {
+  q: string;
+  estado: StatusFilter;
+  fechaDesde: string;
+  fechaHasta: string;
+};
+
+const EMPTY_FILTERS: FinanceFiltersState = {
+  q: "",
+  estado: "ALL",
+  fechaDesde: "",
+  fechaHasta: "",
+};
 
 function eur(value: number): string {
   return new Intl.NumberFormat("es-ES", {
@@ -36,6 +70,23 @@ function eur(value: number): string {
     currency: "EUR",
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+function signedEur(value: number): string {
+  const absValue = Math.abs(value);
+  if (value > 0) return `+${eur(absValue)}`;
+  if (value < 0) return `-${eur(absValue)}`;
+  return eur(0);
+}
+
+function signedOriginalCurrency(value: number, currency: string | null | undefined): string {
+  const absValue = Math.abs(value);
+  const formatted = absValue.toLocaleString("es-ES", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatted} ${currency ?? ""}`.trim();
 }
 
 function dateLabel(value: string | null): string {
@@ -46,12 +97,74 @@ function dateLabel(value: string | null): string {
   });
 }
 
+function normalizeSearch(value: string | null | undefined): string {
+  return (value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function addDaysIso(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function eventMatchesQuery(event: FinancePlanningEvent, query: string): boolean {
+  const normalizedQuery = normalizeSearch(query);
+  if (!normalizedQuery) return true;
+
+  return [
+    event.orderCode,
+    event.numeroPedidoAgente,
+    event.agentContact,
+    event.containerCode,
+    event.creditLineBank,
+    event.creditLineName,
+  ].some((value) => normalizeSearch(value).includes(normalizedQuery));
+}
+
+function eventMatchesStatus(event: FinancePlanningEvent, estado: StatusFilter): boolean {
+  if (estado === "ALL") return true;
+
+  if (estado === "proximos_30") {
+    if (event.type !== "credit_line_release" || !event.date || event.status === "pagado") {
+      return false;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    return event.date >= today && event.date <= addDaysIso(today, 30);
+  }
+
+  if (estado === "vencido") {
+    if (!event.date || event.status === "pagado") return false;
+    const today = new Date().toISOString().slice(0, 10);
+    return event.status === "vencido" || event.date < today;
+  }
+
+  return event.status === estado;
+}
+
+function eventMatchesDateRange(
+  event: FinancePlanningEvent,
+  fechaDesde: string,
+  fechaHasta: string,
+): boolean {
+  if (!fechaDesde && !fechaHasta) return true;
+  if (!event.date) return false;
+  if (fechaDesde && event.date < fechaDesde) return false;
+  if (fechaHasta && event.date > fechaHasta) return false;
+  return true;
+}
+
+function eventMatchesFilters(event: FinancePlanningEvent, filters: FinanceFiltersState): boolean {
+  return eventMatchesQuery(event, filters.q)
+    && eventMatchesStatus(event, filters.estado)
+    && eventMatchesDateRange(event, filters.fechaDesde, filters.fechaHasta);
+}
+
 function sourceLabel(source: FinancePlanningEvent["recommendedSource"]): string {
   if (source === "cash") return "Caja propia";
   if (source === "caja_rural") return "Caja Rural";
   if (source === "la_caixa") return "La Caixa";
   if (source === "bbva") return "BBVA";
-  if (source === "manual") return "Revision manual";
   return "Sin fuente";
 }
 
@@ -79,16 +192,9 @@ function isSupplierPaymentEvent(event: FinancePlanningEvent): boolean {
   return event.type === "supplier_deposit" || event.type === "supplier_balance";
 }
 
-function isSupplierPaymentFinanced(event: FinancePlanningEvent): boolean {
-  return event.paymentSourceType === "cash_account"
-    || event.paymentSourceType === "credit_line"
-    || event.paymentSourceType === "manual";
-}
-
 function supplierPaymentFinanceLabel(event: FinancePlanningEvent): string | null {
   if (event.paymentSourceType === "cash_account") return "Financiado con caja";
   if (event.paymentSourceType === "credit_line") return "Financiado con linea";
-  if (event.paymentSourceType === "manual") return "Financiacion manual";
   return null;
 }
 
@@ -102,34 +208,98 @@ function canRepayCreditLineEvent(event: FinancePlanningEvent): boolean {
 
 function PaymentModal({
   event,
+  mode = "mark",
   onClose,
   onSaved,
 }: {
   event: FinancePlanningEvent;
+  mode?: "mark" | "correct";
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const isEurPayment = event.originalCurrency.trim().toUpperCase() === "EUR";
+  const isCorrection = mode === "correct";
   const [actualFxRate, setActualFxRate] = useState(
     isEurPayment
       ? "1"
-      : event.plannedFxRate != null
-        ? String(event.plannedFxRate)
-        : "",
+      : (isCorrection ? event.actualFxRate : null) != null
+        ? String(isCorrection ? event.actualFxRate : event.plannedFxRate)
+        : event.plannedFxRate != null
+          ? String(event.plannedFxRate)
+          : "",
   );
-  const [bankFeeEur, setBankFeeEur] = useState("");
+  const [bankFeeEur, setBankFeeEur] = useState(
+    isCorrection && event.bankFeeEur != null ? String(event.bankFeeEur) : "",
+  );
+  const [ffFeeEur, setFfFeeEur] = useState(
+    isCorrection && event.ffFeeEur != null ? String(event.ffFeeEur) : "",
+  );
   const [paymentSource, setPaymentSource] = useState<string>(
-    event.recommendedSource ?? "cash",
+    normalizePaymentSourceForUi(
+      isCorrection && event.paymentSource != null
+        ? event.paymentSource
+        : event.recommendedSource,
+    ),
   );
-  const [paidAt, setPaidAt] = useState(today);
+  const [actualAmountOriginal, setActualAmountOriginal] = useState(
+    String(
+      isCorrection
+        ? event.actualAmountOriginal ?? event.originalAmount ?? ""
+        : event.originalAmount ?? "",
+    ),
+  );
+  const [paidAt, setPaidAt] = useState(
+    isCorrection && event.paidAt ? event.paidAt.slice(0, 10) : today,
+  );
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const actualAmountOriginalNumber = Number(actualAmountOriginal);
+  const actualFxRateNumber = isEurPayment ? 1 : Number(actualFxRate);
+  const calculatedActualAmountEur =
+    Number.isFinite(actualAmountOriginalNumber) &&
+    Number.isFinite(actualFxRateNumber)
+      ? actualAmountOriginalNumber * actualFxRateNumber
+      : 0;
+  const expectedOriginalAmount = event.originalAmount ?? 0;
+  const differenceOriginal = Number.isFinite(actualAmountOriginalNumber)
+    ? actualAmountOriginalNumber - expectedOriginalAmount
+    : 0;
+  const differenceEur = Number.isFinite(calculatedActualAmountEur)
+    ? calculatedActualAmountEur - event.plannedAmountEur
+    : 0;
+  const bankFeeNumber = bankFeeEur.trim() ? Number(bankFeeEur) : 0;
+  const ffFeeNumber = ffFeeEur.trim() ? Number(ffFeeEur) : 0;
+  const totalOperationEur =
+    (Number.isFinite(calculatedActualAmountEur) ? calculatedActualAmountEur : 0) +
+    (Number.isFinite(bankFeeNumber) ? bankFeeNumber : 0) +
+    (Number.isFinite(ffFeeNumber) ? ffFeeNumber : 0);
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
+
+    if (!Number.isFinite(actualAmountOriginalNumber) || actualAmountOriginalNumber <= 0) {
+      setError(`Importe a pagar ${event.originalCurrency} debe ser mayor que 0.`);
+      return;
+    }
+
+    if (!isEurPayment && (!Number.isFinite(actualFxRateNumber) || actualFxRateNumber <= 0)) {
+      setError("Tipo de cambio real debe ser mayor que 0.");
+      return;
+    }
+
+    if (bankFeeEur.trim() && (!Number.isFinite(bankFeeNumber) || bankFeeNumber < 0)) {
+      setError("Comision bancaria debe ser mayor o igual que 0.");
+      return;
+    }
+
+    if (ffFeeEur.trim() && (!Number.isFinite(ffFeeNumber) || ffFeeNumber < 0)) {
+      setError("Gastos FF debe ser mayor o igual que 0.");
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -139,11 +309,14 @@ function PaymentModal({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            actualFxRate: isEurPayment ? undefined : Number(actualFxRate),
+            actualAmountOriginal: actualAmountOriginalNumber,
+            actualFxRate: isEurPayment ? undefined : actualFxRateNumber,
             paymentSource,
             paidAt,
             bankFeeEur: bankFeeEur.trim() ? Number(bankFeeEur) : null,
+            ffFeeEur: ffFeeEur.trim() ? Number(ffFeeEur) : null,
             notes: notes.trim() ? notes.trim() : null,
+            mode: isCorrection ? "replace" : "add",
           }),
         },
       );
@@ -168,7 +341,9 @@ function PaymentModal({
       >
         <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">Marcar pago</h2>
+            <h2 className="text-base font-semibold text-slate-900">
+              {isCorrection ? "Corregir pago" : "Marcar pago"}
+            </h2>
             <p className="text-xs text-slate-500">
               {event.title} - {event.containerCode ?? event.orderCode ?? "Sin referencia"}
             </p>
@@ -199,6 +374,59 @@ function PaymentModal({
                 {eur(event.plannedAmountEur)}
               </div>
             </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+              <div>
+                <div className="text-xs text-slate-500">Importe previsto</div>
+                <div className="font-semibold text-slate-900">
+                  {event.originalAmount?.toLocaleString("es-ES", {
+                    maximumFractionDigits: 2,
+                  }) ?? "-"}{" "}
+                  {event.originalCurrency}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Referencia EUR: {eur(event.plannedAmountEur)}
+                </div>
+              </div>
+              <label className="text-xs font-medium text-slate-600">
+                Importe a pagar {event.originalCurrency}
+                <input
+                  type="number"
+                  step="0.0001"
+                  min="0.01"
+                  required
+                  value={actualAmountOriginal}
+                  onChange={(e) => setActualAmountOriginal(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </label>
+              <div>
+                <div className="text-xs text-slate-500">Diferencia proveedor</div>
+                <div className={`font-semibold ${differenceOriginal === 0 ? "text-slate-900" : differenceOriginal > 0 ? "text-emerald-700" : "text-amber-700"}`}>
+                  {signedOriginalCurrency(differenceOriginal, event.originalCurrency)}
+                </div>
+                <div className="mt-1 text-[11px] text-slate-500">
+                  Diferencia EUR por cambio: {signedEur(differenceEur)}
+                </div>
+              </div>
+            </div>
+            {differenceOriginal > 0 ? (
+              <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                El importe proveedor supera el previsto. Se registrara como pago real y reducira el balance pendiente en moneda origen.
+              </div>
+            ) : null}
+            {differenceOriginal < 0 ? (
+              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                El importe proveedor es inferior al previsto. El balance pendiente de la orden aumentara en moneda origen.
+              </div>
+            ) : null}
+            {differenceOriginal === 0 && differenceEur !== 0 ? (
+              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                El importe proveedor coincide con el previsto; la diferencia EUR corresponde al tipo de cambio real.
+              </div>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -234,6 +462,18 @@ function PaymentModal({
               />
             </label>
             <label className="text-xs font-medium text-slate-600">
+              Gastos FF
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={ffFeeEur}
+                onChange={(e) => setFfFeeEur(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                placeholder="EUR"
+              />
+            </label>
+            <label className="text-xs font-medium text-slate-600">
               Fuente de pago
               <select
                 required
@@ -258,6 +498,25 @@ function PaymentModal({
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
               />
             </label>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+            <div>
+              <div className="text-slate-500">Equivalente EUR calculado</div>
+              <div className="font-semibold text-slate-900">{eur(Number.isFinite(calculatedActualAmountEur) ? calculatedActualAmountEur : 0)}</div>
+            </div>
+            <div>
+              <div className="text-slate-500">Comision bancaria EUR</div>
+              <div className="font-semibold text-slate-900">{eur(Number.isFinite(bankFeeNumber) ? bankFeeNumber : 0)}</div>
+            </div>
+            <div>
+              <div className="text-slate-500">Gastos FF EUR</div>
+              <div className="font-semibold text-slate-900">{eur(Number.isFinite(ffFeeNumber) ? ffFeeNumber : 0)}</div>
+            </div>
+            <div>
+              <div className="text-slate-500">Total operacion EUR</div>
+              <div className="font-semibold text-slate-900">{eur(totalOperationEur)}</div>
+            </div>
           </div>
 
           <label className="text-xs font-medium text-slate-600 block">
@@ -293,244 +552,7 @@ function PaymentModal({
               disabled={saving}
               className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
             >
-              {saving ? "Guardando..." : "Guardar pago"}
-            </button>
-          </div>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function FinanceSupplierPaymentModal({
-  event,
-  cashAccounts,
-  creditLines,
-  onClose,
-  onSaved,
-}: {
-  event: FinancePlanningEvent;
-  cashAccounts: FinanceCashAccount[];
-  creditLines: FinanceCreditLine[];
-  onClose: () => void;
-  onSaved: (message: string) => Promise<void>;
-}) {
-  const today = new Date().toISOString().slice(0, 10);
-  const [sourceType, setSourceType] = useState<FinanceSupplierPaymentSourceType>("cash_account");
-  const [movementDate, setMovementDate] = useState(today);
-  const [cashAccountId, setCashAccountId] = useState(cashAccounts[0]?.id ?? "");
-  const [creditLineId, setCreditLineId] = useState(creditLines[0]?.id ?? "");
-  const [notes, setNotes] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError(null);
-
-    if (!sourceType) {
-      setError("Selecciona un tipo de financiacion.");
-      return;
-    }
-
-    if (!movementDate) {
-      setError("Indica la fecha de movimiento.");
-      return;
-    }
-
-    if (sourceType === "cash_account" && !cashAccountId) {
-      setError("Selecciona una cuenta de caja.");
-      return;
-    }
-
-    if (sourceType === "credit_line" && !creditLineId) {
-      setError("Selecciona una linea de credito.");
-      return;
-    }
-
-    setSaving(true);
-
-    const fundingSourceId =
-      sourceType === "cash_account"
-        ? cashAccountId
-        : sourceType === "credit_line"
-          ? creditLineId
-          : "manual";
-
-    try {
-      const res = await fetch(
-        `/api/finance/supplier-payments/${event.id}/finance`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sourceType,
-            movementDate,
-            cashAccountId: sourceType === "cash_account" ? cashAccountId : null,
-            creditLineId: sourceType === "credit_line" ? creditLineId : null,
-            notes: notes.trim() ? notes.trim() : null,
-            idempotencyKey: `supplier-payment-finance:${event.id}:${sourceType}:${fundingSourceId}:${movementDate}`,
-          }),
-        },
-      );
-      const json = await res.json();
-      if (!res.ok || !json.ok) {
-        throw new Error(json.error ?? "No se pudo financiar el pago proveedor");
-      }
-      await onSaved("Pago proveedor financiado correctamente.");
-      onClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error desconocido");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-950/40 flex items-start justify-center p-4 overflow-y-auto">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-xl bg-white rounded-xl shadow-2xl my-10 border border-slate-100"
-      >
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Financiar pago proveedor</h2>
-            <p className="text-xs text-slate-500">
-              {event.title} - {event.containerCode ?? event.orderCode ?? "Sin referencia"}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            className="text-sm text-slate-500 hover:text-slate-900 disabled:opacity-50"
-          >
-            Cerrar
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div className="rounded-lg border border-slate-200 p-3">
-              <div className="text-xs text-slate-500">Importe financiado</div>
-              <div className="font-semibold text-slate-900">{eur(event.plannedAmountEur)}</div>
-            </div>
-            <div className="rounded-lg border border-slate-200 p-3">
-              <div className="text-xs text-slate-500">Estado</div>
-              <div className="font-semibold text-slate-900">{event.status}</div>
-            </div>
-          </div>
-
-          <label className="text-xs font-medium text-slate-600 block">
-            Tipo de financiacion
-            <select
-              required
-              value={sourceType}
-              onChange={(e) => setSourceType(e.target.value as FinanceSupplierPaymentSourceType)}
-              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
-            >
-              <option value="cash_account">Caja / cuenta</option>
-              <option value="credit_line">Linea de credito</option>
-            </select>
-          </label>
-
-          <label className="text-xs font-medium text-slate-600 block">
-            Fecha de movimiento
-            <input
-              type="date"
-              required
-              value={movementDate}
-              onChange={(e) => setMovementDate(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-            />
-          </label>
-
-          {sourceType === "cash_account" ? (
-            <label className="text-xs font-medium text-slate-600 block">
-              Cuenta de caja
-              <select
-                required
-                value={cashAccountId}
-                onChange={(e) => setCashAccountId(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
-              >
-                <option value="" disabled>
-                  Selecciona cuenta
-                </option>
-                {cashAccounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name} - {eur(account.balance)}
-                  </option>
-                ))}
-              </select>
-              {cashAccounts.length === 0 ? (
-                <span className="mt-1 block text-[11px] font-normal text-rose-600">
-                  No hay cuentas/caja disponibles. Revisa finance_cash_accounts o permisos/RLS.
-                </span>
-              ) : null}
-            </label>
-          ) : null}
-
-          {sourceType === "credit_line" ? (
-            <label className="text-xs font-medium text-slate-600 block">
-              Linea de credito
-              <select
-                required
-                value={creditLineId}
-                onChange={(e) => setCreditLineId(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
-              >
-                <option value="" disabled>
-                  Selecciona linea
-                </option>
-                {creditLines.map((line) => (
-                  <option key={line.id} value={line.id}>
-                    {line.bankName} - {line.lineName} - libre {eur(line.availableAmount)}
-                  </option>
-                ))}
-              </select>
-              {creditLines.length === 0 ? (
-                <span className="mt-1 block text-[11px] font-normal text-rose-600">
-                  No hay lineas de credito disponibles. Revisa que existan lineas activas en Finanzas.
-                </span>
-              ) : null}
-            </label>
-          ) : null}
-
-          <label className="text-xs font-medium text-slate-600 block">
-            Notas
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm min-h-20"
-            />
-          </label>
-
-          {error ? (
-            <div className="rounded-lg bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">
-              {error}
-            </div>
-          ) : null}
-
-          <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-xs text-sky-800">
-            Solo financia un pago proveedor ya pagado con caja/cuenta o linea de credito. No marca pagos ni divide la financiacion entre varias fuentes.
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
-            >
-              {saving ? "Guardando..." : "Financiar"}
+              {saving ? "Guardando..." : isCorrection ? "Guardar correccion" : "Guardar pago"}
             </button>
           </div>
         </div>
@@ -756,21 +778,33 @@ function CreditLineRepaymentModal({
 function EventCard({
   event,
   onMarkPaid,
-  onFinance,
+  onCorrectPayment,
   onRepayCreditLine,
 }: {
   event: FinancePlanningEvent;
   onMarkPaid: (event: FinancePlanningEvent) => void;
-  onFinance: (event: FinancePlanningEvent) => void;
+  onCorrectPayment: (event: FinancePlanningEvent) => void;
   onRepayCreditLine: (event: FinancePlanningEvent) => void;
 }) {
   const canMarkSupplierPayment =
     event.canMarkPaid && event.status !== "pagado" && isSupplierPaymentEvent(event);
-  const canFinanceSupplierPayment =
-    isSupplierPaymentEvent(event) && event.status === "pagado" && !isSupplierPaymentFinanced(event);
+  const canCorrectSupplierPayment =
+    isSupplierPaymentEvent(event) && event.status === "pagado";
   const financeLabel = supplierPaymentFinanceLabel(event);
   const isCreditLineEvent = event.type === "credit_line_release";
   const canRepayCreditLine = canRepayCreditLineEvent(event);
+  const showSupplierPaymentTrace = isSupplierPaymentEvent(event);
+  const realDifference =
+    event.actualAmountEur != null ? event.actualAmountEur - event.plannedAmountEur : null;
+  const supplierOriginalDifference =
+    event.actualAmountOriginal != null && event.originalAmount != null
+      ? event.actualAmountOriginal - event.originalAmount
+      : null;
+  const bankFeeEur = event.bankFeeEur ?? 0;
+  const ffFeeEur = event.ffFeeEur ?? 0;
+  const totalOperationEur =
+    event.totalOperationEur ??
+    (event.actualAmountEur != null ? event.actualAmountEur + bankFeeEur + ffFeeEur : null);
 
   return (
     <article className={`bg-white border border-slate-200 border-l-4 ${eventAccent(event)} rounded-lg p-3 shadow-sm`}>
@@ -826,6 +860,46 @@ function EventCard({
           Cambio previsto: {event.plannedFxRate ? event.plannedFxRate : "Cambio previsto pendiente"}
         </div>
       )}
+      {showSupplierPaymentTrace ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-2 text-[11px] text-slate-600">
+          <div>
+            <span className="block text-slate-400">Previsto</span>
+            <b>{eur(event.plannedAmountEur)}</b>
+          </div>
+          <div>
+            <span className="block text-slate-400">Pagado real</span>
+            <b>{event.actualAmountEur != null ? eur(event.actualAmountEur) : "-"}</b>
+          </div>
+          <div>
+            <span className="block text-slate-400">Diferencia EUR</span>
+            <b>{realDifference != null ? signedEur(realDifference) : "-"}</b>
+          </div>
+          <div>
+            <span className="block text-slate-400">Dif. proveedor</span>
+            <b>
+              {supplierOriginalDifference != null
+                ? signedOriginalCurrency(supplierOriginalDifference, event.originalCurrency)
+                : "-"}
+            </b>
+          </div>
+          <div>
+            <span className="block text-slate-400">Pendiente orden EUR</span>
+            <b>{event.orderPendingRealEur != null ? eur(event.orderPendingRealEur) : "-"}</b>
+          </div>
+          <div>
+            <span className="block text-slate-400">Comision</span>
+            <b>{event.bankFeeEur != null ? eur(event.bankFeeEur) : "-"}</b>
+          </div>
+          <div>
+            <span className="block text-slate-400">Gastos FF</span>
+            <b>{event.ffFeeEur != null ? eur(event.ffFeeEur) : "-"}</b>
+          </div>
+          <div className="col-span-2">
+            <span className="block text-slate-400">Total operacion</span>
+            <b>{totalOperationEur != null ? eur(totalOperationEur) : "-"}</b>
+          </div>
+        </div>
+      ) : null}
       <div className="mt-3 flex items-center justify-between gap-2">
         <p className="text-[11px] text-slate-500 line-clamp-2">{event.recommendationReason}</p>
         <div className="shrink-0 flex flex-col items-end gap-1">
@@ -843,13 +917,13 @@ function EventCard({
               Pago proveedor
             </button>
           ) : null}
-          {canFinanceSupplierPayment ? (
+          {canCorrectSupplierPayment ? (
             <button
-              onClick={() => onFinance(event)}
+              onClick={() => onCorrectPayment(event)}
               className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
             >
-              <CreditCard className="h-3.5 w-3.5" />
-              Financiar
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Corregir pago
             </button>
           ) : null}
           {canRepayCreditLine ? (
@@ -871,10 +945,14 @@ export function FinancialPlanningPage() {
   const [data, setData] = useState<FinancePlanningResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedPaymentEvent, setSelectedPaymentEvent] = useState<FinancePlanningEvent | null>(null);
-  const [selectedFinanceEvent, setSelectedFinanceEvent] = useState<FinancePlanningEvent | null>(null);
+  const [selectedPaymentEvent, setSelectedPaymentEvent] = useState<{
+    event: FinancePlanningEvent;
+    mode: "mark" | "correct";
+  } | null>(null);
   const [selectedRepaymentEvent, setSelectedRepaymentEvent] = useState<FinancePlanningEvent | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [filters, setFilters] = useState<FinanceFiltersState>(EMPTY_FILTERS);
+  const [urlFiltersReady, setUrlFiltersReady] = useState(false);
 
   const loadPlanning = useCallback(async () => {
     setLoading(true);
@@ -904,25 +982,19 @@ export function FinancialPlanningPage() {
 
   const openSupplierPaymentModal = useCallback((event: FinancePlanningEvent) => {
     if (!isSupplierPaymentEvent(event)) return;
-    setSelectedPaymentEvent(event);
+    setSelectedPaymentEvent({ event, mode: "mark" });
   }, []);
 
-  const openSupplierFinanceModal = useCallback((event: FinancePlanningEvent) => {
+  const openSupplierCorrectionModal = useCallback((event: FinancePlanningEvent) => {
     if (!isSupplierPaymentEvent(event)) return;
     if (event.status !== "pagado") return;
-    if (isSupplierPaymentFinanced(event)) return;
-    setSelectedFinanceEvent(event);
+    setSelectedPaymentEvent({ event, mode: "correct" });
   }, []);
 
   const openCreditLineRepaymentModal = useCallback((event: FinancePlanningEvent) => {
     if (!canRepayCreditLineEvent(event)) return;
     setSelectedRepaymentEvent(event);
   }, []);
-
-  const refreshAfterFinance = useCallback(async (message: string) => {
-    await refreshAfterPayment();
-    setSuccessMessage(message);
-  }, [refreshAfterPayment]);
 
   const refreshAfterCreditLineRepayment = useCallback(async (message: string) => {
     await refreshAfterPayment();
@@ -933,10 +1005,83 @@ export function FinancialPlanningPage() {
     loadPlanning();
   }, [loadPlanning]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const estadoParam = params.get("estado")?.trim();
+    const estado = STATUS_FILTER_OPTIONS.some((option) => option.value === estadoParam)
+      ? (estadoParam as StatusFilter)
+      : "ALL";
+
+    setFilters({
+      q: params.get("q")?.trim() ?? "",
+      estado,
+      fechaDesde: params.get("fechaDesde")?.trim() ?? "",
+      fechaHasta: params.get("fechaHasta")?.trim() ?? "",
+    });
+    setUrlFiltersReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!urlFiltersReady) return;
+
+    const params = new URLSearchParams(window.location.search);
+    params.delete("q");
+    params.delete("estado");
+    params.delete("fechaDesde");
+    params.delete("fechaHasta");
+
+    if (filters.q.trim()) params.set("q", filters.q.trim());
+    if (filters.estado !== "ALL") params.set("estado", filters.estado);
+    if (filters.fechaDesde) params.set("fechaDesde", filters.fechaDesde);
+    if (filters.fechaHasta) params.set("fechaHasta", filters.fechaHasta);
+
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}`;
+    window.history.replaceState(null, "", nextUrl);
+  }, [filters, urlFiltersReady]);
+
   const allPendingDateEvents = useMemo(
     () => data?.months.flatMap((month) => month.pendingDateEvents) ?? [],
     [data],
   );
+
+  const filteredMonths = useMemo(
+    () =>
+      data?.months.map((month) => ({
+        ...month,
+        events: month.events.filter((event) => eventMatchesFilters(event, filters)),
+      })) ?? [],
+    [data, filters],
+  );
+
+  const filteredPendingDateEvents = useMemo(
+    () => allPendingDateEvents.filter((event) => eventMatchesFilters(event, filters)),
+    [allPendingDateEvents, filters],
+  );
+
+  const filteredResultsCount = useMemo(
+    () =>
+      filteredMonths.reduce((sum, month) => sum + month.events.length, 0)
+      + filteredPendingDateEvents.length,
+    [filteredMonths, filteredPendingDateEvents],
+  );
+
+  const hasActiveFilters =
+    Boolean(filters.q.trim()) ||
+    filters.estado !== "ALL" ||
+    Boolean(filters.fechaDesde) ||
+    Boolean(filters.fechaHasta);
+
+  const updateFilter = useCallback(
+    <K extends keyof FinanceFiltersState>(key: K, value: FinanceFiltersState[K]) => {
+      setFilters((current) => ({ ...current, [key]: value }));
+    },
+    [],
+  );
+
+  const clearFilters = useCallback(() => {
+    setFilters(EMPTY_FILTERS);
+  }, []);
 
   if (loading) {
     return (
@@ -1006,7 +1151,7 @@ export function FinancialPlanningPage() {
                 <div><span className="block text-slate-400">Libre</span><b>{eur(line.availableAmount)}</b></div>
               </div>
               <p className="mt-3 text-[11px] text-slate-500">
-                {line.cycleDays ? `Ciclo aprox. ${line.cycleDays} dias.` : "Fechas manuales."} Coste pendiente de configurar.
+                {line.cycleDays ? `Ciclo aprox. ${line.cycleDays} dias.` : "Fechas configuradas"} Coste pendiente de configurar.
               </p>
             </div>
           ))}
@@ -1022,8 +1167,80 @@ export function FinancialPlanningPage() {
           </div>
         ) : null}
 
+        <section className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(240px,1.4fr)_180px_160px_160px_auto] lg:items-end">
+            <label className="text-xs font-medium text-slate-600">
+              Buscar
+              <div className="mt-1 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <Search className="h-4 w-4 shrink-0 text-slate-400" />
+                <input
+                  type="search"
+                  value={filters.q}
+                  onChange={(e) => updateFilter("q", e.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
+                  placeholder="Buscar orden, pedido agente, proveedor, contenedor..."
+                />
+              </div>
+            </label>
+
+            <label className="text-xs font-medium text-slate-600">
+              Estado
+              <select
+                value={filters.estado}
+                onChange={(e) => updateFilter("estado", e.target.value as StatusFilter)}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
+              >
+                {STATUS_FILTER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-xs font-medium text-slate-600">
+              Desde
+              <input
+                type="date"
+                value={filters.fechaDesde}
+                onChange={(e) => updateFilter("fechaDesde", e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900"
+              />
+            </label>
+
+            <label className="text-xs font-medium text-slate-600">
+              Hasta
+              <input
+                type="date"
+                value={filters.fechaHasta}
+                onChange={(e) => updateFilter("fechaHasta", e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900"
+              />
+            </label>
+
+            <button
+              type="button"
+              onClick={clearFilters}
+              disabled={!hasActiveFilters}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <X className="h-4 w-4" />
+              Limpiar filtros
+            </button>
+          </div>
+          <div className="mt-3 text-xs font-medium text-slate-500">
+            {filteredResultsCount} resultados
+          </div>
+        </section>
+
+        {hasActiveFilters && filteredResultsCount === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-500">
+            No hay órdenes/vencimientos que coincidan con los filtros.
+          </div>
+        ) : null}
+
         <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          {data.months.map((month) => (
+          {filteredMonths.map((month) => (
             <div key={month.month} className="rounded-lg border border-slate-200 bg-white/70 overflow-hidden">
               <div className="bg-slate-900 text-white px-4 py-3">
                 <div className="flex items-center justify-between">
@@ -1058,7 +1275,7 @@ export function FinancialPlanningPage() {
                       key={event.id}
                       event={event}
                       onMarkPaid={openSupplierPaymentModal}
-                      onFinance={openSupplierFinanceModal}
+                      onCorrectPayment={openSupplierCorrectionModal}
                       onRepayCreditLine={openCreditLineRepaymentModal}
                     />
                   ))
@@ -1068,19 +1285,19 @@ export function FinancialPlanningPage() {
           ))}
         </section>
 
-        {allPendingDateEvents.length > 0 && (
+        {filteredPendingDateEvents.length > 0 && (
           <section className="rounded-lg border border-slate-200 bg-white p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
               <Package className="h-4 w-4" />
               Fecha pendiente
             </div>
             <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {allPendingDateEvents.map((event) => (
+              {filteredPendingDateEvents.map((event) => (
                 <EventCard
                   key={event.id}
                   event={event}
                   onMarkPaid={openSupplierPaymentModal}
-                  onFinance={openSupplierFinanceModal}
+                  onCorrectPayment={openSupplierCorrectionModal}
                   onRepayCreditLine={openCreditLineRepaymentModal}
                 />
               ))}
@@ -1094,27 +1311,19 @@ export function FinancialPlanningPage() {
             Reglas activas
           </div>
           <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-600">
-            <p>La recomendacion usa disponibilidad suficiente y prioridad manual, no coste.</p>
+            <p>La recomendacion usa disponibilidad suficiente y prioridad configurada, no coste.</p>
             <p>Una linea no se usa para pagar otra linea; las liberaciones salen de caja propia.</p>
             <p>La caja propia se reserva para liberar lineas y cubrir pagos no financiables.</p>
           </div>
         </section>
       </div>
 
-      {selectedPaymentEvent && isSupplierPaymentEvent(selectedPaymentEvent) ? (
+      {selectedPaymentEvent && isSupplierPaymentEvent(selectedPaymentEvent.event) ? (
         <PaymentModal
-          event={selectedPaymentEvent}
+          event={selectedPaymentEvent.event}
+          mode={selectedPaymentEvent.mode}
           onClose={() => setSelectedPaymentEvent(null)}
           onSaved={refreshAfterPayment}
-        />
-      ) : null}
-      {selectedFinanceEvent && isSupplierPaymentEvent(selectedFinanceEvent) ? (
-        <FinanceSupplierPaymentModal
-          event={selectedFinanceEvent}
-          cashAccounts={data.cashAccounts}
-          creditLines={data.creditLines}
-          onClose={() => setSelectedFinanceEvent(null)}
-          onSaved={refreshAfterFinance}
         />
       ) : null}
       {selectedRepaymentEvent && canRepayCreditLineEvent(selectedRepaymentEvent) ? (

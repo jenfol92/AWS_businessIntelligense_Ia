@@ -2,7 +2,7 @@ export type SupplierPaymentType = "DEPOSITO_30" | "BALANCE_70";
 
 export type OrderLogisticsType = "amazon_agl" | "propio" | "sin_definir";
 
-export type SupplierPaymentStatus = "pendiente" | "pagado" | "vencido";
+export type SupplierPaymentStatus = "pendiente" | "pagado" | "vencido" | "anulado" | "inactive";
 
 export type SupplierPaymentRow = {
   id: string;

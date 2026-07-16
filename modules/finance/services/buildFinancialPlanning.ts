@@ -270,6 +270,8 @@ function buildSupplierPaymentEvents(
     const order = firstRelation(
       payment["ordenes_compra"] as Record<string, unknown> | Record<string, unknown>[] | null,
     );
+    const rawStatus = asString(payment["status"]);
+    if (rawStatus === "anulado" || rawStatus === "inactive") continue;
     const container = firstRelation(
       payment["contenedores"] as Record<string, unknown> | Record<string, unknown>[] | null,
     );
@@ -330,7 +332,7 @@ function buildSupplierPaymentEvents(
     const notes = asString(payment["notes"]);
     const reason = notes ?? recommendation.reason;
     const status = statusFromRow(
-      asString(payment["status"]),
+      rawStatus,
       asString(payment["paid_at"]),
       dueDate,
     );

@@ -40,6 +40,7 @@ export function productSearchToOrderItem(
     cantidad:           1,
     cbm_unitario:       prod.cbm_unitario ?? 0,
     ...costs,
+    moneda_coste:      monedaCompra,
     lote_producto:      null,
     sin_coste_historico: prod.sin_coste_historico ?? !prod.coste_unitario_moneda,
   };

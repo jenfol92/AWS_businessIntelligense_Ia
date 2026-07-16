@@ -51,6 +51,7 @@ export async function resolveFactoryCostsForProducts(
 export async function resolveFactoryCostsForProductSearch(
   refs: ProductSupplierCostRef[],
   supabase?: SupabaseClient,
+  currency?: string | null,
 ): Promise<Map<string, LatestFactoryCost>> {
   const result = new Map<string, LatestFactoryCost>();
   const uniqueRefs = Array.from(
@@ -69,7 +70,7 @@ export async function resolveFactoryCostsForProductSearch(
 
   if (uniqueRefs.length === 0) return result;
 
-  const historical = await getLatestConfirmedFactoryCostByProductRefs(uniqueRefs, supabase);
+  const historical = await getLatestConfirmedFactoryCostByProductRefs(uniqueRefs, supabase, currency);
   for (const ref of uniqueRefs) {
     const key = `${ref.producto_id}:${ref.proveedor_id ?? ""}`;
     const cost = historical.get(key);

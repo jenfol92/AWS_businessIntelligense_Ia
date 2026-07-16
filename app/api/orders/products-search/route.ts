@@ -29,6 +29,7 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get("q") ?? "").trim().toLowerCase();
+  const moneda = (searchParams.get("moneda") ?? "").trim().toUpperCase() || null;
 
   // Productos activos con proveedor
   const { data: productos, error: prodError } = await supabase
@@ -76,6 +77,7 @@ export async function GET(req: Request) {
       proveedor_id: p.proveedor_id ?? null,
     })),
     supabase,
+    moneda,
   );
 
   // Stock agregado por pais (FBA + FBM)

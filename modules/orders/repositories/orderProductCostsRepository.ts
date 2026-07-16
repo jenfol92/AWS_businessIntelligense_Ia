@@ -121,6 +121,7 @@ function normalizeConfirmedOrderItemCost(
 export async function getLatestConfirmedFactoryCostByProductRefs(
   refs: ProductSupplierCostRef[],
   supabase: SupabaseClient = createSupabaseRouteClient(),
+  currency?: string | null,
 ): Promise<Map<string, LatestFactoryCost>> {
   const result = new Map<string, LatestFactoryCost>();
   if (refs.length === 0) return result;
@@ -140,6 +141,59 @@ export async function getLatestConfirmedFactoryCostByProductRefs(
   );
   const productIds = Array.from(new Set(uniqueRefs.map((ref) => ref.producto_id)));
   if (productIds.length === 0) return result;
+  const normalizedCurrency = currency?.trim().toUpperCase() || null;
+
+  const snapshotQuery = supabase
+    .from("order_confirmed_cost_snapshots")
+    .select(
+      "producto_id, proveedor_id, moneda_original, coste_unitario_original, tipo_cambio_moneda_eur, coste_unitario_eur, snapshot_date",
+    )
+    .in("producto_id", productIds)
+    .order("snapshot_date", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  const { data: snapshotRows, error: snapshotError } = normalizedCurrency
+    ? await snapshotQuery.eq("moneda_original", normalizedCurrency)
+    : await snapshotQuery;
+
+  if (!snapshotError) {
+    const byProductSupplier = new Map<string, LatestFactoryCost>();
+    const byProduct = new Map<string, LatestFactoryCost>();
+
+    for (const row of (snapshotRows ?? []) as Record<string, unknown>[]) {
+      const productId = String(row.producto_id);
+      const supplierId = row.proveedor_id ? String(row.proveedor_id) : null;
+      const cost: LatestFactoryCost = {
+        producto_id: productId,
+        costo_fabrica_monto: positiveNumberOrNull(row.coste_unitario_original),
+        costo_fabrica_moneda: row.moneda_original ? String(row.moneda_original).toUpperCase() : null,
+        tipo_cambio_aplicado:
+          row.tipo_cambio_moneda_eur != null && Number.isFinite(Number(row.tipo_cambio_moneda_eur))
+            ? Number(row.tipo_cambio_moneda_eur)
+            : null,
+        costo_fabrica_eur: positiveNumberOrNull(row.coste_unitario_eur),
+        fecha: row.snapshot_date ? String(row.snapshot_date).slice(0, 10) : null,
+        contenedor_id: null,
+      };
+      if (!cost.costo_fabrica_monto) continue;
+      if (!byProduct.has(productId)) byProduct.set(productId, cost);
+      if (supplierId) {
+        const key = `${productId}:${supplierId}`;
+        if (!byProductSupplier.has(key)) byProductSupplier.set(key, cost);
+      }
+    }
+
+    for (const ref of uniqueRefs) {
+      const supplierKey = `${ref.producto_id}:${ref.proveedor_id ?? ""}`;
+      const cost =
+        (ref.proveedor_id ? byProductSupplier.get(supplierKey) : null)
+        ?? byProduct.get(ref.producto_id)
+        ?? null;
+      if (cost) result.set(supplierKey, cost);
+    }
+
+    if (result.size === uniqueRefs.length) return result;
+  }
 
   const { data, error } = await supabase
     .from("orden_items")
@@ -162,6 +216,7 @@ export async function getLatestConfirmedFactoryCostByProductRefs(
     const supplierId = row.proveedor_id ? String(row.proveedor_id) : null;
     const cost = normalizeConfirmedOrderItemCost(row);
     if (!cost) continue;
+    if (normalizedCurrency && cost.costo_fabrica_moneda !== normalizedCurrency) continue;
 
     if (!byProduct.has(productId)) byProduct.set(productId, cost);
     if (supplierId) {

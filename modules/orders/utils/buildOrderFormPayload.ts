@@ -36,6 +36,7 @@ export function buildOrderFormPayload(
     lead_time_produccion: opts.leadProduccion === "" ? null : Number(opts.leadProduccion),
     lead_time_transito:   opts.leadTransito   === "" ? null : Number(opts.leadTransito),
     items: itemList.map((i) => ({
+      item_id:               i._key,
       producto_id:           i.producto_id,
       proveedor_id:          i.proveedor_id,
       cantidad:              i.cantidad,
@@ -43,6 +44,7 @@ export function buildOrderFormPayload(
       coste_unitario_moneda: i.coste_unitario_moneda,
       coste_unitario_usd:    i.coste_unitario_usd,
       coste_unitario_eur:    i.coste_unitario_eur,
+      moneda_coste:          i.moneda_coste ?? opts.monedaCompra,
       lote_producto:         i.lote_producto?.trim() || null,
     })),
   };

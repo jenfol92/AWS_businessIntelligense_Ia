@@ -29,6 +29,7 @@ export type OrderFormHeaderOpts = {
  * Así el mapper no depende del tipo local del componente.
  */
 export type OrderFormItemInput = {
+  _key?: string;
   producto_id: string;
   proveedor_id: string | null;
   cantidad: number;
@@ -36,11 +37,13 @@ export type OrderFormItemInput = {
   coste_unitario_moneda: number | null;
   coste_unitario_usd: number | null;
   coste_unitario_eur: number | null;
+  moneda_coste?: string | null;
   lote_producto: string | null;
 };
 
 /** Línea del payload tal como la espera la API. */
 export type OrderApiItemPayload = {
+  item_id?: string;
   producto_id: string;
   proveedor_id: string | null;
   cantidad: number;
@@ -48,6 +51,7 @@ export type OrderApiItemPayload = {
   coste_unitario_moneda: number | null;
   coste_unitario_usd: number | null;
   coste_unitario_eur: number | null;
+  moneda_coste?: string | null;
   lote_producto: string | null;
 };
 

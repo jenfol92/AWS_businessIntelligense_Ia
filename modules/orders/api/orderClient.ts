@@ -160,9 +160,11 @@ export async function fetchOrderDetail(orderId: string): Promise<RawOrderDetail 
  * Busca productos para añadir a una orden vía GET /api/orders/products-search.
  * Devuelve array vacío si la búsqueda falla.
  */
-export async function searchOrderProducts(q: string): Promise<ProductoSearch[]> {
+export async function searchOrderProducts(q: string, moneda?: string | null): Promise<ProductoSearch[]> {
   try {
-    const res  = await fetch(`/api/orders/products-search?q=${encodeURIComponent(q)}`);
+    const params = new URLSearchParams({ q });
+    if (moneda?.trim()) params.set("moneda", moneda.trim().toUpperCase());
+    const res  = await fetch(`/api/orders/products-search?${params.toString()}`);
     const json = await parseApiResponse<{ ok: true; rows: ProductoSearch[] }>(res);
     return json.rows ?? [];
   } catch {

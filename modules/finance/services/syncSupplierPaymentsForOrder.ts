@@ -11,6 +11,7 @@ import {
   fetchContainerForSupplierPayments,
   fetchOrderForSupplierPayments,
   upsertSupplierPayment,
+  voidPendingSupplierPaymentsForOrder,
   type ContainerForSupplierPayments,
 } from "@/modules/finance/repositories/financeSupplierPaymentsRepository";
 import type { OrderLogisticsType } from "@/modules/finance/types/supplierPayments.types";
@@ -102,7 +103,11 @@ export async function syncSupplierPaymentsForOrder(
   options?: { container?: ContainerForSupplierPayments | null },
 ): Promise<void> {
   const order = await fetchOrderForSupplierPayments(ordenId);
-  if (!order || order.estado !== "confirmado") return;
+  if (!order) return;
+  if (order.estado !== "confirmado") {
+    await voidPendingSupplierPaymentsForOrder(ordenId);
+    return;
+  }
 
   const container = options?.container ?? (await fetchContainerForOrder(ordenId));
   const amazonInbound =

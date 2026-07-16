@@ -68,6 +68,7 @@ type OrderItem = {
   coste_unitario_moneda: number | null;
   coste_unitario_usd: number | null;
   coste_unitario_eur: number | null;
+  moneda_coste?: string | null;
   lote_producto: string | null;
   sin_coste_historico?: boolean;
 };
@@ -89,6 +90,7 @@ export interface OrderFormModalProps {
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
 const CBM_LIMITE_DEFAULT = 65;
+const CURRENCY_SYMBOLS: Record<string, string> = { USD: "$", EUR: "EUR ", GBP: "GBP ", CNY: "CNY " };
 
 function addDaysToIsoDate(isoDate: string, days: number): string {
   const date = new Date(`${isoDate.slice(0, 10)}T00:00:00.000Z`);
@@ -101,6 +103,11 @@ function toNonNegativeInteger(value: number | "" | string | null | undefined): n
   const numberValue = Number(value);
   if (!Number.isFinite(numberValue) || numberValue < 0) return null;
   return Math.round(numberValue);
+}
+
+function formatMoney(value: number, currency: string): string {
+  const code = currency.trim().toUpperCase() || "USD";
+  return `${CURRENCY_SYMBOLS[code] ?? `${code} `}${value.toFixed(2)}`;
 }
 
 // ─── Sub-componente: chip de cobertura de días ─────────────────────────────────
@@ -127,7 +134,8 @@ export default function OrderFormModal({
   onSaved,
 }: OrderFormModalProps) {
   const isEdit   = !!initialOrden;
-  const readonly = initialOrden?.estado === "confirmado";
+  const isConfirmedEdit = initialOrden?.estado === "confirmado";
+  const readonly = false;
   const [tipoEnvio, setTipoEnvio] = useState<"propio" | "amazon_agl">(
     initialOrden?.tipo_envio === "amazon_agl" ? "amazon_agl" : "propio",
   );
@@ -221,7 +229,7 @@ export default function OrderFormModal({
     selectedForAdd,
     setSelectedForAdd,
     dropdownRef,
-  } = useOrderProductSearch();
+  } = useOrderProductSearch(monedaCompra);
 
   // ─── Estado split (gestionar en varios pedidos) ───────────────────────────
 
@@ -253,6 +261,12 @@ export default function OrderFormModal({
   const cbmOver   = cbmTotal > cbmLimite;
   const cbmTotal2 = items2.reduce((s, i) => s + i.cantidad * i.cbm_unitario, 0);
   const cbmPct2   = Math.min((cbmTotal2 / cbmLimite2) * 100, 100);
+  const totalOriginal = items.reduce(
+    (sum, item) => sum + Number(item.coste_unitario_moneda ?? 0) * Number(item.cantidad ?? 0),
+    0,
+  );
+  const fx = monedaCompra === "EUR" ? 1 : tipoCambio === "" ? null : Number(tipoCambio);
+  const totalEurPreview = fx != null ? totalOriginal * fx : null;
 
   // ─── Carga de orden al editar ─────────────────────────────────────────────
 
@@ -462,7 +476,11 @@ export default function OrderFormModal({
     };
     try {
       const body1 = buildOrderFormPayload(items, headerOpts);
-      const url1  = isEdit ? `/api/orders/${initialOrden!.id}` : "/api/orders";
+      const url1  = isConfirmedEdit
+        ? `/api/orders/${initialOrden!.id}/confirmed-edit`
+        : isEdit
+          ? `/api/orders/${initialOrden!.id}`
+          : "/api/orders";
       const r1    = await fetch(url1, {
         method:  isEdit ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
@@ -494,6 +512,10 @@ export default function OrderFormModal({
         if (!j2.ok) throw new Error(j2.error ?? "Error guardando la segunda orden");
       }
 
+      if (isConfirmedEdit && initialOrden?.id) {
+        window.open(`/api/orders/${initialOrden.id}/proforma`, "_blank", "noopener,noreferrer");
+      }
+
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error desconocido");
@@ -504,8 +526,8 @@ export default function OrderFormModal({
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
-  const titleText = readonly
-    ? `Orden ${initialOrden?.numero_orden ?? ""}`
+  const titleText = isConfirmedEdit
+    ? `Editar ${initialOrden?.numero_orden ?? "confirmada"}`
     : isEdit
       ? `Editar ${initialOrden?.numero_orden ?? "borrador"}`
       : "Nueva Orden de Compra";
@@ -518,9 +540,9 @@ export default function OrderFormModal({
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
           <div>
             <h2 className="text-lg font-bold text-slate-800">{titleText}</h2>
-            {readonly && (
+            {isConfirmedEdit && (
               <span className="text-xs text-emerald-600 font-medium">
-                Confirmada — solo lectura
+                Confirmada - edicion economica/logistica
               </span>
             )}
           </div>
@@ -738,7 +760,7 @@ export default function OrderFormModal({
           ) : null}
 
           {/* ── Info extra en modo readonly (orden confirmada) ── */}
-          {readonly && initialOrden && (
+          {false && readonly && initialOrden && (
             <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 px-4 py-3 grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
               <div>
                 <span className="text-[10px] uppercase text-emerald-700/80 font-medium">ETA</span>
@@ -795,7 +817,7 @@ export default function OrderFormModal({
             </div>
 
             {/* Panel de exceso de cubicaje */}
-            {cbmOver && !showSplit && !readonly && (
+            {cbmOver && !showSplit && !readonly && !isConfirmedEdit && (
               <div className="mt-2 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5">
                 <div className="flex items-center gap-3">
                   <span className="text-sm text-red-700 flex-1">
@@ -839,17 +861,17 @@ export default function OrderFormModal({
                     <th className="px-3 py-2.5 text-center font-medium w-24">CBM unit.</th>
                     <th className="px-3 py-2.5 text-center font-medium w-28">CBM total</th>
                     <th className="px-3 py-2.5 text-center font-medium w-28">
-                      {readonly ? "Coste USD / EUR" : "Coste USD"}
+                      {readonly ? "Coste USD / EUR" : `Coste ${monedaCompra}`}
                     </th>
                     <th className="px-3 py-2.5 text-center font-medium w-28">Lote</th>
-                    {!readonly && <th className="px-3 py-2.5 w-16" />}
+                    {!readonly && !isConfirmedEdit && <th className="px-3 py-2.5 w-16" />}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {items.length === 0 && (
                     <tr>
                       <td
-                        colSpan={readonly ? 7 : 8}
+                        colSpan={readonly || isConfirmedEdit ? 7 : 8}
                         className="px-4 py-8 text-center text-slate-400 text-sm"
                       >
                         {readonly
@@ -911,12 +933,12 @@ export default function OrderFormModal({
                               type="number"
                               min={0}
                               step="0.01"
-                              value={item.coste_unitario_usd ?? item.coste_unitario_moneda ?? ""}
+                              value={item.coste_unitario_moneda ?? item.coste_unitario_usd ?? ""}
                               onChange={(e) => {
                                 const val = e.target.value ? Number(e.target.value) : null;
                                 const synced = syncOrderLineCostFields({
                                   monedaCompra,
-                                  costeUnitarioUsd: val,
+                                  costeUnitarioUsd: monedaCompra === "USD" ? val : item.coste_unitario_usd,
                                   costeUnitarioMoneda: val,
                                   costeUnitarioEur: item.coste_unitario_eur,
                                 });
@@ -949,7 +971,7 @@ export default function OrderFormModal({
                           className="w-full border border-slate-200 rounded-lg px-2 py-1 text-xs text-center disabled:bg-slate-50 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
                         />
                       </td>
-                      {!readonly && (
+                      {!readonly && !isConfirmedEdit && (
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1">
                             {showSplit && (
@@ -979,7 +1001,7 @@ export default function OrderFormModal({
             </div>
 
             {/* ── Buscador de productos ── */}
-            {!readonly && (
+            {!readonly && !isConfirmedEdit && (
               <div className="mt-3 relative" ref={dropdownRef}>
                 <div className="relative">
                   <input
@@ -1287,6 +1309,18 @@ export default function OrderFormModal({
             </div>
           )}
 
+          <div className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="font-semibold text-slate-600">Total orden</span>
+              <span className="font-bold text-slate-900">
+                {formatMoney(totalOriginal, monedaCompra)}
+                <span className="ml-3 text-blue-700">
+                  {totalEurPreview != null ? `EUR ${totalEurPreview.toFixed(2)}` : "EUR pendiente"}
+                </span>
+              </span>
+            </div>
+          </div>
+
           {/* Error */}
           {error && (
             <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
@@ -1311,7 +1345,9 @@ export default function OrderFormModal({
             >
               {saving
                 ? "Guardando…"
-                : showSplit
+                : isConfirmedEdit
+                  ? "Guardar y generar nueva proforma"
+                  : showSplit
                   ? "Guardar 2 borradores"
                   : isEdit
                     ? "Guardar cambios"

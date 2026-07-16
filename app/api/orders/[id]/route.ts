@@ -67,6 +67,7 @@ export async function PUT(req: Request, { params }: Params) {
       coste_unitario_moneda?: number | null;
       coste_unitario_usd?: number | null;
       coste_unitario_eur?: number | null;
+      moneda_coste?: string | null;
       lote_producto?: string | null;
     }>;
   };

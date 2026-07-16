@@ -167,6 +167,7 @@ export async function prepareOrderItemsForPersistence(
   const rows = resolvedItems.map((item) => {
     const { ...rest } = item as Record<string, unknown>;
     delete rest["cbm_total"];
+    delete rest["item_id"];
     return { ...rest, orden_id: orderId };
   });
 

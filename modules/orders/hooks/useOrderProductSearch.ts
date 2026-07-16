@@ -21,7 +21,7 @@ export type UseOrderProductSearchResult = {
  * Encapsula: estado de búsqueda, resultados, dropdown y selección múltiple.
  * El componente retiene la lógica de añadir los productos seleccionados a los ítems.
  */
-export function useOrderProductSearch(): UseOrderProductSearchResult {
+export function useOrderProductSearch(monedaCompra?: string | null): UseOrderProductSearchResult {
   const [searchQ,        setSearchQ]        = useState("");
   const [searchResults,  setSearchResults]  = useState<ProductoSearch[]>([]);
   const [searchLoading,  setSearchLoading]  = useState(false);
@@ -64,14 +64,14 @@ export function useOrderProductSearch(): UseOrderProductSearchResult {
     setSelectedForAdd(new Set());
     searchTimeout.current = setTimeout(async () => {
       try {
-        const rows = await searchOrderProducts(searchQ);
+        const rows = await searchOrderProducts(searchQ, monedaCompra);
         setSearchResults(rows);
         setShowDropdown(true);
       } finally {
         setSearchLoading(false);
       }
     }, 300);
-  }, [searchQ]);
+  }, [searchQ, monedaCompra]);
 
   return {
     searchQ,

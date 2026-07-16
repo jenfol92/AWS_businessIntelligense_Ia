@@ -29,6 +29,7 @@ import type {
   ConfirmOrderInput,
   OrdenCompraRow,
 } from "@/modules/orders/types/orderPersistence.types";
+import { upsertConfirmedOrderCostSnapshots } from "@/modules/orders/repositories/orderConfirmedCostSnapshotRepository";
 
 // Defaults de pago documentados explícitamente para facilitar su búsqueda y cambio futuro.
 const DEFAULT_DEPOSITO_PORCENTAJE = 30;
@@ -95,5 +96,7 @@ export async function confirmOrderService(
 
   // ── 4. Confirmar cabecera vía repository ─────────────────────────────────
   // (ver advertencia de transaccionalidad en el encabezado del archivo)
-  return confirmOrderHeader(orderId, payload);
+  const confirmedOrder = await confirmOrderHeader(orderId, payload);
+  await upsertConfirmedOrderCostSnapshots(confirmedOrder);
+  return confirmedOrder;
 }

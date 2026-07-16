@@ -9,7 +9,6 @@ export type ConfirmedOrderItemPatch = {
   coste_unitario_moneda?: number | null;
   coste_unitario_usd?: number | null;
   coste_unitario_eur?: number | null;
-  moneda_coste?: string | null;
   lote_producto?: string | null;
 };
 
@@ -107,7 +106,6 @@ export async function updateConfirmedOrderService(
     if (item.coste_unitario_moneda !== undefined) patch.coste_unitario_moneda = item.coste_unitario_moneda;
     if (item.coste_unitario_usd !== undefined) patch.coste_unitario_usd = item.coste_unitario_usd;
     if (item.coste_unitario_eur !== undefined) patch.coste_unitario_eur = item.coste_unitario_eur;
-    if (item.moneda_coste !== undefined) patch.moneda_coste = item.moneda_coste;
     if (item.lote_producto !== undefined) patch.lote_producto = item.lote_producto;
 
     const { error } = await supabase

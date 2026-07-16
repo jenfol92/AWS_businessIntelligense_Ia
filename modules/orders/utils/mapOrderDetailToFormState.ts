@@ -48,7 +48,6 @@ export function mapOrderDetailToFormState(detail: RawOrderDetail): OrderFormLoad
         ?? null,
       coste_unitario_usd: (i.coste_unitario_usd as number | null) ?? null,
       coste_unitario_eur: (i.coste_unitario_eur as number | null) ?? null,
-      moneda_coste:       (i.moneda_coste as string | null) ?? String(orden.moneda_compra ?? "USD"),
       lote_producto:      (i.lote_producto      as string | null) ?? null,
       sin_coste_historico:
         i.coste_unitario_moneda == null

@@ -9,7 +9,6 @@ type SnapshotItemRow = {
   cantidad: number | null;
   coste_unitario_moneda: number | null;
   coste_unitario_eur: number | null;
-  moneda_coste: string | null;
   lote_producto: string | null;
 };
 
@@ -29,7 +28,7 @@ export async function upsertConfirmedOrderCostSnapshots(
   const { data: items, error: itemsError } = await supabase
     .from("orden_items")
     .select(
-      "id, orden_id, producto_id, proveedor_id, cantidad, coste_unitario_moneda, coste_unitario_eur, moneda_coste, lote_producto",
+      "id, orden_id, producto_id, proveedor_id, cantidad, coste_unitario_moneda, coste_unitario_eur, lote_producto",
     )
     .eq("orden_id", order.id);
 
@@ -44,8 +43,8 @@ export async function upsertConfirmedOrderCostSnapshots(
 
   const rows = ((items ?? []) as SnapshotItemRow[]).map((item) => {
     const quantity = asNumber(item.cantidad) ?? 0;
-    const currency = item.moneda_coste?.trim().toUpperCase() || orderCurrency;
-    const fx = currency === orderCurrency ? orderFx : currency === "EUR" ? 1 : null;
+    const currency = orderCurrency;
+    const fx = orderFx;
     const unitOriginal = asNumber(item.coste_unitario_moneda);
     const unitEur = asNumber(item.coste_unitario_eur) ?? (unitOriginal != null && fx != null ? unitOriginal * fx : null);
     return {

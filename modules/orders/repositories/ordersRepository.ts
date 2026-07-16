@@ -115,7 +115,7 @@ async function insertOrderItemRows(
     .insert(rows)
     .select(
       "id, orden_id, producto_id, proveedor_id, cantidad, cbm_unitario, cbm_total, " +
-      "coste_unitario_moneda, coste_unitario_usd, coste_unitario_eur, moneda_coste, lote_producto, notas, created_at",
+      "coste_unitario_moneda, coste_unitario_usd, coste_unitario_eur, lote_producto, notas, created_at",
     );
 
   if (error) throw new Error(error.message);
@@ -349,7 +349,7 @@ export async function getOrderWithItems(
     .from("orden_items")
     .select(
       "id, orden_id, producto_id, proveedor_id, cantidad, cbm_unitario, cbm_total, " +
-      "coste_unitario_moneda, coste_unitario_usd, coste_unitario_eur, moneda_coste, lote_producto, notas, created_at, " +
+      "coste_unitario_moneda, coste_unitario_usd, coste_unitario_eur, lote_producto, notas, created_at, " +
       "productos(sku, nombre), proveedores(nombre, dias_produccion_estandar, dias_transito_estandar)",
     )
     .eq("orden_id", orderId)

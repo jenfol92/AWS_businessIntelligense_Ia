@@ -77,7 +77,6 @@ export type OrdenItemRow = {
   coste_unitario_usd: number | null;
   coste_unitario_eur: number | null;
   coste_unitario_moneda: number | null;
-  moneda_coste?: string | null;
   lote_producto: string | null;
   notas: string | null;
   created_at: string;
@@ -156,7 +155,6 @@ export type InsertOrderItemInput = {
   coste_unitario_moneda?: number | null;
   coste_unitario_usd?: number | null;
   coste_unitario_eur?: number | null;
-  moneda_coste?: string | null;
   lote_producto?: string | null;        // added by fase2_lotes_coste_medio migration
   notas?: string | null;
 };
@@ -242,7 +240,6 @@ export type ConfirmOrderInput = {
     coste_unitario_moneda?: number | null;
     coste_unitario_usd?: number | null;
     coste_unitario_eur?: number | null;
-    moneda_coste?: string | null;
     lote_producto?: string | null;
   }>;
 };

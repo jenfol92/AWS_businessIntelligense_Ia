@@ -22,7 +22,6 @@ export type NormalizedItemCostPatch = {
   coste_unitario_moneda: number | null;
   coste_unitario_usd: number | null;
   coste_unitario_eur: number | null;
-  moneda_coste?: string | null;
   lote_producto?: string | null;
 };
 
@@ -70,7 +69,6 @@ export async function updateOrderItemCostsForConfirmation(
       coste_unitario_moneda: patch.coste_unitario_moneda,
       coste_unitario_usd: patch.coste_unitario_usd,
       coste_unitario_eur: patch.coste_unitario_eur,
-      moneda_coste: patch.moneda_coste ?? null,
     };
 
     if (patch.lote_producto !== undefined) {

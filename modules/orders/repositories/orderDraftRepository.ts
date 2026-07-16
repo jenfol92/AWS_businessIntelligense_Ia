@@ -112,7 +112,7 @@ export async function insertOrderDraftItemRows(
     .insert(rows)
     .select(
       "id, orden_id, producto_id, proveedor_id, cantidad, cbm_unitario, cbm_total, " +
-      "coste_unitario_moneda, coste_unitario_usd, coste_unitario_eur, moneda_coste, lote_producto, notas, created_at",
+      "coste_unitario_moneda, coste_unitario_usd, coste_unitario_eur, lote_producto, notas, created_at",
     );
 
   if (error) throw new Error(`Error insertando nuevas líneas: ${error.message}`);

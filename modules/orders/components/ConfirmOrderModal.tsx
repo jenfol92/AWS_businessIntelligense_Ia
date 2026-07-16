@@ -47,7 +47,6 @@ type ItemWithCost = {
   cantidad: number;
   /** Precio unitario en la moneda de compra seleccionada. */
   coste_unitario_moneda: number | null;
-  moneda_coste: string;
   lote_producto: string | null;
 };
 
@@ -271,7 +270,6 @@ export default function ConfirmOrderModal({
                 sku: (row.productos as { sku?: string } | null)?.sku ?? "",
                 cantidad: row.cantidad as number,
                 coste_unitario_moneda: costeMoneda,
-                moneda_coste: monedaOrden,
                 lote_producto: (row.lote_producto as string | null) ?? null,
               };
             }),
@@ -351,19 +349,12 @@ export default function ConfirmOrderModal({
     return unitMoneda * tipoCambio;
   }
 
-  function toEurForCurrency(unitMoneda: number | null, currency: string): number | null {
-    if (unitMoneda == null) return null;
-    if (currency === "EUR") return unitMoneda;
-    if (currency === moneda && tipoCambio) return unitMoneda * tipoCambio;
-    return null;
-  }
-
   const totalMoneda = items.reduce(
     (s, i) => s + (i.coste_unitario_moneda ?? 0) * i.cantidad,
     0,
   );
   const totalEur = items.reduce((s, i) => {
-    const eur = toEurForCurrency(i.coste_unitario_moneda, i.moneda_coste);
+    const eur = toEur(i.coste_unitario_moneda);
     return s + (eur ?? 0) * i.cantidad;
   }, 0);
 
@@ -384,14 +375,6 @@ export default function ConfirmOrderModal({
         i.id === id
           ? { ...i, coste_unitario_moneda: val === "" ? null : Number(val) }
           : i,
-      ),
-    );
-  }
-
-  function updateItemMoneda(id: string, value: string) {
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, moneda_coste: value.toUpperCase() } : item,
       ),
     );
   }
@@ -435,13 +418,12 @@ export default function ConfirmOrderModal({
           balance_condiciones_texto: balanceCondiciones,
           items_costes: items.map((i) => {
             const unitMoneda = i.coste_unitario_moneda;
-            const unitEur = toEurForCurrency(unitMoneda, i.moneda_coste);
+            const unitEur = toEur(unitMoneda);
             return {
               item_id:               i.id,
               coste_unitario_moneda: unitMoneda,
               coste_unitario_eur:    unitEur,
-              coste_unitario_usd:    i.moneda_coste === "USD" ? unitMoneda : null,
-              moneda_coste:          i.moneda_coste,
+              coste_unitario_usd:    moneda === "USD" ? unitMoneda : null,
               lote_producto:         i.lote_producto,
             };
           }),
@@ -680,7 +662,6 @@ export default function ConfirmOrderModal({
                     <tr>
                       <th className="px-3 py-2.5 text-left">Producto / SKU</th>
                       <th className="px-3 py-2.5 text-center w-16">Uds</th>
-                      <th className="px-3 py-2.5 text-center w-24">Moneda</th>
                       <th className="px-3 py-2.5 text-center w-32">
                         Precio unitario
                       </th>
@@ -694,8 +675,7 @@ export default function ConfirmOrderModal({
                   <tbody className="divide-y divide-slate-100">
                     {items.map((item) => {
                       const unitMoneda = item.coste_unitario_moneda;
-                      const eurUnit = toEurForCurrency(unitMoneda, item.moneda_coste);
-                      const itemCurrency = MONEDAS.find((m) => m.code === item.moneda_coste) ?? monedaInfo;
+                      const eurUnit = toEur(unitMoneda);
                       return (
                         <tr key={item.id} className="hover:bg-slate-50">
                           <td className="px-3 py-2">
@@ -712,17 +692,6 @@ export default function ConfirmOrderModal({
                             />
                           </td>
                           <td className="px-3 py-2">
-                            <select
-                              value={item.moneda_coste}
-                              onChange={(e) => updateItemMoneda(item.id, e.target.value)}
-                              className="w-full border border-slate-200 rounded-lg px-2 py-1 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            >
-                              {MONEDAS.map((m) => (
-                                <option key={m.code} value={m.code}>{m.code}</option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="px-3 py-2">
                             <input
                               type="number"
                               min={0}
@@ -737,7 +706,7 @@ export default function ConfirmOrderModal({
                           </td>
                           <td className="px-3 py-2 text-right font-semibold text-slate-700">
                             {unitMoneda != null && unitMoneda > 0
-                              ? `${itemCurrency.simbolo}${(unitMoneda * item.cantidad).toFixed(2)}`
+                              ? `${monedaInfo.simbolo}${(unitMoneda * item.cantidad).toFixed(2)}`
                               : "—"}
                           </td>
                           {moneda !== "EUR" && (
@@ -763,7 +732,7 @@ export default function ConfirmOrderModal({
                   <tfoot className="bg-slate-50 border-t-2 border-slate-200">
                     <tr>
                       <td
-                        colSpan={4}
+                        colSpan={3}
                         className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right"
                       >
                         Total FOB

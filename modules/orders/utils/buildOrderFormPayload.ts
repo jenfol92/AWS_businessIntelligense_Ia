@@ -44,7 +44,6 @@ export function buildOrderFormPayload(
       coste_unitario_moneda: i.coste_unitario_moneda,
       coste_unitario_usd:    i.coste_unitario_usd,
       coste_unitario_eur:    i.coste_unitario_eur,
-      moneda_coste:          i.moneda_coste ?? opts.monedaCompra,
       lote_producto:         i.lote_producto?.trim() || null,
     })),
   };

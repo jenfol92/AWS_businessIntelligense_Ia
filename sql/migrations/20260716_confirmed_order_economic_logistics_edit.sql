@@ -35,9 +35,3 @@ create index if not exists idx_order_confirmed_cost_snapshots_lookup
 
 comment on table public.order_confirmed_cost_snapshots is
   'Snapshot de coste por linea/lote tomado al confirmar una orden. No sustituye producto_costos ni finance_supplier_payments.';
-
-alter table if exists public.orden_items
-  add column if not exists moneda_coste text null;
-
-comment on column public.orden_items.moneda_coste is
-  'Moneda original del coste unitario confirmado para esta linea de orden.';

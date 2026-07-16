@@ -85,6 +85,21 @@ export async function updateOrderItemCostsForConfirmation(
   }
 }
 
+export async function fetchOrderHeaderForConfirmation(
+  orderId: string,
+): Promise<OrdenCompraRow | null> {
+  const supabase = createSupabaseRouteClient();
+
+  const { data, error } = await supabase
+    .from("ordenes_compra")
+    .select("*")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return (data as OrdenCompraRow | null) ?? null;
+}
+
 /**
  * Confirma la cabecera de la orden: cambia estado borrador → confirmado y
  * persiste todos los campos logísticos/comerciales/pago.

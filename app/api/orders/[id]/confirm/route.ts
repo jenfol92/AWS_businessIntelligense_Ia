@@ -8,8 +8,9 @@
 
 import { NextResponse } from "next/server";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
-import { confirmOrder } from "@/modules/orders/repositories/ordersRepository";
+import { confirmOrder, getOrderById } from "@/modules/orders/repositories/ordersRepository";
 import { syncSupplierPaymentsForOrder } from "@/modules/finance/services/syncSupplierPaymentsForOrder";
+import { upsertConfirmedOrderCostSnapshots } from "@/modules/orders/repositories/orderConfirmedCostSnapshotRepository";
 
 type Params = { params: { id: string } };
 
@@ -73,7 +74,7 @@ export async function POST(req: Request, { params }: Params) {
   }
 
   try {
-    const orden = await confirmOrder(params.id, {
+    const result = await confirmOrder(params.id, {
       eta: body.eta,
       etd: body.etd,
       eta_real: body.eta_real,
@@ -89,15 +90,37 @@ export async function POST(req: Request, { params }: Params) {
       balance_condiciones_texto: body.balance_condiciones_texto,
       items_costes: body.items_costes,
     });
+    const warnings = [...result.warnings];
 
     try {
       await syncSupplierPaymentsForOrder(params.id);
     } catch (syncError) {
       console.error("syncSupplierPaymentsForOrder:", syncError);
+      warnings.push("La orden se confirmó, pero no se pudieron sincronizar los pagos proveedor.");
     }
 
-    return NextResponse.json({ ok: true, orden });
+    return NextResponse.json({ ok: true, orden: result.orden, warnings });
   } catch (e) {
+    const currentOrder = await getOrderById(params.id).catch(() => null);
+    if (currentOrder?.estado === "confirmado") {
+      const warnings = [
+        "La orden se confirmó, pero quedó pendiente completar una operación secundaria.",
+      ];
+      try {
+        await upsertConfirmedOrderCostSnapshots(currentOrder);
+      } catch (snapshotError) {
+        console.error("upsertConfirmedOrderCostSnapshots:", snapshotError);
+        warnings.push("No se pudo completar el snapshot de costes.");
+      }
+      try {
+        await syncSupplierPaymentsForOrder(params.id);
+      } catch (syncError) {
+        console.error("syncSupplierPaymentsForOrder:", syncError);
+        warnings.push("No se pudieron sincronizar los pagos proveedor.");
+      }
+      return NextResponse.json({ ok: true, orden: currentOrder, warnings });
+    }
+
     const msg = e instanceof Error ? e.message : "Error confirmando la orden.";
     return NextResponse.json({ ok: false, error: msg }, { status: 400 });
   }

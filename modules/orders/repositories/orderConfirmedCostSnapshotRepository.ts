@@ -72,3 +72,15 @@ export async function upsertConfirmedOrderCostSnapshots(
 
   if (error) throw new Error(error.message);
 }
+
+export async function assertConfirmedOrderCostSnapshotStoreAvailable(): Promise<void> {
+  const supabase = createSupabaseRouteClient();
+  const { error } = await supabase
+    .from("order_confirmed_cost_snapshots")
+    .select("id", { head: true })
+    .limit(1);
+
+  if (error) {
+    throw new Error(`No se pudo validar order_confirmed_cost_snapshots: ${error.message}`);
+  }
+}

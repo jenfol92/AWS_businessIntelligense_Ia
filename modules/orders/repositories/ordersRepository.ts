@@ -34,7 +34,10 @@ import {
   createOrderDraftService,
   type CreateOrderFromDraftResult,
 } from "@/modules/orders/services/createOrderDraftService";
-import { confirmOrderService } from "@/modules/orders/services/confirmOrderService";
+import {
+  confirmOrderService,
+  type ConfirmOrderServiceResult,
+} from "@/modules/orders/services/confirmOrderService";
 import type { OrderDraft } from "@/modules/orders/types/order.types";
 import type {
   OrderItemCostWarning,
@@ -442,6 +445,6 @@ export async function updateOrderDraft(
 export async function confirmOrder(
   orderId: string,
   input: ConfirmOrderInput,
-): Promise<OrdenCompraRow> {
+): Promise<ConfirmOrderServiceResult> {
   return confirmOrderService(orderId, input);
 }

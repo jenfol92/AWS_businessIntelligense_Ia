@@ -23,13 +23,22 @@
 import {
   updateOrderItemCostsForConfirmation,
   confirmOrderHeader,
+  fetchOrderHeaderForConfirmation,
   type NormalizedItemCostPatch,
 } from "@/modules/orders/repositories/orderConfirmRepository";
 import type {
   ConfirmOrderInput,
   OrdenCompraRow,
 } from "@/modules/orders/types/orderPersistence.types";
-import { upsertConfirmedOrderCostSnapshots } from "@/modules/orders/repositories/orderConfirmedCostSnapshotRepository";
+import {
+  assertConfirmedOrderCostSnapshotStoreAvailable,
+  upsertConfirmedOrderCostSnapshots,
+} from "@/modules/orders/repositories/orderConfirmedCostSnapshotRepository";
+
+export type ConfirmOrderServiceResult = {
+  orden: OrdenCompraRow;
+  warnings: string[];
+};
 
 // Defaults de pago documentados explícitamente para facilitar su búsqueda y cambio futuro.
 const DEFAULT_DEPOSITO_PORCENTAJE = 30;
@@ -52,7 +61,29 @@ const DEFAULT_BALANCE_CONDICIONES_TEXTO =
 export async function confirmOrderService(
   orderId: string,
   input: ConfirmOrderInput,
-): Promise<OrdenCompraRow> {
+): Promise<ConfirmOrderServiceResult> {
+  const existingOrder = await fetchOrderHeaderForConfirmation(orderId);
+  if (!existingOrder) {
+    throw new Error("Orden no encontrada.");
+  }
+
+  if (existingOrder.estado === "confirmado") {
+    const warnings: string[] = [];
+    try {
+      await upsertConfirmedOrderCostSnapshots(existingOrder);
+    } catch (snapshotError) {
+      console.error("upsertConfirmedOrderCostSnapshots:", snapshotError);
+      warnings.push("La orden ya estaba confirmada, pero no se pudo completar el snapshot de costes.");
+    }
+    return { orden: existingOrder, warnings };
+  }
+
+  if (existingOrder.estado !== "borrador") {
+    throw new Error(`No se puede confirmar una orden en estado ${existingOrder.estado}.`);
+  }
+
+  await assertConfirmedOrderCostSnapshotStoreAvailable();
+
   // ── 1. Normalizar patches de costes de línea ─────────────────────────────
   // Convierte "" → null en lote_producto (regla de negocio de datos de entrada).
   if (input.items_costes && input.items_costes.length > 0) {
@@ -97,6 +128,12 @@ export async function confirmOrderService(
   // ── 4. Confirmar cabecera vía repository ─────────────────────────────────
   // (ver advertencia de transaccionalidad en el encabezado del archivo)
   const confirmedOrder = await confirmOrderHeader(orderId, payload);
-  await upsertConfirmedOrderCostSnapshots(confirmedOrder);
-  return confirmedOrder;
+  const warnings: string[] = [];
+  try {
+    await upsertConfirmedOrderCostSnapshots(confirmedOrder);
+  } catch (snapshotError) {
+    console.error("upsertConfirmedOrderCostSnapshots:", snapshotError);
+    warnings.push("La orden se confirmó, pero no se pudo completar el snapshot de costes.");
+  }
+  return { orden: confirmedOrder, warnings };
 }

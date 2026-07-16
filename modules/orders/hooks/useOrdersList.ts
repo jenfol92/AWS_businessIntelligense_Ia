@@ -26,6 +26,7 @@ export type UseOrdersListResult = {
   setFilterEtdTo: (v: string) => void;
   setFilterEtaFrom: (v: string) => void;
   setFilterEtaTo: (v: string) => void;
+  patchOrder: (order: Partial<OrderListRow> & { id: string }) => void;
   refresh: () => void;
 };
 
@@ -74,6 +75,12 @@ export function useOrdersList(): UseOrdersListResult {
     filterQ,
   ]);
 
+  const patchOrder = useCallback((order: Partial<OrderListRow> & { id: string }) => {
+    setOrdenes((prev) =>
+      prev.map((row) => (row.id === order.id ? { ...row, ...order } : row)),
+    );
+  }, []);
+
   useEffect(() => {
     refresh();
   }, [refresh]);
@@ -98,6 +105,7 @@ export function useOrdersList(): UseOrdersListResult {
     setFilterEtdTo,
     setFilterEtaFrom,
     setFilterEtaTo,
+    patchOrder,
     refresh,
   };
 }

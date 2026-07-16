@@ -38,6 +38,11 @@ type PurchasingAgent = {
   contacto: string | null;
 };
 
+type ConfirmedOrderAttemptResult = {
+  orden: OrdenConfirmRow & { estado?: string };
+  warnings: string[];
+};
+
 /** Ítem enriquecido con nombre/SKU de producto para la tabla de costes. */
 type ItemWithCost = {
   id: string;
@@ -56,7 +61,8 @@ export interface ConfirmOrderModalProps {
   /** Callback al cerrar sin confirmar. */
   onClose: () => void;
   /** Callback al confirmar con éxito (refresca el listado). */
-  onConfirmed: () => void;
+  onConfirmed: (result: ConfirmedOrderAttemptResult) => void;
+  onOrderRefreshed?: (orden: ConfirmedOrderAttemptResult["orden"]) => void;
 }
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
@@ -192,6 +198,7 @@ export default function ConfirmOrderModal({
   orden,
   onClose,
   onConfirmed,
+  onOrderRefreshed,
 }: ConfirmOrderModalProps) {
   // ─── Carga de líneas ──────────────────────────────────────────────────────
 
@@ -429,9 +436,42 @@ export default function ConfirmOrderModal({
           }),
         }),
       });
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error ?? "Error confirmando la orden");
-      onConfirmed();
+      const j = await r.json() as {
+        ok?: boolean;
+        orden?: ConfirmedOrderAttemptResult["orden"];
+        warnings?: string[];
+        error?: string;
+      };
+      const warnings = Array.isArray(j.warnings) ? j.warnings : [];
+      let serverOrder = j.orden;
+
+      try {
+        const refreshed = await fetch(`/api/orders/${orden.id}`);
+        const refreshedJson = await refreshed.json();
+        if (refreshedJson.ok && refreshedJson.orden) {
+          serverOrder = refreshedJson.orden as ConfirmedOrderAttemptResult["orden"];
+          onOrderRefreshed?.(serverOrder);
+        }
+      } catch (refreshError) {
+        console.error("refresh order after confirm:", refreshError);
+      }
+
+      if (j.ok && serverOrder) {
+        onConfirmed({ orden: serverOrder, warnings });
+        return;
+      }
+
+      if (serverOrder?.estado === "confirmado") {
+        onConfirmed({
+          orden: serverOrder,
+          warnings: warnings.length > 0
+            ? warnings
+            : ["La orden se confirmó, pero quedó pendiente completar una operación secundaria."],
+        });
+        return;
+      }
+
+      throw new Error(j.error ?? "Error confirmando la orden");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error desconocido");
     } finally {

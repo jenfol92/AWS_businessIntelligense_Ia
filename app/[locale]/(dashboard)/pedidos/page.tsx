@@ -1253,9 +1253,24 @@ export default function PedidosPage() {
         <ConfirmOrderModal
           orden={confirmOrden}
           onClose={() => setConfirmOrden(null)}
-          onConfirmed={() => {
+          onOrderRefreshed={(orden) => {
+            ordersList.patchOrder({
+              ...(orden as Partial<OrderListRow>),
+              id: orden.id,
+            });
+            ordersList.refresh();
+          }}
+          onConfirmed={({ orden, warnings }) => {
+            ordersList.patchOrder({
+              ...(orden as Partial<OrderListRow>),
+              id: orden.id,
+            });
             setConfirmOrden(null);
-            showToast(`Orden ${confirmOrden.numero_orden} confirmada.`);
+            showToast(
+              warnings.length > 0
+                ? "La orden se confirmó, pero quedó pendiente completar una operación secundaria."
+                : `Orden ${confirmOrden.numero_orden} confirmada.`,
+            );
             ordersList.refresh();
           }}
         />

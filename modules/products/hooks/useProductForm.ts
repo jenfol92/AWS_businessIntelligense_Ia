@@ -822,7 +822,11 @@ export function useProductForm({
           : null;
 
       if (newId) {
-        router.push(`/productos/${newId}/edit?created=1`);
+        if (values.parentId.trim()) {
+          router.push(`/productos/${newId}`);
+        } else {
+          router.push(`/productos/${newId}/edit?created=1`);
+        }
       } else {
         router.push("/productos");
       }

@@ -6,21 +6,19 @@ import {
   validateProductForm,
 } from "../schemas/productSchema";
 
-import {
-  mapProductFormToCorePayload,
-  mapProductFormToDetailPayload,
-  mapProductFormToFinancePayload,
-  mapProductFormToTechnicalSheetPayload,
-} from "../mappers/productFormMapper";
-
 import { insertProductCore } from "../repositories/productCoreRepository";
+import { findProductCoreById } from "../repositories/productCoreRepository";
 import { upsertProductDetail } from "../repositories/productDetailRepository";
+import { findProductDetailByProductId } from "../repositories/productDetailRepository";
 import { upsertProductLogistics } from "../repositories/productLogisticsRepository";
+import { findProductLogisticsByProductId } from "../repositories/productLogisticsRepository";
 import { upsertProductFinance } from "../repositories/productFinanceRepository";
 import { upsertProductTechnicalSheet } from "../repositories/productTechnicalSheetRepository";
+import { findProductTechnicalSheetByProductId } from "../repositories/productTechnicalSheetRepository";
+import { rollbackCreatedProduct } from "../repositories/productCreateRollbackRepository";
 import { saveProductAmazonSetup } from "./saveProductAmazonSetup";
 import { saveProductManualCost } from "./saveProductCosts";
-import { resolveProductLogisticsPayloadForSave } from "./resolveProductLogisticsPayloadForSave";
+import { buildProductCreatePayloads } from "./buildProductCreatePayloads";
 
 /**
  * Caso de uso: crear producto completo.
@@ -38,30 +36,62 @@ export async function createProduct(values: ProductFormValues) {
     };
   }
 
-  const corePayload = mapProductFormToCorePayload(values, null);
+  const parentId = values.parentId.trim();
+  const parentRows = parentId
+    ? await Promise.all([
+        findProductCoreById(parentId),
+        findProductDetailByProductId(parentId),
+        findProductLogisticsByProductId(parentId),
+        findProductTechnicalSheetByProductId(parentId),
+      ])
+    : null;
+
+  const {
+    corePayload,
+    detailPayload,
+    logisticsPayload,
+    financePayload,
+    technicalSheetPayload,
+  } = await buildProductCreatePayloads(
+    values,
+    parentRows
+      ? {
+          core: parentRows[0] as Record<string, unknown> | null,
+          detail: parentRows[1] as Record<string, unknown> | null,
+          logistics: parentRows[2] as Record<string, unknown> | null,
+          technicalSheet: parentRows[3] as Record<string, unknown> | null,
+        }
+      : undefined,
+  );
+
   const createdProduct = await insertProductCore(corePayload);
 
   const productId = createdProduct.id as string;
-  const logisticsPayload = await resolveProductLogisticsPayloadForSave(values);
 
-  await Promise.all([
-    upsertProductDetail(productId, mapProductFormToDetailPayload(values)),
-    upsertProductLogistics(productId, logisticsPayload),
-    ...(values.heredarPrecio && values.parentId.trim()
-      ? []
-      : [
-          upsertProductFinance(
-            productId,
-            mapProductFormToFinancePayload(values),
-          ),
-        ]),
-    upsertProductTechnicalSheet(
-      productId,
-      mapProductFormToTechnicalSheetPayload(values)
-    ),
-  ]);
-
-  await saveProductManualCost(productId, values);
+  try {
+    await upsertProductDetail(productId, detailPayload);
+    await upsertProductLogistics(productId, logisticsPayload);
+    if (financePayload) {
+      await upsertProductFinance(productId, financePayload);
+    }
+    await upsertProductTechnicalSheet(productId, technicalSheetPayload);
+    await saveProductManualCost(productId, values);
+  } catch (error) {
+    try {
+      await rollbackCreatedProduct(productId);
+    } catch (rollbackError) {
+      const message =
+        error instanceof Error ? error.message : "Error creando producto";
+      const rollbackMessage =
+        rollbackError instanceof Error
+          ? rollbackError.message
+          : "rollback incompleto";
+      throw new Error(
+        `No se pudo crear el producto completo: ${message}. ${rollbackMessage}`,
+      );
+    }
+    throw error;
+  }
 
   try {
     await saveProductAmazonSetup(productId, values.amazonSetup);

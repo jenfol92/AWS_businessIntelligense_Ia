@@ -73,7 +73,7 @@ WHERE group_count > 1
   AND rn > 1;
 
 WITH to_archive AS (
-  SELECT *
+  SELECT pc.*
   FROM public.producto_costos pc
   JOIN current_factory_cost_duplicates_to_archive d
     ON d.id = pc.id

@@ -132,18 +132,6 @@ BEGIN
       USING ERRCODE = '22023';
   END IF;
 
-  IF EXISTS (
-    SELECT 1
-    FROM public.orden_items oi
-    WHERE oi.orden_id = p_order_id
-      AND oi.producto_id IS NOT NULL
-    GROUP BY oi.producto_id
-    HAVING count(DISTINCT oi.proveedor_id) FILTER (WHERE oi.proveedor_id IS NOT NULL) > 1
-  ) THEN
-    RAISE EXCEPTION 'Una misma orden contiene el mismo producto con proveedores distintos'
-      USING ERRCODE = '22023';
-  END IF;
-
   UPDATE public.orden_items oi
   SET
     coste_unitario_moneda = item.coste_unitario_moneda,
@@ -159,6 +147,18 @@ BEGIN
   )
   WHERE oi.id = item.item_id
     AND oi.orden_id = p_order_id;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.orden_items oi
+    WHERE oi.orden_id = p_order_id
+      AND oi.producto_id IS NOT NULL
+    GROUP BY oi.producto_id
+    HAVING count(DISTINCT oi.proveedor_id) FILTER (WHERE oi.proveedor_id IS NOT NULL) > 1
+  ) THEN
+    RAISE EXCEPTION 'Una misma orden contiene el mismo producto con proveedores distintos'
+      USING ERRCODE = '22023';
+  END IF;
 
   PERFORM public.upsert_current_factory_cost_by_currency(
     grouped.producto_id,

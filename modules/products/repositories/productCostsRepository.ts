@@ -275,36 +275,22 @@ export async function upsertCurrentFactoryCostByCurrency(
       ? Number(input.amount)
       : null;
   const fecha = input.fecha?.slice(0, 10) || todayIsoDate();
-  const existing = await findCurrentFactoryCostByCurrency(input.productId, currency);
-  const payload: Record<string, unknown> = {
-    producto_id: input.productId,
-    costo_fabrica_monto: amount != null && amount > 0 ? amount : null,
-    costo_fabrica_moneda: currency,
-    contenedor_id: null,
-    lote_producto: null,
-    fecha,
-  };
+  const arancelPorcentaje =
+    input.arancelPorcentaje != null && Number.isFinite(Number(input.arancelPorcentaje))
+      ? Number(input.arancelPorcentaje)
+      : null;
 
-  if (input.providerId !== undefined) {
-    payload.proveedor_id = input.providerId || null;
-  }
-  if (input.arancelPorcentaje !== undefined) {
-    payload.arancel_porcentaje =
-      input.arancelPorcentaje != null && Number.isFinite(Number(input.arancelPorcentaje))
-        ? Number(input.arancelPorcentaje)
-        : null;
-  }
-
-  const query = existing?.id
-    ? supabase
-        .from("producto_costos")
-        .update(payload)
-        .eq("id", existing.id)
-        .is("contenedor_id", null)
-        .is("lote_producto", null)
-    : supabase.from("producto_costos").insert(payload);
-
-  const { data, error } = await query.select(selectCurrentFactoryCostColumns()).single();
+  const { data, error } = await supabase.rpc(
+    "upsert_current_factory_cost_by_currency",
+    {
+      p_producto_id: input.productId,
+      p_moneda: currency,
+      p_monto: amount != null && amount > 0 ? amount : null,
+      p_proveedor_id: input.providerId ?? null,
+      p_arancel_porcentaje: arancelPorcentaje,
+      p_fecha: fecha,
+    },
+  );
 
   if (error) throw new Error(error.message);
   return data as unknown as CurrentFactoryCostRow;

@@ -218,6 +218,29 @@ const currentCostSql = fs.readFileSync(
 );
 assert.match(currentCostSql, /REVOKE EXECUTE ON FUNCTION public\.upsert_current_factory_cost_by_currency/);
 
+const cleanupSql = fs.readFileSync(
+  path.join(repoRoot, "sql/migrations/20260717_prepare_current_factory_cost_currency_cleanup.sql"),
+  "utf8",
+);
+assert.match(cleanupSql, /WITH to_archive AS \(\s*SELECT pc\.\*/);
+assert.doesNotMatch(
+  cleanupSql,
+  /WITH to_archive AS \(\s*SELECT \*\s+FROM public\.producto_costos pc/,
+);
+
+const productCostsRepository = fs.readFileSync(
+  path.join(repoRoot, "modules/products/repositories/productCostsRepository.ts"),
+  "utf8",
+);
+assert.match(
+  productCostsRepository,
+  /supabase\.rpc\(\s*["']upsert_current_factory_cost_by_currency["']/,
+);
+assert.doesNotMatch(
+  productCostsRepository,
+  /from\(["']producto_costos["']\)[\s\S]{0,300}\.(update|insert)\(/,
+);
+
 const confirmService = fs.readFileSync(
   path.join(repoRoot, "modules/orders/services/confirmOrderService.ts"),
   "utf8",

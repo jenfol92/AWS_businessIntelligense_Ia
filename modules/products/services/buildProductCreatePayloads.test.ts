@@ -8,6 +8,7 @@ const parentCore = {
   stock_seguridad_minimo: 12,
   arancel_porcentaje: 4,
   especificaciones: {
+    color: "rojo-padre",
     edad_minima_meses: 6,
     certificaciones: ["CE", "EN1888"],
     form_extensions_v1: {
@@ -68,7 +69,7 @@ const baseVariant = {
   nombre: "Variante 1",
   parentId: "parent-1",
   heredarPrecio: true,
-  heredarCosteUnitarioTotal: true,
+  heredarCosteUnitarioTotal: false,
 };
 
 const inherited = buildProductCreatePayloads(baseVariant, {
@@ -132,6 +133,8 @@ const withOwnEdits = buildProductCreatePayloads(
     amazonListingAsin: "ASIN-LISTING-VARIANT",
     amazonListingSku: "LISTING-SKU-VARIANT",
     color: "Azul",
+    categoryDynamicFields: { color: "azul-dinamico" },
+    categoryActiveFieldKeys: ["color"],
     imagenUrl: "https://example.test/variant.jpg",
     referenciaFabricante: "REF-VARIANT",
     categoriaId: "cat-own",
@@ -181,6 +184,11 @@ assert.equal(
   withOwnEdits.detailPayload.color,
   "Azul",
   "color de variante no se hereda del padre",
+);
+assert.equal(
+  (withOwnEdits.corePayload.especificaciones as Record<string, unknown>).color,
+  "azul-dinamico",
+  "campo dinamico color de variante no se hereda del padre",
 );
 assert.equal(
   withOwnEdits.detailPayload.imagen_url,

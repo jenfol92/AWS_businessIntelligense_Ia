@@ -110,6 +110,12 @@ function inheritCorePayload(
     ...parentSpecs,
     [PRODUCT_FORM_ESPECIFICACIONES_KEY]: inheritedExtension,
   };
+  for (const [key, value] of Object.entries(childSpecs)) {
+    if (key === PRODUCT_FORM_ESPECIFICACIONES_KEY) continue;
+    if (key.trim().toLowerCase() === "color") {
+      inheritedSpecs[key] = cloneJsonLike(value);
+    }
+  }
 
   return {
     ...pickInheritedColumns(parent, [

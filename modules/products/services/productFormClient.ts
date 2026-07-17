@@ -3,6 +3,7 @@
 import type {
   AmazonMarketplaceCatalog,
   ProductCategoryOption,
+  ProductFormErrors,
   ProductFormValues,
   ProductSupplierOption,
 } from "../types";
@@ -137,7 +138,21 @@ export async function fetchAmazonMarketplacesCatalog(): Promise<
 /**
  * Carga los datos de un producto para el formulario de edición.
  */
-export async function fetchProductFormById(productId: string) {
+export type ProductFormByIdResponse =
+  | {
+      ok: true;
+      product: ProductFormValues;
+      variantCount: number;
+    }
+  | {
+      ok: false;
+      error?: string;
+      errors?: ProductFormErrors;
+    };
+
+export async function fetchProductFormById(
+  productId: string,
+): Promise<ProductFormByIdResponse> {
   const response = await fetch(`/api/products/${productId}/form`, {
     cache: "no-store",
   });
@@ -148,7 +163,7 @@ export async function fetchProductFormById(productId: string) {
     throw new Error(data?.error ?? "No se pudo cargar el producto");
   }
 
-  return data;
+  return data as ProductFormByIdResponse;
 }
 
 /**

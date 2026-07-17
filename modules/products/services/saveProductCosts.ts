@@ -10,19 +10,28 @@ import { findActiveProductVariants } from "../repositories/productVariantsReposi
 
 type ProductCostRow = Record<string, unknown> | null;
 
-type CostSource = {
+export type CostSource = {
   monto: number;
   moneda: ProductFormValues["costoFabricaMoneda"];
-  proveedorId: string | null;
-  arancelPorcentaje: number;
 };
 
 export type ProductCostPropagationResult = {
+  requested: boolean;
   parentProductId: string;
+  totalVariants: number;
   updated: string[];
-  omitted: Array<{ productId: string; reason: string }>;
+  skipped: Array<{ productId: string; reason: string }>;
   errors: Array<{ productId: string; error: string }>;
 };
+
+type VariantRow = {
+  id?: unknown;
+};
+
+type UpsertFactoryCost = (
+  productId: string,
+  payload: Record<string, unknown>,
+) => Promise<unknown>;
 
 function str(value: unknown): string {
   return value == null ? "" : String(value).trim();
@@ -50,8 +59,6 @@ export function readCostSourceFromRow(row: ProductCostRow): CostSource | null {
   return {
     monto,
     moneda: currency(row?.costo_fabrica_moneda),
-    proveedorId: str(row?.proveedor_id) || null,
-    arancelPorcentaje: num(row?.arancel_porcentaje),
   };
 }
 
@@ -64,24 +71,71 @@ export function readCostSourceFromValues(
   return {
     monto: values.costoFabricaMonto,
     moneda: values.costoFabricaMoneda,
-    proveedorId: values.proveedorId.trim() || null,
-    arancelPorcentaje: values.arancelPorcentaje,
   };
 }
 
-export function buildFactoryCostPayload(
+export function buildFactoryCostOnlyPayload(
   productId: string,
   source: CostSource,
 ): Record<string, unknown> {
   return {
     producto_id: productId,
-    proveedor_id: source.proveedorId,
     costo_fabrica_monto: source.monto,
     costo_fabrica_moneda: source.moneda,
-    costo_fabrica_eur: null,
-    tipo_cambio_aplicado: null,
-    arancel_porcentaje: source.arancelPorcentaje,
   };
+}
+
+export async function propagateFactoryCostToVariantRows(
+  parentProductId: string,
+  source: CostSource | null,
+  variants: VariantRow[],
+  upsertFactoryCost: UpsertFactoryCost,
+): Promise<ProductCostPropagationResult> {
+  const result: ProductCostPropagationResult = {
+    requested: true,
+    parentProductId,
+    totalVariants: variants.length,
+    updated: [],
+    skipped: [],
+    errors: [],
+  };
+
+  if (!source) {
+    result.skipped.push({
+      productId: parentProductId,
+      reason: "El producto padre no tiene coste de fabrica positivo.",
+    });
+    return result;
+  }
+
+  for (const variant of variants) {
+    const variantId = String(variant.id ?? "");
+    if (!variantId) {
+      result.skipped.push({
+        productId: "",
+        reason: "Variante sin id.",
+      });
+      continue;
+    }
+
+    try {
+      await upsertFactoryCost(
+        variantId,
+        buildFactoryCostOnlyPayload(variantId, source),
+      );
+      result.updated.push(variantId);
+    } catch (error) {
+      result.errors.push({
+        productId: variantId,
+        error:
+          error instanceof Error
+            ? error.message
+            : "No se pudo actualizar el coste de la variante.",
+      });
+    }
+  }
+
+  return result;
 }
 
 function variantHasExplicitDifferentCost(
@@ -102,8 +156,6 @@ export async function saveProductManualCost(
   productId: string,
   values: ProductFormValues,
 ) {
-  if (values.parentId.trim() && values.heredarCosteUnitarioTotal) return;
-
   const payload = mapProductFormToManualCostPayload(values, productId);
   if (!payload) return;
 
@@ -123,7 +175,7 @@ export async function saveInitialProductManualCost(
   ) {
     await upsertManualProductCost(
       productId,
-      buildFactoryCostPayload(productId, parentSource),
+      buildFactoryCostOnlyPayload(productId, parentSource),
     );
     return;
   }
@@ -136,42 +188,11 @@ export async function propagateFactoryCostToVariants(
   values: ProductFormValues,
 ): Promise<ProductCostPropagationResult> {
   const source = readCostSourceFromValues(values);
-  const result: ProductCostPropagationResult = {
-    parentProductId,
-    updated: [],
-    omitted: [],
-    errors: [],
-  };
-
-  if (!source) {
-    result.omitted.push({
-      productId: parentProductId,
-      reason: "El producto padre no tiene coste de fabrica positivo.",
-    });
-    return result;
-  }
-
   const variants = await findActiveProductVariants(parentProductId);
-  for (const variant of variants) {
-    const variantId = String(variant.id ?? "");
-    if (!variantId) continue;
-
-    try {
-      await upsertManualProductCost(
-        variantId,
-        buildFactoryCostPayload(variantId, source),
-      );
-      result.updated.push(variantId);
-    } catch (error) {
-      result.errors.push({
-        productId: variantId,
-        error:
-          error instanceof Error
-            ? error.message
-            : "No se pudo actualizar el coste de la variante.",
-      });
-    }
-  }
-
-  return result;
+  return propagateFactoryCostToVariantRows(
+    parentProductId,
+    source,
+    variants,
+    upsertManualProductCost,
+  );
 }

@@ -138,6 +138,15 @@ export function ProductFormPage({
           </div>
         ) : null}
 
+        {form.globalWarning ? (
+          <div
+            className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+            role="status"
+          >
+            {form.globalWarning}
+          </div>
+        ) : null}
+
         {showCreatedBanner && form.isEditMode && form.productId ? (
           <ProductFormCreatedBanner
             productId={form.productId}

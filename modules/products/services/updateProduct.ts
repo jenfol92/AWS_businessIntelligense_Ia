@@ -80,11 +80,12 @@ export async function updateProduct(
   let costPropagation:
     | Awaited<ReturnType<typeof propagateFactoryCostToVariants>>
     | null = null;
+  const warnings: string[] = [];
   if (values.applyCostChangeToVariants && !values.parentId.trim()) {
     costPropagation = await propagateFactoryCostToVariants(productId, values);
     if (costPropagation.errors.length > 0) {
-      throw new Error(
-        `Producto actualizado, pero no se pudo aplicar el coste a ${costPropagation.errors.length} variante(s).`,
+      warnings.push(
+        `El coste del producto se guardo, pero no se pudo actualizar ${costPropagation.errors.length} de ${costPropagation.totalVariants} variantes.`,
       );
     }
   }
@@ -98,6 +99,7 @@ export async function updateProduct(
   return {
     ok: true as const,
     product: updatedProduct,
+    warnings,
     costPropagation,
   };
 }

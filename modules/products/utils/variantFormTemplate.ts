@@ -34,7 +34,7 @@ export function buildVariantFormFromParent(
     ...EMPTY_PRODUCT_FORM,
     parentId,
     heredarPrecio: true,
-    heredarCosteUnitarioTotal: true,
+    heredarCosteUnitarioTotal: false,
 
     proveedorId: parent.proveedorId,
     stockSeguridadMinimo: parent.stockSeguridadMinimo,

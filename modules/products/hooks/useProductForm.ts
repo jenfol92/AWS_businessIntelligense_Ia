@@ -116,6 +116,7 @@ export function useProductForm({
   const [uploadingImage, setUploadingImage] = useState(false);
 
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [globalWarning, setGlobalWarning] = useState<string | null>(null);
 
   const [amazonCatalog, setAmazonCatalog] = useState<
 
@@ -386,7 +387,11 @@ export function useProductForm({
 
         if (!data.ok) {
 
-          throw new Error(data.error ?? "Producto no encontrado");
+          throw new Error(
+            "error" in data && data.error
+              ? data.error
+              : "Producto no encontrado",
+          );
 
         }
 
@@ -789,6 +794,7 @@ export function useProductForm({
       setSaving(true);
 
       setGlobalError(null);
+      setGlobalWarning(null);
 
 
 
@@ -814,6 +820,15 @@ export function useProductForm({
 
         throw new Error(result.error ?? "No se pudo guardar el producto");
 
+      }
+
+      const warnings = Array.isArray(result.warnings)
+        ? result.warnings.filter((w: unknown): w is string => typeof w === "string")
+        : [];
+      if (warnings.length > 0) {
+        setGlobalWarning(warnings.join(" "));
+        router.refresh();
+        return;
       }
 
 
@@ -882,6 +897,7 @@ export function useProductForm({
     uploadingImage,
 
     globalError,
+    globalWarning,
 
     isEditMode,
 

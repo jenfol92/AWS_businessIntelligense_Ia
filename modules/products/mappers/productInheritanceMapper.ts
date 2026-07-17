@@ -182,24 +182,6 @@ export function resolveCosteUnitarioTotalEfectivo(params: {
   parentCostos: unknown[];
   parentCosteActual: unknown;
 }): CosteUnitarioTotalEfectivo {
-  const inheritanceRequested =
-    params.parentId != null &&
-    params.producto.heredar_coste_unitario_total !== false;
-
-  if (inheritanceRequested) {
-    const parentValue = costoUnitarioTotalFrom(
-      params.parentCosteActual,
-      params.parentCostos,
-    );
-    return {
-      valueEur: parentValue,
-      source: parentValue != null ? "parent" : "none",
-      inheritedFromParent: parentValue != null,
-      inheritanceRequested: true,
-      parentProductId: params.parentId,
-    };
-  }
-
   const ownValue = costoUnitarioTotalFrom(params.costeActual, params.costos);
   return {
     valueEur: ownValue,

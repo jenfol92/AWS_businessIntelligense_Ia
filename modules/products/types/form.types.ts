@@ -10,6 +10,7 @@ export type {
   ProductFormErrors,
   ProductFormDocumentRow,
   ProductCostCurrency,
+  ProductFactoryCostByCurrency,
   ProductFormFieldType,
   ProductFormFieldValue,
   ProductFormFieldValidation,

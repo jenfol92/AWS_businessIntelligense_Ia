@@ -25,6 +25,13 @@ export type NormalizedItemCostPatch = {
   lote_producto?: string | null;
 };
 
+export type ConfirmedOrderItemCostRow = {
+  id: string;
+  orden_id: string;
+  producto_id: string;
+  coste_unitario_moneda: number | null;
+};
+
 /**
  * Payload de confirmación de cabecera ya construido por el service.
  * Incluye todos los campos que deben persistirse en ordenes_compra al confirmar.
@@ -59,10 +66,11 @@ export type ConfirmOrderHeaderPayload = {
 export async function updateOrderItemCostsForConfirmation(
   orderId: string,
   patches: NormalizedItemCostPatch[],
-): Promise<void> {
-  if (patches.length === 0) return;
+): Promise<ConfirmedOrderItemCostRow[]> {
+  if (patches.length === 0) return [];
 
   const supabase = createSupabaseRouteClient();
+  const updatedRows: ConfirmedOrderItemCostRow[] = [];
 
   for (const patch of patches) {
     const row: Record<string, unknown> = {
@@ -75,14 +83,24 @@ export async function updateOrderItemCostsForConfirmation(
       row.lote_producto = patch.lote_producto;
     }
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("orden_items")
       .update(row)
       .eq("id", patch.item_id)
-      .eq("orden_id", orderId);
+      .eq("orden_id", orderId)
+      .select("id, orden_id, producto_id, coste_unitario_moneda")
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) {
+      throw new Error(
+        `No se pudo actualizar la linea ${patch.item_id}: no pertenece a la orden ${orderId}.`,
+      );
+    }
+    updatedRows.push(data as ConfirmedOrderItemCostRow);
   }
+
+  return updatedRows;
 }
 
 export async function fetchOrderHeaderForConfirmation(

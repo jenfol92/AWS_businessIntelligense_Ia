@@ -5,7 +5,11 @@
 
 import type { ProductFormValues } from "../types";
 import { mapProductFormToManualCostPayload } from "../mappers/productFormMapper";
-import { upsertManualProductCost } from "../repositories/productCostsRepository";
+import {
+  type CurrentFactoryCostRow,
+  upsertCurrentFactoryCostByCurrency,
+  upsertManualProductCost,
+} from "../repositories/productCostsRepository";
 import { findActiveProductVariants } from "../repositories/productVariantsRepository";
 
 type ProductCostRow = Record<string, unknown> | null;
@@ -83,6 +87,24 @@ export function buildFactoryCostOnlyPayload(
     costo_fabrica_monto: source.monto,
     costo_fabrica_moneda: source.moneda,
   };
+}
+
+export async function copyCurrentFactoryCostsToProduct(
+  productId: string,
+  costs: CurrentFactoryCostRow[],
+) {
+  for (const cost of costs) {
+    const source = readCostSourceFromRow(cost);
+    if (!source) continue;
+    await upsertCurrentFactoryCostByCurrency({
+      productId,
+      currency: source.moneda,
+      amount: source.monto,
+      providerId: cost.proveedor_id ?? null,
+      arancelPorcentaje: cost.arancel_porcentaje ?? null,
+      fecha: cost.fecha,
+    });
+  }
 }
 
 export async function propagateFactoryCostToVariantRows(
@@ -183,6 +205,19 @@ export async function saveInitialProductManualCost(
   await saveProductManualCost(productId, values);
 }
 
+export async function saveInitialProductManualCosts(
+  productId: string,
+  values: ProductFormValues,
+  parentCosts: CurrentFactoryCostRow[] | null,
+) {
+  if (values.parentId.trim() && parentCosts && parentCosts.length > 0) {
+    await copyCurrentFactoryCostsToProduct(productId, parentCosts);
+    return;
+  }
+
+  await saveProductManualCost(productId, values);
+}
+
 export async function propagateFactoryCostToVariants(
   parentProductId: string,
   values: ProductFormValues,
@@ -193,6 +228,14 @@ export async function propagateFactoryCostToVariants(
     parentProductId,
     source,
     variants,
-    upsertManualProductCost,
+    async (productId, payload) =>
+      upsertCurrentFactoryCostByCurrency({
+        productId,
+        currency: String(payload.costo_fabrica_moneda ?? source?.moneda ?? "USD"),
+        amount:
+          payload.costo_fabrica_monto == null
+            ? null
+            : Number(payload.costo_fabrica_monto),
+      }),
   );
 }

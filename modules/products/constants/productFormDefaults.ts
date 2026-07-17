@@ -45,6 +45,7 @@ export const EMPTY_PRODUCT_FORM: ProductFormValues = {
 
   costoFabricaMonto: 0,
   costoFabricaMoneda: "USD",
+  factoryCostsByCurrency: {},
   tipoCambioAplicado: 0,
   costoFabricaEur: 0,
   arancelPorcentaje: 0,

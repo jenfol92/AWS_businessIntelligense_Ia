@@ -45,6 +45,10 @@ function formatBaseCostLabel(
 export function CostsForm({ form }: Props) {
   const { values, errors, updateField, isVariant, isEditMode, variantCount } =
     form;
+  const selectedCurrencyCost =
+    values.factoryCostsByCurrency[values.costoFabricaMoneda] ?? null;
+  const selectedCurrencyHasCost =
+    selectedCurrencyCost?.monto != null && selectedCurrencyCost.monto > 0;
   const canPropagateCostToVariants = shouldShowCostPropagationCheckbox({
     isEditMode,
     isVariant,
@@ -56,7 +60,7 @@ export function CostsForm({ form }: Props) {
 
   const effectiveMonto =
     values.costeBaseEfectivoMonto ??
-    (values.costoFabricaMonto > 0 ? values.costoFabricaMonto : null);
+    (selectedCurrencyHasCost ? (selectedCurrencyCost?.monto ?? null) : null);
   const effectiveMoneda =
     values.costeBaseEfectivoMoneda ??
     (values.costoFabricaMonto > 0 ? values.costoFabricaMoneda : null);
@@ -124,9 +128,21 @@ export function CostsForm({ form }: Props) {
                 step="0.0001"
                 className={pfFieldClass(false)}
                 value={values.costoFabricaMonto || ""}
-                onChange={(e) =>
-                  updateField("costoFabricaMonto", toNum(e.target.value))
-                }
+                placeholder={selectedCurrencyHasCost ? "" : "-"}
+                onChange={(e) => {
+                  const monto = toNum(e.target.value);
+                  updateField("costoFabricaMonto", monto);
+                  updateField("factoryCostsByCurrency", {
+                    ...values.factoryCostsByCurrency,
+                    [values.costoFabricaMoneda]: {
+                      monto: monto > 0 ? monto : null,
+                      moneda: values.costoFabricaMoneda,
+                      fecha:
+                        values.factoryCostsByCurrency[values.costoFabricaMoneda]
+                          ?.fecha ?? null,
+                    },
+                  });
+                }}
               />
             </div>
             <div>
@@ -141,6 +157,10 @@ export function CostsForm({ form }: Props) {
                   const moneda =
                     e.target.value as typeof values.costoFabricaMoneda;
                   updateField("costoFabricaMoneda", moneda);
+                  updateField(
+                    "costoFabricaMonto",
+                    values.factoryCostsByCurrency[moneda]?.monto ?? 0,
+                  );
                 }}
               >
                 {PRODUCT_COST_CURRENCIES.map((c) => (

@@ -32,6 +32,7 @@ export type {
   ProductFormErrors,
   ProductFormDocumentRow,
   ProductCostCurrency,
+  ProductFactoryCostByCurrency,
   AmazonListingStatus,
   ProductFormFieldType,
   ProductFormFieldValue,

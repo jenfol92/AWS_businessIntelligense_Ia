@@ -25,6 +25,12 @@ export type ProductFormTab =
 
 export type ProductCostCurrency = "USD" | "EUR" | "GBP" | "CNY";
 
+export type ProductFactoryCostByCurrency = {
+  monto: number | null;
+  moneda: ProductCostCurrency;
+  fecha: string | null;
+};
+
 /** Documento vinculado al producto (listado en formulario). */
 export type ProductFormDocumentRow = {
   relId: string;
@@ -90,6 +96,9 @@ export type ProductFormValues = {
   // —— Costes (`producto_costos` + `productos.arancel_porcentaje`)
   costoFabricaMonto: number;
   costoFabricaMoneda: ProductCostCurrency;
+  factoryCostsByCurrency: Partial<
+    Record<ProductCostCurrency, ProductFactoryCostByCurrency>
+  >;
   /** Legacy: solo lectura en formulario; el TC real vive en orden/lote. */
   tipoCambioAplicado: number;
   /** Cargado desde producto_costos histórico; no se calcula en formulario. */

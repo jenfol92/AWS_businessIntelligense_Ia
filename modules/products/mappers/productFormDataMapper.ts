@@ -1,6 +1,10 @@
 // modules/products/mappers/productFormDataMapper.ts
 
-import type { ProductFormValues, AmazonListingStatus } from "../types";
+import type {
+  ProductFactoryCostByCurrency,
+  ProductFormValues,
+  AmazonListingStatus,
+} from "../types";
 import {
   EMPTY_PRODUCT_FORM,
   EMPTY_AMAZON_SETUP,
@@ -59,6 +63,7 @@ type FormLoadInput = {
   finanzas: unknown;
   fichaTecnica: unknown;
   costo?: unknown;
+  costosVigentes?: unknown[];
   costoActual?: unknown;
 };
 
@@ -101,11 +106,13 @@ function mapBoxMeasuresFromDb(
 export function mapProductCostFieldsFromDb(
   producto: Record<string, unknown> | null,
   costo: Record<string, unknown> | null,
+  costosVigentes: Record<string, unknown>[],
   costoActual: Record<string, unknown> | null,
 ): Pick<
   ProductFormValues,
   | "costoFabricaMonto"
   | "costoFabricaMoneda"
+  | "factoryCostsByCurrency"
   | "tipoCambioAplicado"
   | "costoFabricaEur"
   | "arancelPorcentaje"
@@ -114,6 +121,19 @@ export function mapProductCostFieldsFromDb(
   | "costoFleteUnitEur"
   | "costoUnitarioTotalEur"
 > {
+  const factoryCostsByCurrency: ProductFormValues["factoryCostsByCurrency"] = {};
+  for (const row of costosVigentes) {
+    const raw = str(row.costo_fabrica_moneda).toUpperCase();
+    if (raw !== "USD" && raw !== "EUR" && raw !== "GBP" && raw !== "CNY") {
+      continue;
+    }
+    factoryCostsByCurrency[raw] = {
+      monto: num(row.costo_fabrica_monto) || null,
+      moneda: raw,
+      fecha: row.fecha ? String(row.fecha).slice(0, 10) : null,
+    } satisfies ProductFactoryCostByCurrency;
+  }
+
   const src = costo ?? costoActual;
   const monedaRaw = str(src?.costo_fabrica_moneda).toUpperCase();
   const moneda =
@@ -127,6 +147,7 @@ export function mapProductCostFieldsFromDb(
   return {
     costoFabricaMonto: num(src?.costo_fabrica_monto) || num(src?.costo_fabrica_eur),
     costoFabricaMoneda: moneda as ProductFormValues["costoFabricaMoneda"],
+    factoryCostsByCurrency,
     tipoCambioAplicado: num(src?.tipo_cambio_aplicado),
     costoFabricaEur: num(src?.costo_fabrica_eur),
     arancelPorcentaje:
@@ -152,6 +173,9 @@ export function mapProductFormDataToValues(input: FormLoadInput): ProductFormVal
   const f = asRecord(input.finanzas);
   const ft = asRecord(input.fichaTecnica);
   const costo = asRecord(input.costo);
+  const costosVigentes = (input.costosVigentes ?? [])
+    .map(asRecord)
+    .filter((row): row is Record<string, unknown> => Boolean(row));
   const costoActual = asRecord(input.costoActual);
 
   const categoriaRel = asRecord(d?.categoria);
@@ -212,7 +236,7 @@ export function mapProductFormDataToValues(input: FormLoadInput): ProductFormVal
     priceChannel: str(ext?.price_channel) || EMPTY_PRODUCT_FORM.priceChannel,
     notasGenerales: str(ext?.notas_generales),
 
-    ...mapProductCostFieldsFromDb(p, costo, costoActual),
+    ...mapProductCostFieldsFromDb(p, costo, costosVigentes, costoActual),
 
     pesoNetoKg: num(ft?.peso_neto_kg),
     ...mapBoxMeasuresFromDb(l, ft),

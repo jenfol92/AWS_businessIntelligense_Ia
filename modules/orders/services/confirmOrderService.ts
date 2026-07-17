@@ -24,16 +24,15 @@ import {
   updateOrderItemCostsForConfirmation,
   confirmOrderHeader,
   fetchOrderHeaderForConfirmation,
+  type ConfirmedOrderItemCostRow,
   type NormalizedItemCostPatch,
 } from "@/modules/orders/repositories/orderConfirmRepository";
 import type {
   ConfirmOrderInput,
   OrdenCompraRow,
 } from "@/modules/orders/types/orderPersistence.types";
-import {
-  assertConfirmedOrderCostSnapshotStoreAvailable,
-  upsertConfirmedOrderCostSnapshots,
-} from "@/modules/orders/repositories/orderConfirmedCostSnapshotRepository";
+import { upsertConfirmedOrderCostSnapshots } from "@/modules/orders/repositories/orderConfirmedCostSnapshotRepository";
+import { upsertCurrentFactoryCostByCurrency } from "@/modules/products/repositories/productCostsRepository";
 
 export type ConfirmOrderServiceResult = {
   orden: OrdenCompraRow;
@@ -45,6 +44,35 @@ const DEFAULT_DEPOSITO_PORCENTAJE = 30;
 const DEFAULT_BALANCE_DIAS_ANTES_ETA = 10;
 const DEFAULT_BALANCE_CONDICIONES_TEXTO =
   "The balance will be paid 10 days before the vessel arrives at the port";
+
+function normalizeOrderCurrency(value: string | null | undefined): string {
+  return (value ?? "USD").trim().toUpperCase() || "USD";
+}
+
+async function persistCurrentFactoryCostsFromOrderItems(
+  items: ConfirmedOrderItemCostRow[],
+  currency: string,
+  fecha: string,
+) {
+  for (const item of items) {
+    const amount =
+      item.coste_unitario_moneda != null &&
+      Number.isFinite(Number(item.coste_unitario_moneda))
+        ? Number(item.coste_unitario_moneda)
+        : null;
+    if (!item.producto_id || amount == null || amount <= 0) {
+      throw new Error(
+        `La linea ${item.id} no tiene producto o coste unitario valido para actualizar producto_costos.`,
+      );
+    }
+    await upsertCurrentFactoryCostByCurrency({
+      productId: item.producto_id,
+      currency,
+      amount,
+      fecha,
+    });
+  }
+}
 
 /**
  * Confirma una orden de compra: actualiza los costes por línea, cambia el estado
@@ -82,7 +110,11 @@ export async function confirmOrderService(
     throw new Error(`No se puede confirmar una orden en estado ${existingOrder.estado}.`);
   }
 
-  await assertConfirmedOrderCostSnapshotStoreAvailable();
+  const orderCurrency = normalizeOrderCurrency(
+    input.moneda_compra ?? existingOrder.moneda_compra,
+  );
+  const confirmationDate = new Date().toISOString().slice(0, 10);
+  let updatedCostRows: ConfirmedOrderItemCostRow[] = [];
 
   // ── 1. Normalizar patches de costes de línea ─────────────────────────────
   // Convierte "" → null en lote_producto (regla de negocio de datos de entrada).
@@ -101,14 +133,19 @@ export async function confirmOrderService(
     });
 
     // ── 2. Actualizar costes de líneas vía repository ───────────────────────
-    await updateOrderItemCostsForConfirmation(orderId, patches);
+    updatedCostRows = await updateOrderItemCostsForConfirmation(orderId, patches);
+    await persistCurrentFactoryCostsFromOrderItems(
+      updatedCostRows,
+      orderCurrency,
+      confirmationDate,
+    );
   }
 
   // ── 3. Construir payload de cabecera con defaults ────────────────────────
   // Los defaults garantizan que la orden siempre tenga valores de pago válidos.
   const payload = {
     estado: "confirmado" as const,
-    fecha_confirmacion: new Date().toISOString().slice(0, 10),
+    fecha_confirmacion: confirmationDate,
     eta: input.eta,
     etd: input.etd ?? null,
     eta_real: input.eta_real ?? null,
@@ -116,7 +153,7 @@ export async function confirmOrderService(
     lead_time_transito: input.lead_time_transito ?? null,
     numero_pedido_agente: input.numero_pedido_agente ?? null,
     agente_id: input.agente_id ?? null,
-    moneda_compra: input.moneda_compra ?? null,
+    moneda_compra: orderCurrency,
     tipo_cambio_moneda_eur: input.tipo_cambio_moneda_eur ?? null,
     tipo_cambio_usd_eur: input.tipo_cambio_usd_eur ?? null,
     deposito_porcentaje: input.deposito_porcentaje ?? DEFAULT_DEPOSITO_PORCENTAJE,

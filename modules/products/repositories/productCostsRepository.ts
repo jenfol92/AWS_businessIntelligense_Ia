@@ -1,7 +1,69 @@
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import type { ProductBaseCost } from "../utils/resolveEffectiveBaseCost";
+import type { ProductCostCurrency } from "../types";
 
 export type { ProductBaseCost } from "../utils/resolveEffectiveBaseCost";
+
+export type CurrentFactoryCostRow = {
+  id?: string;
+  producto_id: string;
+  proveedor_id: string | null;
+  costo_fabrica_monto: number | null;
+  costo_fabrica_moneda: string | null;
+  costo_fabrica_eur: number | null;
+  tipo_cambio_aplicado: number | null;
+  arancel_porcentaje: number | null;
+  transito_eur_unit: number | null;
+  gastos_llegada_puerto_eur_unit: number | null;
+  costo_flete_unit_eur: number | null;
+  costo_unitario_total_eur: number | null;
+  pais_destino: string | null;
+  contenedor_id: string | null;
+  lote_producto: string | null;
+  fecha: string | null;
+};
+
+export type UpsertCurrentFactoryCostInput = {
+  productId: string;
+  currency: ProductCostCurrency | string;
+  amount: number | null;
+  providerId?: string | null;
+  arancelPorcentaje?: number | null;
+  fecha?: string | null;
+};
+
+function normalizeCurrency(currency: ProductCostCurrency | string): ProductCostCurrency {
+  const upper = String(currency || "USD").trim().toUpperCase();
+  if (upper === "EUR" || upper === "GBP" || upper === "CNY" || upper === "USD") {
+    return upper;
+  }
+  return "USD";
+}
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function selectCurrentFactoryCostColumns(): string {
+  return `
+    id,
+    producto_id,
+    proveedor_id,
+    costo_fabrica_monto,
+    costo_fabrica_moneda,
+    costo_fabrica_eur,
+    tipo_cambio_aplicado,
+    arancel_porcentaje,
+    transito_eur_unit,
+    gastos_llegada_puerto_eur_unit,
+    costo_flete_unit_eur,
+    costo_unitario_total_eur,
+    pais_destino,
+    contenedor_id,
+    lote_producto,
+    fecha
+  `;
+}
 
 // Tabla: producto_costos.
 // Aqui van costes historicos/lotes/fabrica/flete/arancel/transito.
@@ -42,15 +104,17 @@ export async function findLatestProductCost(productId: string) {
 
   const { data, error } = await supabase
     .from("producto_costos")
-    .select("*")
+    .select(selectCurrentFactoryCostColumns())
     .eq("producto_id", productId)
+    .is("contenedor_id", null)
+    .is("lote_producto", null)
     .order("fecha", { ascending: false })
+    .order("id", { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error) throw new Error(error.message);
-
-  return data;
+  return data as unknown as CurrentFactoryCostRow | null;
 }
 
 // Vista: v_costo_actual_producto.
@@ -99,6 +163,8 @@ async function loadLatestOwnBaseCosts(
     .from("producto_costos")
     .select("producto_id, costo_fabrica_monto, costo_fabrica_moneda, fecha")
     .in("producto_id", productIds)
+    .is("contenedor_id", null)
+    .is("lote_producto", null)
     .order("fecha", { ascending: false });
 
   if (error) throw new Error(error.message);
@@ -155,53 +221,119 @@ export async function getProductBaseCostByProductIds(
   return result;
 }
 
-/** Inserta coste manual del dia. Borra filas manuales del mismo dia antes. */
+export async function findCurrentFactoryCostByCurrency(
+  productId: string,
+  currency: ProductCostCurrency | string,
+): Promise<CurrentFactoryCostRow | null> {
+  const supabase = createSupabaseRouteClient();
+  const normalizedCurrency = normalizeCurrency(currency);
+
+  const { data, error } = await supabase
+    .from("producto_costos")
+    .select(selectCurrentFactoryCostColumns())
+    .eq("producto_id", productId)
+    .eq("costo_fabrica_moneda", normalizedCurrency)
+    .is("contenedor_id", null)
+    .is("lote_producto", null)
+    .order("fecha", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return (data as unknown as CurrentFactoryCostRow | null) ?? null;
+}
+
+export async function findCurrentFactoryCostsByProduct(
+  productId: string,
+): Promise<CurrentFactoryCostRow[]> {
+  const supabase = createSupabaseRouteClient();
+
+  const { data, error } = await supabase
+    .from("producto_costos")
+    .select(selectCurrentFactoryCostColumns())
+    .eq("producto_id", productId)
+    .is("contenedor_id", null)
+    .is("lote_producto", null)
+    .order("costo_fabrica_moneda", { ascending: true })
+    .order("fecha", { ascending: false })
+    .order("id", { ascending: false });
+
+  if (error) throw new Error(error.message);
+
+  const byCurrency = new Map<string, CurrentFactoryCostRow>();
+  for (const row of (data ?? []) as unknown as CurrentFactoryCostRow[]) {
+    const key = normalizeCurrency(row.costo_fabrica_moneda ?? "USD");
+    if (!byCurrency.has(key)) {
+      byCurrency.set(key, row);
+    }
+  }
+
+  return Array.from(byCurrency.values());
+}
+
+export async function upsertCurrentFactoryCostByCurrency(
+  input: UpsertCurrentFactoryCostInput,
+): Promise<CurrentFactoryCostRow> {
+  const supabase = createSupabaseRouteClient();
+  const currency = normalizeCurrency(input.currency);
+  const amount =
+    input.amount != null && Number.isFinite(Number(input.amount))
+      ? Number(input.amount)
+      : null;
+  const fecha = input.fecha?.slice(0, 10) || todayIsoDate();
+  const existing = await findCurrentFactoryCostByCurrency(input.productId, currency);
+  const payload: Record<string, unknown> = {
+    producto_id: input.productId,
+    costo_fabrica_monto: amount != null && amount > 0 ? amount : null,
+    costo_fabrica_moneda: currency,
+    contenedor_id: null,
+    lote_producto: null,
+    fecha,
+  };
+
+  if (input.providerId !== undefined) {
+    payload.proveedor_id = input.providerId || null;
+  }
+  if (input.arancelPorcentaje !== undefined) {
+    payload.arancel_porcentaje =
+      input.arancelPorcentaje != null && Number.isFinite(Number(input.arancelPorcentaje))
+        ? Number(input.arancelPorcentaje)
+        : null;
+  }
+
+  const query = existing?.id
+    ? supabase
+        .from("producto_costos")
+        .update(payload)
+        .eq("id", existing.id)
+        .is("contenedor_id", null)
+        .is("lote_producto", null)
+    : supabase.from("producto_costos").insert(payload);
+
+  const { data, error } = await query.select(selectCurrentFactoryCostColumns()).single();
+
+  if (error) throw new Error(error.message);
+  return data as unknown as CurrentFactoryCostRow;
+}
+
+/** Compatibilidad: guarda solo la moneda vigente indicada, sin borrar otras monedas. */
 export async function upsertManualProductCost(
   productId: string,
   payload: Record<string, unknown>,
 ) {
-  const supabase = createSupabaseRouteClient();
-  const fechaHoy = new Date().toISOString().slice(0, 10);
-
-  const { data: existing, error: existingError } = await supabase
-    .from("producto_costos")
-    .select(`
-      producto_id,
-      proveedor_id,
-      costo_fabrica_monto,
-      costo_fabrica_moneda,
-      costo_fabrica_eur,
-      tipo_cambio_aplicado,
-      arancel_porcentaje,
-      transito_eur_unit,
-      gastos_llegada_puerto_eur_unit,
-      costo_flete_unit_eur,
-      costo_unitario_total_eur,
-      pais_destino,
-      contenedor_id,
-      lote_producto
-    `)
-    .eq("producto_id", productId)
-    .is("contenedor_id", null)
-    .eq("fecha", fechaHoy)
-    .limit(1)
-    .maybeSingle();
-
-  if (existingError) throw new Error(existingError.message);
-
-  await supabase
-    .from("producto_costos")
-    .delete()
-    .eq("producto_id", productId)
-    .is("contenedor_id", null)
-    .eq("fecha", fechaHoy);
-
-  const { data, error } = await supabase
-    .from("producto_costos")
-    .insert({ ...(existing ?? {}), ...payload, producto_id: productId, fecha: fechaHoy })
-    .select("*")
-    .single();
-
-  if (error) throw new Error(error.message);
-  return data;
+  return upsertCurrentFactoryCostByCurrency({
+    productId,
+    currency: String(payload.costo_fabrica_moneda ?? "USD"),
+    amount:
+      payload.costo_fabrica_monto == null
+        ? null
+        : Number(payload.costo_fabrica_monto),
+    providerId:
+      payload.proveedor_id == null ? null : String(payload.proveedor_id),
+    arancelPorcentaje:
+      payload.arancel_porcentaje == null
+        ? null
+        : Number(payload.arancel_porcentaje),
+  });
 }

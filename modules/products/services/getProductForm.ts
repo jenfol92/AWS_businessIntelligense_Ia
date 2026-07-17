@@ -6,6 +6,7 @@ import { findProductLogisticsByProductId } from "../repositories/productLogistic
 import { findProductFinanceByProductId } from "../repositories/productFinanceRepository";
 import { findProductTechnicalSheetByProductId } from "../repositories/productTechnicalSheetRepository";
 import {
+  findCurrentFactoryCostsByProduct,
   findCurrentProductCost,
   findLatestProductCost,
   getProductBaseCostByProductIds,
@@ -28,6 +29,7 @@ export async function getProductForm(productId: string) {
     finanzas,
     fichaTecnica,
     costo,
+    costosVigentes,
     costoActual,
   ] = await Promise.all([
     findProductCoreById(productId),
@@ -36,6 +38,7 @@ export async function getProductForm(productId: string) {
     findProductFinanceByProductId(productId),
     findProductTechnicalSheetByProductId(productId),
     findLatestProductCost(productId),
+    findCurrentFactoryCostsByProduct(productId),
     findCurrentProductCost(productId),
   ]);
 
@@ -46,6 +49,7 @@ export async function getProductForm(productId: string) {
     finanzas,
     fichaTecnica,
     costo,
+    costosVigentes,
     costoActual,
   });
 

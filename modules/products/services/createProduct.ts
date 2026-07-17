@@ -15,9 +15,10 @@ import { findProductLogisticsByProductId } from "../repositories/productLogistic
 import { upsertProductFinance } from "../repositories/productFinanceRepository";
 import { upsertProductTechnicalSheet } from "../repositories/productTechnicalSheetRepository";
 import { findProductTechnicalSheetByProductId } from "../repositories/productTechnicalSheetRepository";
+import { findLatestProductCost } from "../repositories/productCostsRepository";
 import { rollbackCreatedProduct } from "../repositories/productCreateRollbackRepository";
 import { saveProductAmazonSetup } from "./saveProductAmazonSetup";
-import { saveProductManualCost } from "./saveProductCosts";
+import { saveInitialProductManualCost } from "./saveProductCosts";
 import { buildProductCreatePayloads } from "./buildProductCreatePayloads";
 
 /**
@@ -43,6 +44,7 @@ export async function createProduct(values: ProductFormValues) {
         findProductDetailByProductId(parentId),
         findProductLogisticsByProductId(parentId),
         findProductTechnicalSheetByProductId(parentId),
+        findLatestProductCost(parentId),
       ])
     : null;
 
@@ -75,7 +77,11 @@ export async function createProduct(values: ProductFormValues) {
       await upsertProductFinance(productId, financePayload);
     }
     await upsertProductTechnicalSheet(productId, technicalSheetPayload);
-    await saveProductManualCost(productId, values);
+    await saveInitialProductManualCost(
+      productId,
+      values,
+      parentRows ? (parentRows[4] as Record<string, unknown> | null) : null,
+    );
   } catch (error) {
     try {
       await rollbackCreatedProduct(productId);

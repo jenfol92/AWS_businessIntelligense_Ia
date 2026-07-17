@@ -33,6 +33,7 @@ export const EMPTY_PRODUCT_FORM: ProductFormValues = {
   parentId: "",
   heredarPrecio: true,
   heredarCosteUnitarioTotal: true,
+  applyCostChangeToVariants: false,
 
   unidadesPorCaja: 0,
   pedidoMinimoUnidades: 0,

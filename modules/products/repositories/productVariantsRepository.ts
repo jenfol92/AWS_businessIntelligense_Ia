@@ -59,6 +59,11 @@ export async function findProductVariants(parentId: string) {
   return data ?? [];
 }
 
+export async function findActiveProductVariants(parentId: string) {
+  const rows = await findProductVariants(parentId);
+  return rows.filter((row) => String(row.estado ?? "") === "activo");
+}
+
 // Devuelve hermanos de una variante.
 export async function findProductSiblings(productId: string, parentId: string) {
   const supabase = createSupabaseRouteClient();

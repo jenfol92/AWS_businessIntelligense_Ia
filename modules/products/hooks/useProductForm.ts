@@ -141,6 +141,7 @@ export function useProductForm({
     sku: string;
     nombre: string;
   } | null>(null);
+  const [variantCount, setVariantCount] = useState(0);
 
   const [documents, setDocuments] = useState<ProductFormDocumentRow[]>([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
@@ -392,6 +393,7 @@ export function useProductForm({
 
 
         setValues(data.product);
+        setVariantCount(Number(data.variantCount ?? 0));
 
         if (data.product.parentId?.trim()) {
           try {
@@ -886,6 +888,7 @@ export function useProductForm({
     productId: productIdResolved,
 
     isVariant,
+    variantCount,
 
     parentSummary,
 

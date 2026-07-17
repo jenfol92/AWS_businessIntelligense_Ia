@@ -22,7 +22,10 @@ import { upsertProductLogistics } from "../repositories/productLogisticsReposito
 import { upsertProductFinance } from "../repositories/productFinanceRepository";
 import { upsertProductTechnicalSheet } from "../repositories/productTechnicalSheetRepository";
 import { saveProductAmazonSetup } from "./saveProductAmazonSetup";
-import { saveProductManualCost } from "./saveProductCosts";
+import {
+  propagateFactoryCostToVariants,
+  saveProductManualCost,
+} from "./saveProductCosts";
 import { resolveProductLogisticsPayloadForSave } from "./resolveProductLogisticsPayloadForSave";
 
 /**
@@ -74,6 +77,18 @@ export async function updateProduct(
 
   await saveProductManualCost(productId, values);
 
+  let costPropagation:
+    | Awaited<ReturnType<typeof propagateFactoryCostToVariants>>
+    | null = null;
+  if (values.applyCostChangeToVariants && !values.parentId.trim()) {
+    costPropagation = await propagateFactoryCostToVariants(productId, values);
+    if (costPropagation.errors.length > 0) {
+      throw new Error(
+        `Producto actualizado, pero no se pudo aplicar el coste a ${costPropagation.errors.length} variante(s).`,
+      );
+    }
+  }
+
   try {
     await saveProductAmazonSetup(productId, values.amazonSetup);
   } catch {
@@ -83,5 +98,6 @@ export async function updateProduct(
   return {
     ok: true as const,
     product: updatedProduct,
+    costPropagation,
   };
 }

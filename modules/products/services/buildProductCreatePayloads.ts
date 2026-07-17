@@ -27,15 +27,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isEmptyValue(value: unknown, opts?: { zeroIsEmpty?: boolean }): boolean {
-  if (value === null || value === undefined) return true;
-  if (typeof value === "string") return value.trim() === "";
-  if (Array.isArray(value)) return value.length === 0;
-  if (typeof value === "number") return opts?.zeroIsEmpty === true && value === 0;
-  if (isRecord(value)) return Object.keys(value).length === 0;
-  return false;
-}
-
 function cloneJsonLike(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(cloneJsonLike);
   if (isRecord(value)) {
@@ -46,36 +37,20 @@ function cloneJsonLike(value: unknown): unknown {
   return value;
 }
 
-function mergeMissingDeep(
-  child: unknown,
-  parent: unknown,
-  opts?: { zeroIsEmpty?: boolean },
-): unknown {
-  if (isEmptyValue(child, opts)) return cloneJsonLike(parent);
-  if (!isRecord(child) || !isRecord(parent)) return child;
-
-  const out: Record<string, unknown> = { ...child };
-  for (const [key, parentValue] of Object.entries(parent)) {
-    out[key] = mergeMissingDeep(out[key], parentValue, opts);
-  }
-  return out;
-}
-
-function mergeMissingColumns(
-  child: Record<string, unknown>,
+function pickInheritedColumns(
   parent: Record<string, unknown> | null,
   columns: string[],
-  opts?: { zeroIsEmpty?: boolean },
 ): Record<string, unknown> {
-  if (!parent) return child;
-  const out = { ...child };
-  for (const key of columns) {
-    if (!isEmptyValue(out[key], opts)) continue;
-    const parentValue = parent[key];
-    if (isEmptyValue(parentValue, opts)) continue;
-    out[key] = cloneJsonLike(parentValue);
-  }
-  return out;
+  if (!parent) return {};
+  return Object.fromEntries(
+    columns
+      .filter((key) => parent[key] !== undefined)
+      .map((key) => [key, cloneJsonLike(parent[key])]),
+  );
+}
+
+function asSpecs(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? (cloneJsonLike(value) as Record<string, unknown>) : {};
 }
 
 function inheritCorePayload(
@@ -84,65 +59,117 @@ function inheritCorePayload(
 ): Record<string, unknown> {
   if (!parent) return child;
 
-  const merged = mergeMissingColumns(child, parent, [
-    "proveedor_id",
-    "stock_seguridad_minimo",
-    "arancel_porcentaje",
-  ], { zeroIsEmpty: true });
-
-  merged.especificaciones = mergeMissingDeep(
-    child.especificaciones,
-    parent.especificaciones,
-  );
-
-  const specs = isRecord(merged.especificaciones)
-    ? { ...merged.especificaciones }
+  const childSpecs = asSpecs(child.especificaciones);
+  const childExtension = isRecord(childSpecs[PRODUCT_FORM_ESPECIFICACIONES_KEY])
+    ? childSpecs[PRODUCT_FORM_ESPECIFICACIONES_KEY]
     : {};
-  const formExtension = specs[PRODUCT_FORM_ESPECIFICACIONES_KEY];
-  if (isRecord(formExtension)) {
-    specs[PRODUCT_FORM_ESPECIFICACIONES_KEY] = mergeMissingDeep(
-      formExtension,
-      isRecord(parent.especificaciones)
-        ? parent.especificaciones[PRODUCT_FORM_ESPECIFICACIONES_KEY]
-        : null,
-    );
-    merged.especificaciones = specs;
-  }
+  const childIdentifiers = isRecord(childExtension.identifiers)
+    ? childExtension.identifiers
+    : {};
+  const childAmazon = isRecord(childExtension.amazon) ? childExtension.amazon : {};
+  const childPublication = isRecord(childAmazon.publication)
+    ? childAmazon.publication
+    : {};
 
-  return merged;
+  const parentSpecs = asSpecs(parent.especificaciones);
+  const parentExtension = isRecord(parentSpecs[PRODUCT_FORM_ESPECIFICACIONES_KEY])
+    ? (parentSpecs[PRODUCT_FORM_ESPECIFICACIONES_KEY] as Record<string, unknown>)
+    : {};
+  const inheritedExtension = {
+    ...parentExtension,
+    identifiers: {
+      ...(isRecord(parentExtension.identifiers)
+        ? (cloneJsonLike(parentExtension.identifiers) as Record<string, unknown>)
+        : {}),
+      ean: childIdentifiers.ean ?? null,
+    },
+    amazon: {
+      ...(isRecord(parentExtension.amazon)
+        ? (cloneJsonLike(parentExtension.amazon) as Record<string, unknown>)
+        : {}),
+      publication: {
+        ...(isRecord(
+          isRecord(parentExtension.amazon)
+            ? parentExtension.amazon.publication
+            : null,
+        )
+          ? (cloneJsonLike(
+              (parentExtension.amazon as Record<string, unknown>).publication,
+            ) as Record<string, unknown>)
+          : {}),
+        asin: childPublication.asin ?? null,
+        sku: childPublication.sku ?? null,
+        last_sync_at: childPublication.last_sync_at ?? null,
+        listing_status: childPublication.listing_status ?? "draft",
+        sync_enabled: childPublication.sync_enabled ?? false,
+      },
+    },
+  };
+
+  const inheritedSpecs = {
+    ...parentSpecs,
+    [PRODUCT_FORM_ESPECIFICACIONES_KEY]: inheritedExtension,
+  };
+
+  return {
+    ...pickInheritedColumns(parent, [
+      "proveedor_id",
+      "stock_seguridad_minimo",
+      "arancel_porcentaje",
+    ]),
+    sku: child.sku,
+    nombre: child.nombre,
+    asin: child.asin,
+    estado: child.estado,
+    parent_id: child.parent_id,
+    heredar_precio: child.heredar_precio,
+    heredar_coste_unitario_total: child.heredar_coste_unitario_total,
+    tax_category_id: child.tax_category_id,
+    especificaciones: inheritedSpecs,
+  };
 }
 
 function inheritDetailPayload(
   child: Record<string, unknown>,
   parent: Record<string, unknown> | null,
 ): Record<string, unknown> {
-  return mergeMissingColumns(child, parent, [
-    "categoria_id",
-    "categoria",
-    "marca",
-    "descripcion_tecnica",
-  ]);
+  if (!parent) return child;
+  return {
+    ...pickInheritedColumns(parent, [
+      "categoria_id",
+      "categoria",
+      "marca",
+      "descripcion_tecnica",
+    ]),
+    imagen_url: child.imagen_url,
+    color: child.color,
+  };
 }
 
 function inheritLogisticsPayload(
   child: Record<string, unknown>,
   parent: Record<string, unknown> | null,
 ): Record<string, unknown> {
-  return mergeMissingColumns(child, parent, [
-    "unidades_por_caja",
-    "peso_kg_bruto",
-    "pedido_minimo_unidades",
-    "largo_cm",
-    "ancho_cm",
-    "alto_cm",
-  ], { zeroIsEmpty: true });
+  if (!parent) return child;
+  return {
+    ...pickInheritedColumns(parent, [
+      "unidades_por_caja",
+      "peso_kg_bruto",
+      "pedido_minimo_unidades",
+      "largo_cm",
+      "ancho_cm",
+      "alto_cm",
+    ]),
+    ean_upc: child.ean_upc,
+  };
 }
 
 function inheritTechnicalSheetPayload(
-  child: Record<string, unknown>,
+  _child: Record<string, unknown>,
   parent: Record<string, unknown> | null,
 ): Record<string, unknown> {
-  return mergeMissingColumns(child, parent, [
+  if (!parent) return _child;
+  return pickInheritedColumns(parent, [
     "modelo",
     "peso_neto_kg",
     "alto_abierto_cm",
@@ -156,7 +183,7 @@ function inheritTechnicalSheetPayload(
     "material_ruedas",
     "edad_minima_aplicable",
     "edad_maxima_aplicable",
-  ], { zeroIsEmpty: true });
+  ]);
 }
 
 export function buildProductCreatePayloads(

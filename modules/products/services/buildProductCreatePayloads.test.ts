@@ -126,6 +126,13 @@ assert.equal(
 const withOwnEdits = buildProductCreatePayloads(
   {
     ...baseVariant,
+    ean: "843-variant",
+    eanUpc: "843-variant-logistics",
+    asin: "ASIN-VARIANT",
+    amazonListingAsin: "ASIN-LISTING-VARIANT",
+    amazonListingSku: "LISTING-SKU-VARIANT",
+    color: "Azul",
+    imagenUrl: "https://example.test/variant.jpg",
     referenciaFabricante: "REF-VARIANT",
     categoriaId: "cat-own",
     categoria: "Categoria propia",
@@ -147,28 +154,48 @@ assert.equal(
     (withOwnEdits.corePayload.especificaciones as Record<string, unknown>)
       .form_extensions_v1 as { identifiers: { referencia_fabricante: string } }
   ).identifiers.referencia_fabricante,
-  "REF-VARIANT",
-  "modificar la variante no pisa el padre ni pierde su valor propio",
+  "REF-PARENT",
+  "referencia fabricante nace siempre heredada del padre",
 );
 assert.equal(
   withOwnEdits.detailPayload.categoria_id,
-  "cat-own",
-  "la categoria propia de variante no se sobrescribe",
+  "cat-1",
+  "categoria de variante nace siempre heredada del padre",
 );
 assert.equal(
   withOwnEdits.technicalSheetPayload.material_estructura,
-  "Acero propio",
-  "material propio de variante no se sobrescribe",
+  "Aluminio",
+  "material de variante nace siempre heredado del padre",
 );
 assert.equal(
   withOwnEdits.technicalSheetPayload.peso_neto_kg,
-  8,
-  "peso propio de variante no se sobrescribe",
+  7.25,
+  "peso de variante nace siempre heredado del padre",
 );
 assert.equal(
   withOwnEdits.logisticsPayload.largo_cm,
-  72,
-  "medida propia de variante no se sobrescribe",
+  70,
+  "medida logistica de variante nace siempre heredada del padre",
+);
+assert.equal(
+  withOwnEdits.detailPayload.color,
+  "Azul",
+  "color de variante no se hereda del padre",
+);
+assert.equal(
+  withOwnEdits.detailPayload.imagen_url,
+  "https://example.test/variant.jpg",
+  "imagen de variante no se hereda del padre",
+);
+assert.equal(
+  withOwnEdits.logisticsPayload.ean_upc,
+  "843-variant",
+  "EAN de variante no se hereda del padre",
+);
+assert.equal(
+  "cubicaje_unitario_m3" in withOwnEdits.logisticsPayload,
+  false,
+  "no escribe cubicaje generado por Supabase",
 );
 
 const specs = inherited.corePayload.especificaciones as Record<string, unknown>;
@@ -191,6 +218,6 @@ assert.equal(
     (withOwnEdits.corePayload.especificaciones as Record<string, unknown>)
       .form_extensions_v1 as { identifiers: { referencia_fabricante: string } }
   ).identifiers.referencia_fabricante,
-  "REF-VARIANT",
+  "REF-PARENT",
   "modificar el padre despues no sobrescribe una variante ya creada",
 );

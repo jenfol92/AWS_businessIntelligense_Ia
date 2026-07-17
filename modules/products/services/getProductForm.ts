@@ -18,6 +18,7 @@ import {
 import type { ProductFormValues } from "../types";
 import { getProductAmazonSetup } from "./getProductAmazonSetup";
 import { applyPrimaryAmazonDraftToFlatFields } from "../mappers/amazonSetupMapper";
+import { findProductVariants } from "../repositories/productVariantsRepository";
 
 /**
  * Carga todos los datos necesarios para editar un producto.
@@ -94,5 +95,8 @@ export async function getProductForm(productId: string) {
   return {
     ok: true as const,
     product,
+    variantCount: product.parentId.trim()
+      ? 0
+      : (await findProductVariants(productId)).length,
   };
 }

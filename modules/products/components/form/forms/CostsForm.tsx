@@ -45,8 +45,10 @@ function formatBaseCostLabel(
 
 /** Coste base de fábrica en moneda original; coste EUR real viene de orden/lote. */
 export function CostsForm({ form }: Props) {
-  const { values, errors, updateField, isVariant } = form;
+  const { values, errors, updateField, isVariant, isEditMode, variantCount } = form;
   const inheritsCost = values.heredarCosteUnitarioTotal && isVariant;
+  const canPropagateCostToVariants =
+    isEditMode && !isVariant && variantCount > 0;
 
   const costeRealEur =
     values.costoUnitarioTotalEur > 0 ? values.costoUnitarioTotalEur : null;
@@ -114,6 +116,26 @@ export function CostsForm({ form }: Props) {
           </p>
         </div>
         <div className={pfCardBody}>
+          {canPropagateCostToVariants ? (
+            <label className="mb-4 flex cursor-pointer items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600"
+                checked={values.applyCostChangeToVariants}
+                onChange={(e) =>
+                  updateField("applyCostChangeToVariants", e.target.checked)
+                }
+              />
+              <span>
+                <span className="block text-sm font-medium text-amber-950">
+                  Aplicar este cambio de coste a las variantes
+                </span>
+                <span className="block text-xs text-amber-800">
+                  Copia solo coste de fabrica y moneda a variantes activas.
+                </span>
+              </span>
+            </label>
+          ) : null}
           <div className={pfGrid}>
             <div>
               <label className={pfLabel} htmlFor="pf-costo-monto">

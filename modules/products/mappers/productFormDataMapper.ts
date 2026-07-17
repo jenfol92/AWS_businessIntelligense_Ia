@@ -185,6 +185,7 @@ export function mapProductFormDataToValues(input: FormLoadInput): ProductFormVal
     parentId: str(p?.parent_id),
     heredarPrecio: bool(p?.heredar_precio, true),
     heredarCosteUnitarioTotal: bool(p?.heredar_coste_unitario_total, true),
+    applyCostChangeToVariants: false,
 
     categoriaId,
     categoria: categoriaNombre,

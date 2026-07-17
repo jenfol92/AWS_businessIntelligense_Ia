@@ -72,6 +72,7 @@ export type ProductFormValues = {
   parentId: string;
   heredarPrecio: boolean;
   heredarCosteUnitarioTotal: boolean;
+  applyCostChangeToVariants: boolean;
 
   // —— Logística comercial (`producto_logistica`)
   unidadesPorCaja: number;

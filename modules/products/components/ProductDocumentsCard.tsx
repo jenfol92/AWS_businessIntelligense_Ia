@@ -5,7 +5,7 @@
 "use client";
 
 import Link from "next/link";
-import { Download } from "lucide-react";
+import { Eye } from "lucide-react";
 import { productDocumentTypeLabel } from "../constants/productDocumentTypes";
 import { productDocumentDownloadUrl } from "../services/productDocumentClient";
 import { ResponsiveDataCard } from "@/shared/ui/ResponsiveDataCard";
@@ -93,10 +93,11 @@ export function ProductDocumentsCard({
                               href={productDocumentDownloadUrl(productId, driveId)}
                               className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:underline"
                               target="_blank"
-                              rel="noreferrer"
+                              rel="noopener noreferrer"
+                              title="Ver documento"
                             >
-                              <Download className="h-3.5 w-3.5" />
-                              Ver
+                              <Eye className="h-3.5 w-3.5" />
+                              Ver documento
                             </a>
                           ) : (
                             "—"
@@ -134,9 +135,10 @@ export function ProductDocumentsCard({
                           href={productDocumentDownloadUrl(productId, driveId)}
                           className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700"
                           target="_blank"
-                          rel="noreferrer"
+                          rel="noopener noreferrer"
+                          title="Ver documento"
                         >
-                          Ver / descargar
+                          Ver documento
                         </a>
                       ) : undefined
                     }

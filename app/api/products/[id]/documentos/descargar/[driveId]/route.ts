@@ -5,10 +5,31 @@
 
 import { NextResponse } from "next/server";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
-import { downloadDriveFile, isDriveConfigured } from "@/modules/drive/googleDriveService";
+import {
+  DriveFolderNotViewableError,
+  downloadDriveFile,
+  isDriveConfigured,
+} from "@/modules/drive/googleDriveService";
 import { productOwnsDriveDocument } from "@/modules/products/repositories/productDocumentsRepository";
 
 type Params = { params: { id: string; driveId: string } };
+
+function sanitizeHeaderFileName(fileName: string): string {
+  const clean = fileName
+    .replace(/[\r\n"]/g, "")
+    .replace(/[\\/:*?<>|]/g, "-")
+    .trim();
+  return clean || "documento";
+}
+
+function contentDisposition(disposition: "inline" | "attachment", fileName: string): string {
+  const safeName = sanitizeHeaderFileName(fileName);
+  return `${disposition}; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`;
+}
+
+function shouldOpenInline(mimeType: string): boolean {
+  return mimeType === "application/pdf" || mimeType.startsWith("image/");
+}
 
 export async function GET(_req: Request, { params }: Params) {
   const supabase = createSupabaseRouteClient();
@@ -36,13 +57,29 @@ export async function GET(_req: Request, { params }: Params) {
 
   try {
     const file = await downloadDriveFile(params.driveId);
+    const inline = shouldOpenInline(file.mimeType);
     return new NextResponse(new Uint8Array(file.buffer), {
       headers: {
         "Content-Type": file.mimeType,
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(file.fileName)}"`,
+        "Content-Disposition": contentDisposition(
+          inline ? "inline" : "attachment",
+          file.fileName,
+        ),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   } catch (e) {
+    if (e instanceof DriveFolderNotViewableError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: e.code,
+          error: e.message,
+        },
+        { status: 409 },
+      );
+    }
     const msg = e instanceof Error ? e.message : "Error descargando";
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }

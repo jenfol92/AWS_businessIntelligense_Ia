@@ -35,6 +35,10 @@ import {
 
 const LIST_OPTS = { includeItemsFromAllDrives: true, supportsAllDrives: true } as const;
 const MUT_OPTS  = { supportsAllDrives: true } as const;
+const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
+const GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder";
+const GOOGLE_PRESENTATION_MIME = "application/vnd.google-apps.presentation";
+const PDF_MIME = "application/pdf";
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
@@ -355,6 +359,14 @@ export async function deleteDriveFile(driveId: string): Promise<void> {
 }
 
 /** Descarga binario de Drive. */
+export class DriveFolderNotViewableError extends Error {
+  code = "DRIVE_FOLDER_NOT_VIEWABLE" as const;
+
+  constructor() {
+    super("El documento vinculado es una carpeta, no un archivo visualizable.");
+  }
+}
+
 export async function downloadDriveFile(driveId: string): Promise<{
   buffer: Buffer;
   mimeType: string;
@@ -368,6 +380,28 @@ export async function downloadDriveFile(driveId: string): Promise<{
     ...MUT_OPTS,
   });
 
+  const mimeType = meta.data.mimeType ?? "application/octet-stream";
+  const fileName = meta.data.name ?? "documento";
+
+  if (mimeType === GOOGLE_FOLDER_MIME) {
+    throw new DriveFolderNotViewableError();
+  }
+
+  if (mimeType === GOOGLE_DOC_MIME || mimeType === GOOGLE_PRESENTATION_MIME) {
+    const res = await drive.files.export(
+      { fileId: driveId, mimeType: PDF_MIME },
+      { responseType: "arraybuffer" },
+    );
+    const buffer = Buffer.from(res.data as ArrayBuffer);
+    return {
+      buffer,
+      mimeType: PDF_MIME,
+      fileName: fileName.toLowerCase().endsWith(".pdf")
+        ? fileName
+        : `${fileName}.pdf`,
+    };
+  }
+
   const res = await drive.files.get(
     { fileId: driveId, alt: "media", ...MUT_OPTS },
     { responseType: "arraybuffer" },
@@ -376,7 +410,7 @@ export async function downloadDriveFile(driveId: string): Promise<{
   const buffer = Buffer.from(res.data as ArrayBuffer);
   return {
     buffer,
-    mimeType: meta.data.mimeType ?? "application/octet-stream",
-    fileName: meta.data.name ?? "documento",
+    mimeType,
+    fileName,
   };
 }

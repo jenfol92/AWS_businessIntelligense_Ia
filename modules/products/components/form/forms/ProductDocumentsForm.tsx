@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Download, Trash2, Upload } from "lucide-react";
+import { Eye, Trash2, Upload } from "lucide-react";
 import type { useProductForm } from "../../../hooks/useProductForm";
 import {
   PRODUCT_DOCUMENT_TYPES,
@@ -219,10 +219,11 @@ export function ProductDocumentsForm({ form }: Props) {
                                 )}
                                 className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
                                 target="_blank"
-                                rel="noreferrer"
+                                rel="noopener noreferrer"
+                                title="Ver documento"
                               >
-                                <Download className="h-3.5 w-3.5" />
-                                Ver
+                                <Eye className="h-3.5 w-3.5" />
+                                Ver documento
                               </a>
                               <button
                                 type="button"
@@ -264,9 +265,10 @@ export function ProductDocumentsForm({ form }: Props) {
                             )}
                             className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700"
                             target="_blank"
-                            rel="noreferrer"
+                            rel="noopener noreferrer"
+                            title="Ver documento"
                           >
-                            Ver / descargar
+                            Ver documento
                           </a>
                           <button
                             type="button"

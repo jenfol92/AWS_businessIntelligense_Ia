@@ -94,6 +94,15 @@ BEGIN
 END;
 $$;
 
+REVOKE EXECUTE ON FUNCTION public.upsert_current_factory_cost_by_currency(
+  uuid,
+  text,
+  numeric,
+  uuid,
+  numeric,
+  date
+) FROM PUBLIC;
+
 GRANT EXECUTE ON FUNCTION public.upsert_current_factory_cost_by_currency(
   uuid,
   text,

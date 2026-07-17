@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { createClient } from "@supabase/supabase-js";
 
 const url = process.env.SUPABASE_TEST_URL;
-const key = process.env.SUPABASE_TEST_SERVICE_ROLE_KEY;
+const serviceRoleKey = process.env.SUPABASE_TEST_SERVICE_ROLE_KEY;
+const anonKey = process.env.SUPABASE_TEST_ANON_KEY;
+const userEmail = process.env.SUPABASE_TEST_USER_EMAIL;
+const userPassword = process.env.SUPABASE_TEST_USER_PASSWORD;
 
-if (!url || !key) {
+if (!url || !serviceRoleKey || !anonKey || !userEmail || !userPassword) {
   console.log("RPC no ejecutada; solo validacion estatica");
   process.exit(0);
 }
@@ -15,7 +18,13 @@ if (!/localhost|127\.0\.0\.1/.test(url) && process.env.SUPABASE_TEST_ALLOW_REMOT
   );
 }
 
-const supabase = createClient(url, key, {
+const adminSupabase = createClient(url, serviceRoleKey, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+const userSupabase = createClient(url, anonKey, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+const anonymousSupabase = createClient(url, anonKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
@@ -36,15 +45,15 @@ async function must(label, promise) {
 
 await must(
   "cleanup producto_costos",
-  supabase.from("producto_costos").delete().eq("producto_id", productId),
+  adminSupabase.from("producto_costos").delete().eq("producto_id", productId),
 );
-await must("cleanup orden_items", supabase.from("orden_items").delete().eq("orden_id", orderId));
-await must("cleanup orden", supabase.from("ordenes_compra").delete().eq("id", orderId));
-await must("cleanup producto", supabase.from("productos").delete().eq("id", productId));
+await must("cleanup orden_items", adminSupabase.from("orden_items").delete().eq("orden_id", orderId));
+await must("cleanup orden", adminSupabase.from("ordenes_compra").delete().eq("id", orderId));
+await must("cleanup producto", adminSupabase.from("productos").delete().eq("id", productId));
 
 await must(
   "insert producto",
-  supabase.from("productos").insert({
+  adminSupabase.from("productos").insert({
     id: productId,
     sku: "RPC-COST-TEST",
     nombre: "RPC Cost Test",
@@ -53,7 +62,7 @@ await must(
 );
 await must(
   "insert USD vigente",
-  supabase.from("producto_costos").insert({
+  adminSupabase.from("producto_costos").insert({
     producto_id: productId,
     costo_fabrica_moneda: "USD",
     costo_fabrica_monto: 10,
@@ -62,7 +71,7 @@ await must(
 );
 await must(
   "insert orden",
-  supabase.from("ordenes_compra").insert({
+  adminSupabase.from("ordenes_compra").insert({
     id: orderId,
     estado: "borrador",
     moneda_compra: "CNY",
@@ -71,7 +80,7 @@ await must(
 );
 await must(
   "insert item",
-  supabase.from("orden_items").insert({
+  adminSupabase.from("orden_items").insert({
     id: itemId,
     orden_id: orderId,
     producto_id: productId,
@@ -79,9 +88,26 @@ await must(
   }),
 );
 
+const { error: signInError } = await userSupabase.auth.signInWithPassword({
+  email: userEmail,
+  password: userPassword,
+});
+if (signInError) throw new Error(`sign in test user: ${signInError.message}`);
+
+const anonymousConfirm = await anonymousSupabase.rpc("confirm_order_with_current_factory_costs", {
+  p_order_id: orderId,
+  p_eta: "2026-08-01",
+  p_moneda_compra: "CNY",
+  p_items: [{ item_id: itemId, coste_unitario_moneda: 75 }],
+});
+assert(
+  anonymousConfirm.error,
+  "usuario anonimo no autenticado no debe poder ejecutar confirm_order_with_current_factory_costs",
+);
+
 await must(
-  "confirm rpc",
-  supabase.rpc("confirm_order_with_current_factory_costs", {
+  "confirm rpc as authenticated user",
+  userSupabase.rpc("confirm_order_with_current_factory_costs", {
     p_order_id: orderId,
     p_eta: "2026-08-01",
     p_moneda_compra: "CNY",
@@ -91,7 +117,7 @@ await must(
 
 const costs = await must(
   "read costs",
-  supabase
+  adminSupabase
     .from("producto_costos")
     .select("costo_fabrica_moneda,costo_fabrica_monto,contenedor_id,lote_producto")
     .eq("producto_id", productId)
@@ -103,7 +129,7 @@ assert.equal(costs.find((row) => row.costo_fabrica_moneda === "CNY")?.costo_fabr
 
 await must(
   "confirm rpc idempotente",
-  supabase.rpc("confirm_order_with_current_factory_costs", {
+  userSupabase.rpc("confirm_order_with_current_factory_costs", {
     p_order_id: orderId,
     p_eta: "2026-08-01",
     p_moneda_compra: "CNY",
@@ -113,7 +139,7 @@ await must(
 
 const duplicates = await must(
   "read duplicate count",
-  supabase
+  adminSupabase
     .from("producto_costos")
     .select("id")
     .eq("producto_id", productId)

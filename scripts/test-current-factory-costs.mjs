@@ -208,6 +208,15 @@ assert.match(confirmRpcSql, /upsert_current_factory_cost_by_currency/);
 assert.match(confirmRpcSql, /estado = 'confirmado'/);
 assert.match(confirmRpcSql, /v_order\.estado = 'confirmado'[\s\S]*RETURN v_order/);
 assert.match(confirmRpcSql, /mismo producto con costes distintos/);
+assert.match(confirmRpcSql, /mismo producto con proveedores distintos/);
+assert.match(confirmRpcSql, /REVOKE EXECUTE ON FUNCTION public\.confirm_order_with_current_factory_costs/);
+assert.doesNotMatch(confirmRpcSql, /min\(oi\.proveedor_id\)/);
+
+const currentCostSql = fs.readFileSync(
+  path.join(repoRoot, "sql/migrations/20260717_current_factory_costs_by_currency.sql"),
+  "utf8",
+);
+assert.match(currentCostSql, /REVOKE EXECUTE ON FUNCTION public\.upsert_current_factory_cost_by_currency/);
 
 const confirmService = fs.readFileSync(
   path.join(repoRoot, "modules/orders/services/confirmOrderService.ts"),
@@ -217,6 +226,16 @@ assert.match(confirmService, /confirmOrderWithCurrentFactoryCostsRpc/);
 assert.doesNotMatch(confirmService, /updateOrderItemCostsForConfirmation/);
 assert.doesNotMatch(confirmService, /confirmOrderHeader/);
 assert.doesNotMatch(confirmService, /upsertCurrentFactoryCostByCurrency/);
+
+const confirmRepository = fs.readFileSync(
+  path.join(repoRoot, "modules/orders/repositories/orderConfirmRepository.ts"),
+  "utf8",
+);
+assert.doesNotMatch(confirmRepository, /export async function updateOrderItemCostsForConfirmation/);
+assert.doesNotMatch(confirmRepository, /export async function fetchOrderItemsForConfirmation/);
+assert.doesNotMatch(confirmRepository, /export async function fetchOrderHeaderForConfirmation/);
+assert.doesNotMatch(confirmRepository, /export async function confirmOrderHeader/);
+assert.match(confirmRepository, /confirmOrderWithCurrentFactoryCostsRpc/);
 
 const snapshotRepositoryUrl = pathToFileURL(
   path.join(repoRoot, "modules/orders/repositories/orderConfirmedCostSnapshotRepository.ts"),

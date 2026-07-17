@@ -7,6 +7,8 @@
 -- 5) Verificar cero duplicados.
 -- 6) Proteger moneda con CHECK.
 
+BEGIN;
+
 DO $$
 DECLARE
   v_invalid text;
@@ -38,61 +40,16 @@ CREATE TABLE IF NOT EXISTS public.producto_costos_current_duplicate_archive (
   fecha date NULL,
   original_created_at text NULL,
   archive_reason text NOT NULL,
+  migration_origin text NOT NULL DEFAULT '20260717_prepare_current_factory_cost_currency_cleanup.sql',
   archived_at timestamptz NOT NULL DEFAULT now(),
   original_row jsonb NOT NULL
 );
 
-WITH ranked AS (
-  SELECT
-    pc.*,
-    row_number() OVER (
-      PARTITION BY pc.producto_id, pc.costo_fabrica_moneda
-      ORDER BY
-        pc.fecha DESC NULLS LAST,
-        (to_jsonb(pc)->>'created_at') DESC NULLS LAST,
-        pc.id DESC
-    ) AS rn,
-    count(*) OVER (
-      PARTITION BY pc.producto_id, pc.costo_fabrica_moneda
-    ) AS group_count
-  FROM public.producto_costos pc
-  WHERE pc.contenedor_id IS NULL
-    AND pc.lote_producto IS NULL
-),
-to_archive AS (
-  SELECT *
-  FROM ranked
-  WHERE group_count > 1
-    AND rn > 1
-)
-INSERT INTO public.producto_costos_current_duplicate_archive (
-  original_id,
-  producto_id,
-  proveedor_id,
-  costo_fabrica_monto,
-  costo_fabrica_moneda,
-  fecha,
-  original_created_at,
-  archive_reason,
-  original_row
-)
-SELECT
-  id,
-  producto_id,
-  proveedor_id,
-  costo_fabrica_monto,
-  costo_fabrica_moneda,
-  fecha,
-  to_jsonb(to_archive)->>'created_at',
-  'duplicate_current_factory_cost_by_product_currency',
-  to_jsonb(to_archive)
-FROM to_archive
-WHERE NOT EXISTS (
-  SELECT 1
-  FROM public.producto_costos_current_duplicate_archive existing
-  WHERE existing.original_id = to_archive.id
-);
+ALTER TABLE public.producto_costos_current_duplicate_archive
+ADD COLUMN IF NOT EXISTS migration_origin text NOT NULL
+DEFAULT '20260717_prepare_current_factory_cost_currency_cleanup.sql';
 
+CREATE TEMP TABLE current_factory_cost_duplicates_to_archive ON COMMIT DROP AS
 WITH ranked AS (
   SELECT
     pc.id,
@@ -109,15 +66,72 @@ WITH ranked AS (
   FROM public.producto_costos pc
   WHERE pc.contenedor_id IS NULL
     AND pc.lote_producto IS NULL
-),
-to_delete AS (
-  SELECT id
-  FROM ranked
-  WHERE group_count > 1
-    AND rn > 1
 )
+SELECT id
+FROM ranked
+WHERE group_count > 1
+  AND rn > 1;
+
+WITH to_archive AS (
+  SELECT *
+  FROM public.producto_costos pc
+  JOIN current_factory_cost_duplicates_to_archive d
+    ON d.id = pc.id
+)
+INSERT INTO public.producto_costos_current_duplicate_archive (
+  original_id,
+  producto_id,
+  proveedor_id,
+  costo_fabrica_monto,
+  costo_fabrica_moneda,
+  fecha,
+  original_created_at,
+  archive_reason,
+  migration_origin,
+  original_row
+)
+SELECT
+  to_archive.id,
+  producto_id,
+  proveedor_id,
+  costo_fabrica_monto,
+  costo_fabrica_moneda,
+  fecha,
+  to_jsonb(to_archive)->>'created_at',
+  'duplicate_current_factory_cost_by_product_currency',
+  '20260717_prepare_current_factory_cost_currency_cleanup.sql',
+  to_jsonb(to_archive)
+FROM to_archive
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM public.producto_costos_current_duplicate_archive existing
+  WHERE existing.original_id = to_archive.id
+);
+
+DO $$
+DECLARE
+  v_expected integer;
+  v_archived integer;
+BEGIN
+  SELECT count(*) INTO v_expected
+  FROM current_factory_cost_duplicates_to_archive;
+
+  SELECT count(*) INTO v_archived
+  FROM public.producto_costos_current_duplicate_archive a
+  JOIN current_factory_cost_duplicates_to_archive d
+    ON d.id = a.original_id
+  WHERE a.archive_reason = 'duplicate_current_factory_cost_by_product_currency'
+    AND a.migration_origin = '20260717_prepare_current_factory_cost_currency_cleanup.sql';
+
+  IF v_archived <> v_expected THEN
+    RAISE EXCEPTION 'Archivo incompleto de duplicados producto_costos: esperado %, archivado %',
+      v_expected, v_archived
+      USING ERRCODE = 'P0001';
+  END IF;
+END $$;
+
 DELETE FROM public.producto_costos pc
-USING to_delete d
+USING current_factory_cost_duplicates_to_archive d
 WHERE pc.id = d.id
   AND pc.contenedor_id IS NULL
   AND pc.lote_producto IS NULL;
@@ -143,3 +157,5 @@ DROP CONSTRAINT IF EXISTS producto_costos_costo_fabrica_moneda_check;
 ALTER TABLE public.producto_costos
 ADD CONSTRAINT producto_costos_costo_fabrica_moneda_check
 CHECK (costo_fabrica_moneda IN ('USD', 'EUR', 'GBP', 'CNY'));
+
+COMMIT;

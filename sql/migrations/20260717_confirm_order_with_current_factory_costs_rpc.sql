@@ -132,6 +132,18 @@ BEGIN
       USING ERRCODE = '22023';
   END IF;
 
+  IF EXISTS (
+    SELECT 1
+    FROM public.orden_items oi
+    WHERE oi.orden_id = p_order_id
+      AND oi.producto_id IS NOT NULL
+    GROUP BY oi.producto_id
+    HAVING count(DISTINCT oi.proveedor_id) FILTER (WHERE oi.proveedor_id IS NOT NULL) > 1
+  ) THEN
+    RAISE EXCEPTION 'Una misma orden contiene el mismo producto con proveedores distintos'
+      USING ERRCODE = '22023';
+  END IF;
+
   UPDATE public.orden_items oi
   SET
     coste_unitario_moneda = item.coste_unitario_moneda,
@@ -159,7 +171,7 @@ BEGIN
   FROM (
     SELECT
       oi.producto_id,
-      min(oi.proveedor_id) AS proveedor_id,
+      (array_agg(DISTINCT oi.proveedor_id) FILTER (WHERE oi.proveedor_id IS NOT NULL))[1] AS proveedor_id,
       oi.coste_unitario_moneda
     FROM public.orden_items oi
     WHERE oi.orden_id = p_order_id
@@ -198,6 +210,24 @@ BEGIN
   RETURN v_confirmed;
 END;
 $$;
+
+REVOKE EXECUTE ON FUNCTION public.confirm_order_with_current_factory_costs(
+  uuid,
+  date,
+  date,
+  date,
+  integer,
+  integer,
+  text,
+  uuid,
+  text,
+  numeric,
+  numeric,
+  numeric,
+  integer,
+  text,
+  jsonb
+) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION public.confirm_order_with_current_factory_costs(
   uuid,

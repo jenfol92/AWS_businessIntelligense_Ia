@@ -1,211 +1,215 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import ts from "typescript";
+import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
-function upsertCurrentFactoryCostByCurrency(rows, input) {
-  const currency = String(input.currency || "USD").trim().toUpperCase();
-  const currentIndex = rows.findIndex(
-    (row) =>
-      row.producto_id === input.productId &&
-      row.costo_fabrica_moneda === currency &&
-      row.contenedor_id == null &&
-      row.lote_producto == null,
-  );
-  const nextRow = {
-    id: currentIndex >= 0 ? rows[currentIndex].id : randomUUID(),
-    producto_id: input.productId,
-    costo_fabrica_monto: input.amount,
-    costo_fabrica_moneda: currency,
-    contenedor_id: null,
-    lote_producto: null,
-  };
+const repoRoot = process.cwd();
+const moduleCache = new Map();
+const nodeRequire = createRequire(import.meta.url);
 
-  if (currentIndex >= 0) {
-    rows[currentIndex] = { ...rows[currentIndex], ...nextRow };
-  } else {
-    rows.push(nextRow);
+function resolveModule(specifier, parentFile) {
+  if (specifier.startsWith("@/")) {
+    return path.join(repoRoot, specifier.slice(2));
+  }
+  if (specifier.startsWith(".")) {
+    return path.resolve(path.dirname(parentFile), specifier);
+  }
+  return specifier;
+}
+
+function requireTs(specifier, parentFile = path.join(repoRoot, "scripts", "root.cjs")) {
+  const resolved = resolveModule(specifier, parentFile);
+  if (!path.isAbsolute(resolved)) {
+    return nodeRequire(resolved);
   }
 
-  return nextRow;
+  const filePath = fs.existsSync(resolved)
+    ? resolved
+    : fs.existsSync(`${resolved}.ts`)
+      ? `${resolved}.ts`
+      : fs.existsSync(`${resolved}.tsx`)
+        ? `${resolved}.tsx`
+        : fs.existsSync(`${resolved}.js`)
+          ? `${resolved}.js`
+          : resolved;
+
+  if (moduleCache.has(filePath)) return moduleCache.get(filePath).exports;
+
+  const source = fs.readFileSync(filePath, "utf8");
+  const transpiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+      esModuleInterop: true,
+      jsx: ts.JsxEmit.React,
+    },
+    fileName: filePath,
+  }).outputText;
+
+  const module = { exports: {} };
+  moduleCache.set(filePath, module);
+  const localRequire = (childSpecifier) => requireTs(childSpecifier, filePath);
+  const fn = new Function("require", "module", "exports", "__filename", "__dirname", transpiled);
+  fn(localRequire, module, module.exports, filePath, path.dirname(filePath));
+  return module.exports;
 }
 
-function activeCurrentRows(rows, productId) {
-  return rows.filter(
-    (row) =>
-      row.producto_id === productId &&
-      row.contenedor_id == null &&
-      row.lote_producto == null,
-  );
-}
+const {
+  assertProductCostCurrency,
+} = requireTs("../modules/products/utils/productCostCurrency.ts");
+const {
+  resolveCurrentFactoryCostDisplay,
+} = requireTs("../modules/products/utils/currentFactoryCostDisplay.ts");
+const {
+  buildCompleteOrderItemCostPatches,
+  normalizeOrderCostCurrency,
+} = requireTs("../modules/orders/services/confirmOrderValidation.ts");
+const {
+  selectLatestConfirmedCostByProductCurrency,
+} = requireTs("../modules/products/utils/currentFactoryCostBackfill.ts");
 
-function updateOrderItemCostsForConfirmation(orderItems, orderId, patch) {
-  const item = orderItems.find(
-    (row) => row.id === patch.item_id && row.orden_id === orderId,
-  );
-  if (!item) {
-    throw new Error("item_id ajeno a la orden");
-  }
-  item.coste_unitario_moneda = patch.coste_unitario_moneda;
-  return item;
-}
+assert.equal(assertProductCostCurrency("usd"), "USD");
+assert.equal(assertProductCostCurrency("CNY"), "CNY");
+assert.throws(() => assertProductCostCurrency("RMB"), /Moneda de coste no valida/);
+assert.throws(() => normalizeOrderCostCurrency("GNY"), /Moneda de coste no valida/);
 
-function maybeWriteSnapshot(writeSnapshot) {
-  try {
-    writeSnapshot();
-    return [];
-  } catch {
-    return ["snapshot optional failure"];
-  }
-}
-
-const rows = [
-  {
-    id: "p-usd",
-    producto_id: "product-1",
-    costo_fabrica_monto: 10,
-    costo_fabrica_moneda: "USD",
-    contenedor_id: null,
-    lote_producto: null,
+const displayUsd = resolveCurrentFactoryCostDisplay({
+  costoFabricaMonto: 10,
+  costoFabricaMoneda: "USD",
+  factoryCostsByCurrency: {
+    USD: { monto: 10, moneda: "USD", fecha: "2026-07-17" },
+    CNY: { monto: 70, moneda: "CNY", fecha: "2026-07-17" },
   },
-  {
-    id: "p-cny",
-    producto_id: "product-1",
-    costo_fabrica_monto: 70,
-    costo_fabrica_moneda: "CNY",
-    contenedor_id: null,
-    lote_producto: null,
+});
+assert.equal(displayUsd.label, "10 USD");
+
+const displayCny = resolveCurrentFactoryCostDisplay({
+  costoFabricaMonto: 75,
+  costoFabricaMoneda: "CNY",
+  factoryCostsByCurrency: {
+    USD: { monto: 10, moneda: "USD", fecha: "2026-07-17" },
+    CNY: { monto: 70, moneda: "CNY", fecha: "2026-07-17" },
   },
-  {
-    id: "p-cny-lote",
-    producto_id: "product-1",
-    costo_fabrica_monto: 66,
-    costo_fabrica_moneda: "CNY",
-    contenedor_id: "container-1",
-    lote_producto: "lot-1",
+});
+assert.equal(displayCny.label, "75 CNY");
+
+const displayGbp = resolveCurrentFactoryCostDisplay({
+  costoFabricaMonto: 0,
+  costoFabricaMoneda: "GBP",
+  factoryCostsByCurrency: {
+    USD: { monto: 10, moneda: "USD", fecha: "2026-07-17" },
+    CNY: { monto: 75, moneda: "CNY", fecha: "2026-07-17" },
   },
+});
+assert.equal(displayGbp.label, "-");
+
+const orderItems = [
+  { id: "item-1", orden_id: "order-1", producto_id: "product-1" },
+  { id: "item-2", orden_id: "order-1", producto_id: "variant-1" },
 ];
 
-upsertCurrentFactoryCostByCurrency(rows, {
-  productId: "product-1",
-  currency: "CNY",
-  amount: 75,
-});
-assert.equal(rows.find((row) => row.id === "p-cny").costo_fabrica_monto, 75);
-assert.equal(rows.find((row) => row.id === "p-usd").costo_fabrica_monto, 10);
-assert.equal(rows.find((row) => row.id === "p-cny-lote").costo_fabrica_monto, 66);
-
-upsertCurrentFactoryCostByCurrency(rows, {
-  productId: "product-1",
-  currency: "USD",
-  amount: 11,
-});
-assert.equal(rows.find((row) => row.id === "p-usd").costo_fabrica_monto, 11);
-assert.equal(rows.find((row) => row.id === "p-cny").costo_fabrica_monto, 75);
-
-assert.equal(
-  activeCurrentRows(rows, "product-1").some(
-    (row) => row.costo_fabrica_moneda === "GBP",
-  ),
-  false,
-);
-
-upsertCurrentFactoryCostByCurrency(rows, {
-  productId: "product-1",
-  currency: "CNY",
-  amount: 75,
-});
-assert.equal(
-  activeCurrentRows(rows, "product-1").filter(
-    (row) => row.costo_fabrica_moneda === "CNY",
-  ).length,
-  1,
-);
-
-for (const row of activeCurrentRows(rows, "product-1")) {
-  upsertCurrentFactoryCostByCurrency(rows, {
-    productId: "variant-1",
-    currency: row.costo_fabrica_moneda,
-    amount: row.costo_fabrica_monto,
-  });
-}
+const completePatches = buildCompleteOrderItemCostPatches(orderItems, [
+  { item_id: "item-1", coste_unitario_moneda: 10 },
+  { item_id: "item-2", coste_unitario_moneda: 75 },
+]);
 assert.deepEqual(
-  activeCurrentRows(rows, "variant-1")
-    .map((row) => [row.costo_fabrica_moneda, row.costo_fabrica_monto])
-    .sort(),
+  completePatches.map((patch) => [patch.item_id, patch.producto_id, patch.coste_unitario_moneda]),
   [
-    ["CNY", 75],
-    ["USD", 11],
+    ["item-1", "product-1", 10],
+    ["item-2", "variant-1", 75],
   ],
 );
 
-upsertCurrentFactoryCostByCurrency(rows, {
-  productId: "variant-1",
-  currency: "USD",
-  amount: 12,
-});
-assert.equal(
-  activeCurrentRows(rows, "variant-1").find(
-    (row) => row.costo_fabrica_moneda === "CNY",
-  ).costo_fabrica_monto,
-  75,
-);
-
-upsertCurrentFactoryCostByCurrency(rows, {
-  productId: "variant-1",
-  currency: "CNY",
-  amount: 80,
-});
-assert.equal(
-  activeCurrentRows(rows, "product-1").find(
-    (row) => row.costo_fabrica_moneda === "CNY",
-  ).costo_fabrica_monto,
-  75,
-);
-
-const orderItems = [
-  {
-    id: "item-1",
-    orden_id: "order-1",
-    producto_id: "variant-1",
-    coste_unitario_moneda: 80,
-  },
-  {
-    id: "item-sibling",
-    orden_id: "order-1",
-    producto_id: "variant-2",
-    coste_unitario_moneda: 55,
-  },
-];
-const confirmedItem = updateOrderItemCostsForConfirmation(orderItems, "order-1", {
-  item_id: "item-1",
-  coste_unitario_moneda: 82,
-});
-upsertCurrentFactoryCostByCurrency(rows, {
-  productId: confirmedItem.producto_id,
-  currency: "CNY",
-  amount: confirmedItem.coste_unitario_moneda,
-});
-assert.equal(
-  activeCurrentRows(rows, "variant-1").find(
-    (row) => row.costo_fabrica_moneda === "CNY",
-  ).costo_fabrica_monto,
-  82,
-);
-assert.equal(activeCurrentRows(rows, "variant-2").length, 0);
-
 assert.throws(
   () =>
-    updateOrderItemCostsForConfirmation(orderItems, "order-1", {
-      item_id: "item-other-order",
-      coste_unitario_moneda: 90,
-    }),
-  /item_id ajeno/,
+    buildCompleteOrderItemCostPatches(orderItems, [
+      { item_id: "item-1", coste_unitario_moneda: 10 },
+    ]),
+  /Faltan costes/,
+);
+assert.throws(
+  () =>
+    buildCompleteOrderItemCostPatches(orderItems, [
+      { item_id: "item-1", coste_unitario_moneda: 10 },
+      { item_id: "item-1", coste_unitario_moneda: 11 },
+    ]),
+  /Linea repetida/,
+);
+assert.throws(
+  () =>
+    buildCompleteOrderItemCostPatches(orderItems, [
+      { item_id: "item-1", coste_unitario_moneda: 10 },
+      { item_id: "item-3", coste_unitario_moneda: 11 },
+    ]),
+  /no pertenece/,
+);
+assert.throws(
+  () =>
+    buildCompleteOrderItemCostPatches(
+      [{ id: "item-1", orden_id: "order-1", producto_id: null }],
+      [{ item_id: "item-1", coste_unitario_moneda: 10 }],
+    ),
+  /no tiene producto/,
+);
+assert.throws(
+  () =>
+    buildCompleteOrderItemCostPatches(orderItems, [
+      { item_id: "item-1", coste_unitario_moneda: 0 },
+      { item_id: "item-2", coste_unitario_moneda: 75 },
+    ]),
+  /coste unitario valido/,
 );
 
+const latest = selectLatestConfirmedCostByProductCurrency([
+  {
+    orderId: "old",
+    productId: "product-1",
+    currency: "CNY",
+    amount: 70,
+    confirmedAt: "2026-07-01",
+    createdAt: "2026-07-01T10:00:00Z",
+  },
+  {
+    orderId: "new",
+    productId: "product-1",
+    currency: "CNY",
+    amount: 75,
+    confirmedAt: "2026-07-15",
+    createdAt: "2026-07-15T10:00:00Z",
+  },
+  {
+    orderId: "usd",
+    productId: "product-1",
+    currency: "USD",
+    amount: 10,
+    confirmedAt: "2026-07-10",
+    createdAt: "2026-07-10T10:00:00Z",
+  },
+]);
 assert.deepEqual(
-  maybeWriteSnapshot(() => {
-    throw new Error("missing table");
-  }),
-  ["snapshot optional failure"],
+  latest
+    .map((row) => [row.productId, row.currency, row.amount, row.orderId])
+    .sort(),
+  [
+    ["product-1", "CNY", 75, "new"],
+    ["product-1", "USD", 10, "usd"],
+  ],
 );
 
-console.log("current factory costs by currency: ok");
+const confirmRpcSql = fs.readFileSync(
+  path.join(repoRoot, "sql/migrations/20260717_confirm_order_with_current_factory_costs_rpc.sql"),
+  "utf8",
+);
+assert.match(confirmRpcSql, /CREATE OR REPLACE FUNCTION public\.confirm_order_with_current_factory_costs/);
+assert.match(confirmRpcSql, /FOR UPDATE/);
+assert.match(confirmRpcSql, /upsert_current_factory_cost_by_currency/);
+assert.match(confirmRpcSql, /estado = 'confirmado'/);
+
+const snapshotRepositoryUrl = pathToFileURL(
+  path.join(repoRoot, "modules/orders/repositories/orderConfirmedCostSnapshotRepository.ts"),
+).href;
+assert.ok(snapshotRepositoryUrl.includes("orderConfirmedCostSnapshotRepository.ts"));
+
+console.log("current factory costs hardening: ok");

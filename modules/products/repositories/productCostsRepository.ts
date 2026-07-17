@@ -1,6 +1,7 @@
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import type { ProductBaseCost } from "../utils/resolveEffectiveBaseCost";
 import type { ProductCostCurrency } from "../types";
+import { assertProductCostCurrency } from "../utils/productCostCurrency";
 
 export type { ProductBaseCost } from "../utils/resolveEffectiveBaseCost";
 
@@ -31,14 +32,6 @@ export type UpsertCurrentFactoryCostInput = {
   arancelPorcentaje?: number | null;
   fecha?: string | null;
 };
-
-function normalizeCurrency(currency: ProductCostCurrency | string): ProductCostCurrency {
-  const upper = String(currency || "USD").trim().toUpperCase();
-  if (upper === "EUR" || upper === "GBP" || upper === "CNY" || upper === "USD") {
-    return upper;
-  }
-  return "USD";
-}
 
 function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
@@ -176,7 +169,7 @@ async function loadLatestOwnBaseCosts(
     map.set(pid, {
       monto: monto != null && Number(monto) > 0 ? Number(monto) : null,
       moneda: row.costo_fabrica_moneda
-        ? String(row.costo_fabrica_moneda).toUpperCase()
+        ? assertProductCostCurrency(row.costo_fabrica_moneda)
         : null,
     });
   }
@@ -226,7 +219,7 @@ export async function findCurrentFactoryCostByCurrency(
   currency: ProductCostCurrency | string,
 ): Promise<CurrentFactoryCostRow | null> {
   const supabase = createSupabaseRouteClient();
-  const normalizedCurrency = normalizeCurrency(currency);
+  const normalizedCurrency = assertProductCostCurrency(currency);
 
   const { data, error } = await supabase
     .from("producto_costos")
@@ -263,7 +256,7 @@ export async function findCurrentFactoryCostsByProduct(
 
   const byCurrency = new Map<string, CurrentFactoryCostRow>();
   for (const row of (data ?? []) as unknown as CurrentFactoryCostRow[]) {
-    const key = normalizeCurrency(row.costo_fabrica_moneda ?? "USD");
+    const key = assertProductCostCurrency(row.costo_fabrica_moneda);
     if (!byCurrency.has(key)) {
       byCurrency.set(key, row);
     }
@@ -276,7 +269,7 @@ export async function upsertCurrentFactoryCostByCurrency(
   input: UpsertCurrentFactoryCostInput,
 ): Promise<CurrentFactoryCostRow> {
   const supabase = createSupabaseRouteClient();
-  const currency = normalizeCurrency(input.currency);
+  const currency = assertProductCostCurrency(input.currency);
   const amount =
     input.amount != null && Number.isFinite(Number(input.amount))
       ? Number(input.amount)
@@ -324,7 +317,7 @@ export async function upsertManualProductCost(
 ) {
   return upsertCurrentFactoryCostByCurrency({
     productId,
-    currency: String(payload.costo_fabrica_moneda ?? "USD"),
+    currency: assertProductCostCurrency(payload.costo_fabrica_moneda),
     amount:
       payload.costo_fabrica_monto == null
         ? null

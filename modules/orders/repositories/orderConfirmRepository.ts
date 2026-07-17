@@ -32,6 +32,12 @@ export type ConfirmedOrderItemCostRow = {
   coste_unitario_moneda: number | null;
 };
 
+export type OrderItemForConfirmationRow = {
+  id: string;
+  orden_id: string;
+  producto_id: string | null;
+};
+
 /**
  * Payload de confirmación de cabecera ya construido por el service.
  * Incluye todos los campos que deben persistirse en ordenes_compra al confirmar.
@@ -101,6 +107,20 @@ export async function updateOrderItemCostsForConfirmation(
   }
 
   return updatedRows;
+}
+
+export async function fetchOrderItemsForConfirmation(
+  orderId: string,
+): Promise<OrderItemForConfirmationRow[]> {
+  const supabase = createSupabaseRouteClient();
+
+  const { data, error } = await supabase
+    .from("orden_items")
+    .select("id, orden_id, producto_id")
+    .eq("orden_id", orderId);
+
+  if (error) throw new Error(error.message);
+  return (data as OrderItemForConfirmationRow[]) ?? [];
 }
 
 export async function fetchOrderHeaderForConfirmation(

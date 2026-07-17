@@ -10,6 +10,7 @@ import {
   EMPTY_AMAZON_SETUP,
   PRODUCT_FORM_ESPECIFICACIONES_KEY,
 } from "../constants";
+import { assertProductCostCurrency } from "../utils/productCostCurrency";
 import {
   extractCategoryDynamicFieldsFromEspecificaciones,
 } from "../utils/categoryDynamicFields";
@@ -123,10 +124,7 @@ export function mapProductCostFieldsFromDb(
 > {
   const factoryCostsByCurrency: ProductFormValues["factoryCostsByCurrency"] = {};
   for (const row of costosVigentes) {
-    const raw = str(row.costo_fabrica_moneda).toUpperCase();
-    if (raw !== "USD" && raw !== "EUR" && raw !== "GBP" && raw !== "CNY") {
-      continue;
-    }
+    const raw = assertProductCostCurrency(row.costo_fabrica_moneda);
     factoryCostsByCurrency[raw] = {
       monto: num(row.costo_fabrica_monto) || null,
       moneda: raw,
@@ -135,14 +133,10 @@ export function mapProductCostFieldsFromDb(
   }
 
   const src = costo ?? costoActual;
-  const monedaRaw = str(src?.costo_fabrica_moneda).toUpperCase();
-  const moneda =
-    monedaRaw === "EUR" ||
-    monedaRaw === "GBP" ||
-    monedaRaw === "CNY" ||
-    monedaRaw === "USD"
-      ? monedaRaw
-      : "USD";
+  const monedaRaw = str(src?.costo_fabrica_moneda);
+  const moneda = monedaRaw
+    ? assertProductCostCurrency(monedaRaw)
+    : EMPTY_PRODUCT_FORM.costoFabricaMoneda;
 
   return {
     costoFabricaMonto: num(src?.costo_fabrica_monto) || num(src?.costo_fabrica_eur),

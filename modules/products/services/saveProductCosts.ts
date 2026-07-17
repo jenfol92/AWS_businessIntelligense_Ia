@@ -11,6 +11,7 @@ import {
   upsertManualProductCost,
 } from "../repositories/productCostsRepository";
 import { findActiveProductVariants } from "../repositories/productVariantsRepository";
+import { assertProductCostCurrency } from "../utils/productCostCurrency";
 
 type ProductCostRow = Record<string, unknown> | null;
 
@@ -48,13 +49,8 @@ function num(value: unknown): number {
 
 function currency(
   value: unknown,
-  fallback: ProductFormValues["costoFabricaMoneda"] = "USD",
 ): ProductFormValues["costoFabricaMoneda"] {
-  const upper = str(value).toUpperCase();
-  if (upper === "USD" || upper === "EUR" || upper === "GBP" || upper === "CNY") {
-    return upper;
-  }
-  return fallback;
+  return assertProductCostCurrency(value);
 }
 
 export function readCostSourceFromRow(row: ProductCostRow): CostSource | null {
@@ -231,7 +227,9 @@ export async function propagateFactoryCostToVariants(
     async (productId, payload) =>
       upsertCurrentFactoryCostByCurrency({
         productId,
-        currency: String(payload.costo_fabrica_moneda ?? source?.moneda ?? "USD"),
+        currency: assertProductCostCurrency(
+          payload.costo_fabrica_moneda ?? source?.moneda,
+        ),
         amount:
           payload.costo_fabrica_monto == null
             ? null

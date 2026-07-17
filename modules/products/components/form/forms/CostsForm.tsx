@@ -3,6 +3,7 @@
 import type { useProductForm } from "../../../hooks/useProductForm";
 import { PRODUCT_COST_CURRENCIES } from "../../../constants/productCostCurrencies";
 import { shouldShowCostPropagationCheckbox } from "../../../utils/productCostFormVisibility";
+import { resolveCurrentFactoryCostDisplay } from "../../../utils/currentFactoryCostDisplay";
 import {
   pfCard,
   pfCardBody,
@@ -31,16 +32,6 @@ type Props = {
   form: ReturnType<typeof useProductForm>;
 };
 
-function formatBaseCostLabel(
-  monto: number | null | undefined,
-  moneda: string | null | undefined,
-): string {
-  const n = Number(monto);
-  if (!Number.isFinite(n) || n <= 0) return "pendiente";
-  const m = moneda ? String(moneda).toUpperCase() : "-";
-  return `${n.toFixed(4).replace(/\.?0+$/, "")} ${m}`;
-}
-
 /** Coste base de fabrica en moneda original; coste EUR real viene de orden/lote. */
 export function CostsForm({ form }: Props) {
   const { values, errors, updateField, isVariant, isEditMode, variantCount } =
@@ -58,12 +49,7 @@ export function CostsForm({ form }: Props) {
   const costeRealEur =
     values.costoUnitarioTotalEur > 0 ? values.costoUnitarioTotalEur : null;
 
-  const effectiveMonto =
-    values.costeBaseEfectivoMonto ??
-    (selectedCurrencyHasCost ? (selectedCurrencyCost?.monto ?? null) : null);
-  const effectiveMoneda =
-    values.costeBaseEfectivoMoneda ??
-    (values.costoFabricaMonto > 0 ? values.costoFabricaMoneda : null);
+  const selectedCostDisplay = resolveCurrentFactoryCostDisplay(values);
 
   const precio = values.heredarPrecio && isVariant ? 0 : values.precioVentaBase;
   const margenPct =
@@ -189,9 +175,7 @@ export function CostsForm({ form }: Props) {
               <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
                 <p>
                   Coste fabrica base:{" "}
-                  <strong>
-                    {formatBaseCostLabel(effectiveMonto, effectiveMoneda)}
-                  </strong>
+                  <strong>{selectedCostDisplay.label}</strong>
                 </p>
                 <p>
                   Coste real EUR:{" "}

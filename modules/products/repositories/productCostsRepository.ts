@@ -58,6 +58,17 @@ function selectCurrentFactoryCostColumns(): string {
   `;
 }
 
+function requireSingleRpcRow<T>(data: T | T[] | null, context: string): T {
+  if (Array.isArray(data)) {
+    if (data.length === 1) return data[0] as T;
+    throw new Error(`${context}: respuesta RPC inesperada (${data.length} filas).`);
+  }
+  if (!data) {
+    throw new Error(`${context}: respuesta RPC vacia.`);
+  }
+  return data;
+}
+
 // Tabla: producto_costos.
 // Aqui van costes historicos/lotes/fabrica/flete/arancel/transito.
 export async function findProductCostsByProductId(productId: string) {
@@ -293,7 +304,10 @@ export async function upsertCurrentFactoryCostByCurrency(
   );
 
   if (error) throw new Error(error.message);
-  return data as unknown as CurrentFactoryCostRow;
+  return requireSingleRpcRow(
+    data as CurrentFactoryCostRow | CurrentFactoryCostRow[] | null,
+    "upsert_current_factory_cost_by_currency",
+  );
 }
 
 /** Compatibilidad: guarda solo la moneda vigente indicada, sin borrar otras monedas. */

@@ -223,6 +223,16 @@ const cleanupSql = fs.readFileSync(
   "utf8",
 );
 assert.match(cleanupSql, /WITH to_archive AS \(\s*SELECT pc\.\*/);
+assert.match(cleanupSql, /ALTER TABLE public\.producto_costos_current_duplicate_archive\s+ENABLE ROW LEVEL SECURITY/);
+assert.match(
+  cleanupSql,
+  /REVOKE ALL ON TABLE public\.producto_costos_current_duplicate_archive\s+FROM PUBLIC, anon, authenticated/,
+);
+assert.match(
+  cleanupSql,
+  /GRANT ALL ON TABLE public\.producto_costos_current_duplicate_archive\s+TO service_role/,
+);
+assert.match(cleanupSql, /costo_fabrica_moneda IS NOT NULL[\s\S]*costo_fabrica_moneda IN/);
 assert.doesNotMatch(
   cleanupSql,
   /WITH to_archive AS \(\s*SELECT \*\s+FROM public\.producto_costos pc/,
@@ -236,10 +246,26 @@ assert.match(
   productCostsRepository,
   /supabase\.rpc\(\s*["']upsert_current_factory_cost_by_currency["']/,
 );
+assert.match(productCostsRepository, /requireSingleRpcRow/);
 assert.doesNotMatch(
   productCostsRepository,
   /from\(["']producto_costos["']\)[\s\S]{0,300}\.(update|insert)\(/,
 );
+
+const productFormMapper = fs.readFileSync(
+  path.join(repoRoot, "modules/products/mappers/productFormMapper.ts"),
+  "utf8",
+);
+assert.match(productFormMapper, /costo_fabrica_moneda:\s*values\.costoFabricaMoneda/);
+
+const containerBillingService = fs.readFileSync(
+  path.join(repoRoot, "modules/containers/services/facturarContainerCosts.ts"),
+  "utf8",
+);
+assert.match(containerBillingService, /costo_fabrica_moneda:\s*item\.moneda_compra \?\? ["']USD["']/);
+
+assert.match(confirmRpcSql, /v_moneda := upper\(trim\(coalesce\(p_moneda_compra, v_order\.moneda_compra, ''\)\)\)/);
+assert.match(currentCostSql, /p_moneda text/);
 
 const confirmService = fs.readFileSync(
   path.join(repoRoot, "modules/orders/services/confirmOrderService.ts"),
@@ -259,6 +285,7 @@ assert.doesNotMatch(confirmRepository, /export async function fetchOrderItemsFor
 assert.doesNotMatch(confirmRepository, /export async function fetchOrderHeaderForConfirmation/);
 assert.doesNotMatch(confirmRepository, /export async function confirmOrderHeader/);
 assert.match(confirmRepository, /confirmOrderWithCurrentFactoryCostsRpc/);
+assert.match(confirmRepository, /requireSingleRpcRow/);
 
 const snapshotRepositoryUrl = pathToFileURL(
   path.join(repoRoot, "modules/orders/repositories/orderConfirmedCostSnapshotRepository.ts"),

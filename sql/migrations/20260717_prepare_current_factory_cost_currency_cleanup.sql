@@ -49,6 +49,15 @@ ALTER TABLE public.producto_costos_current_duplicate_archive
 ADD COLUMN IF NOT EXISTS migration_origin text NOT NULL
 DEFAULT '20260717_prepare_current_factory_cost_currency_cleanup.sql';
 
+ALTER TABLE public.producto_costos_current_duplicate_archive
+ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE public.producto_costos_current_duplicate_archive
+FROM PUBLIC, anon, authenticated;
+
+GRANT ALL ON TABLE public.producto_costos_current_duplicate_archive
+TO service_role;
+
 CREATE TEMP TABLE current_factory_cost_duplicates_to_archive ON COMMIT DROP AS
 WITH ranked AS (
   SELECT
@@ -156,6 +165,9 @@ DROP CONSTRAINT IF EXISTS producto_costos_costo_fabrica_moneda_check;
 
 ALTER TABLE public.producto_costos
 ADD CONSTRAINT producto_costos_costo_fabrica_moneda_check
-CHECK (costo_fabrica_moneda IN ('USD', 'EUR', 'GBP', 'CNY'));
+CHECK (
+  costo_fabrica_moneda IS NOT NULL
+  AND costo_fabrica_moneda IN ('USD', 'EUR', 'GBP', 'CNY')
+);
 
 COMMIT;

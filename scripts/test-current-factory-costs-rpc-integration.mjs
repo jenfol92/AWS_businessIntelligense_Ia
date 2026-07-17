@@ -51,6 +51,7 @@ const supplierBId = uuid("cost-supplier-b");
 const productId = uuid("cost-product");
 const unauthorizedProductId = uuid("cost-noauth-prod");
 const rollbackProductId = uuid("cost-rollback-p");
+const missingProductId = uuid("cost-missing-prod");
 const orderId = uuid("cost-order");
 const unauthorizedOrderId = uuid("cost-noauth-ord");
 const rollbackOrderId = uuid("cost-rollback-o");
@@ -67,6 +68,33 @@ async function must(label, promise) {
   const { data, error } = await promise;
   if (error) throw new Error(`${label}: ${error.message}`);
   return data;
+}
+
+function singleRpcRow(data, label) {
+  if (Array.isArray(data)) {
+    assert.equal(data.length, 1, `${label}: PostgREST devolvio array con numero inesperado de filas`);
+    return data[0];
+  }
+  assert(data, `${label}: PostgREST devolvio respuesta vacia`);
+  return data;
+}
+
+function metadataHasAdminRole(metadata) {
+  const role = String(metadata?.role ?? metadata?.rol ?? "").trim().toLowerCase();
+  if (["admin", "administrator", "superadmin"].includes(role)) return true;
+  const roles = metadata?.roles;
+  return Array.isArray(roles)
+    ? roles.map((item) => String(item).trim().toLowerCase()).some((item) =>
+        ["admin", "administrator", "superadmin"].includes(item),
+      )
+    : false;
+}
+
+async function getSignedInUser(client, label) {
+  const { data, error } = await client.auth.getUser();
+  if (error) throw new Error(`${label}: ${error.message}`);
+  if (!data.user) throw new Error(`${label}: usuario no disponible`);
+  return data.user;
 }
 
 async function cleanup() {
@@ -92,7 +120,7 @@ async function insertProduct(id, sku) {
   );
 }
 
-async function insertOrder(id) {
+async function insertOrder(id, createdBy) {
   await must(
     `insert orden ${id}`,
     adminSupabase.from("ordenes_compra").insert({
@@ -100,6 +128,7 @@ async function insertOrder(id) {
       estado: "borrador",
       moneda_compra: "CNY",
       eta: "2026-08-01",
+      created_by: createdBy,
     }),
   );
 }
@@ -111,6 +140,31 @@ async function signIn(client, email, password, label) {
 
 try {
   await cleanup();
+
+  await signIn(authorizedSupabase, userEmail, userPassword, "sign in authorized test user");
+  await signIn(
+    unauthorizedSupabase,
+    unauthorizedEmail,
+    unauthorizedPassword,
+    "sign in unauthorized test user",
+  );
+  const authorizedUser = await getSignedInUser(authorizedSupabase, "authorized user");
+  const unauthorizedUser = await getSignedInUser(unauthorizedSupabase, "unauthorized user");
+  assert.notEqual(
+    authorizedUser.id,
+    unauthorizedUser.id,
+    "los usuarios de prueba autorizado y no autorizado deben ser identidades distintas",
+  );
+  assert(
+    metadataHasAdminRole(authorizedUser.app_metadata) ||
+      metadataHasAdminRole(authorizedUser.user_metadata),
+    "el usuario autorizado debe tener claim role/rol/roles admin en app_metadata o user_metadata",
+  );
+  assert(
+    !metadataHasAdminRole(unauthorizedUser.app_metadata) &&
+      !metadataHasAdminRole(unauthorizedUser.user_metadata),
+    "el usuario no autorizado no debe tener claim admin",
+  );
 
   await must(
     "insert proveedores",
@@ -145,9 +199,9 @@ try {
     }),
   );
 
-  await insertOrder(orderId);
-  await insertOrder(unauthorizedOrderId);
-  await insertOrder(rollbackOrderId);
+  await insertOrder(orderId, authorizedUser.id);
+  await insertOrder(unauthorizedOrderId, authorizedUser.id);
+  await insertOrder(rollbackOrderId, authorizedUser.id);
 
   await must(
     "insert items",
@@ -183,13 +237,20 @@ try {
     ]),
   );
 
-  await signIn(authorizedSupabase, userEmail, userPassword, "sign in authorized test user");
-  await signIn(
-    unauthorizedSupabase,
-    unauthorizedEmail,
-    unauthorizedPassword,
-    "sign in unauthorized test user",
+  const ownershipRows = await must(
+    "verify order ownership",
+    adminSupabase
+      .from("ordenes_compra")
+      .select("id,created_by")
+      .in("id", orderIds),
   );
+  for (const order of ownershipRows) {
+    assert.equal(
+      order.created_by,
+      authorizedUser.id,
+      `la orden ${order.id} debe pertenecer al usuario autorizado via created_by`,
+    );
+  }
 
   const anonymousConfirm = await anonymousSupabase.rpc("confirm_order_with_current_factory_costs", {
     p_order_id: orderId,
@@ -216,7 +277,8 @@ try {
     "usuario autenticado sin permisos no debe poder confirmar ordenes",
   );
 
-  await must(
+  const confirmedOrder = singleRpcRow(
+    await must(
     "confirm rpc as authorized authenticated user",
     authorizedSupabase.rpc("confirm_order_with_current_factory_costs", {
       p_order_id: orderId,
@@ -224,7 +286,12 @@ try {
       p_moneda_compra: "CNY",
       p_items: [{ item_id: itemId, coste_unitario_moneda: 75 }],
     }),
+    ),
+    "confirm_order_with_current_factory_costs",
   );
+  assert.equal(confirmedOrder.id, orderId);
+  assert.equal(confirmedOrder.estado, "confirmado");
+  assert.equal(confirmedOrder.moneda_compra, "CNY");
 
   const costs = await must(
     "read costs",
@@ -237,6 +304,119 @@ try {
   );
   assert.equal(costs.find((row) => row.costo_fabrica_moneda === "USD")?.costo_fabrica_monto, 10);
   assert.equal(costs.find((row) => row.costo_fabrica_moneda === "CNY")?.costo_fabrica_monto, 75);
+
+  const updatedUsd = singleRpcRow(
+    await must(
+      "direct upsert USD as authorized user",
+      authorizedSupabase.rpc("upsert_current_factory_cost_by_currency", {
+        p_producto_id: productId,
+        p_moneda: "USD",
+        p_monto: 11,
+        p_proveedor_id: supplierAId,
+        p_arancel_porcentaje: null,
+        p_fecha: "2026-07-18",
+      }),
+    ),
+    "upsert_current_factory_cost_by_currency",
+  );
+  assert.equal(updatedUsd.producto_id, productId);
+  assert.equal(updatedUsd.costo_fabrica_moneda, "USD");
+  assert.equal(updatedUsd.costo_fabrica_monto, 11);
+
+  const directCosts = await must(
+    "read costs after direct upsert",
+    adminSupabase
+      .from("producto_costos")
+      .select("id,costo_fabrica_moneda,costo_fabrica_monto,contenedor_id,lote_producto")
+      .eq("producto_id", productId)
+      .is("contenedor_id", null)
+      .is("lote_producto", null),
+  );
+  assert.equal(directCosts.find((row) => row.costo_fabrica_moneda === "USD")?.costo_fabrica_monto, 11);
+  assert.equal(directCosts.find((row) => row.costo_fabrica_moneda === "CNY")?.costo_fabrica_monto, 75);
+  assert.equal(directCosts.filter((row) => row.costo_fabrica_moneda === "USD").length, 1);
+
+  await must(
+    "direct upsert USD idempotente",
+    authorizedSupabase.rpc("upsert_current_factory_cost_by_currency", {
+      p_producto_id: productId,
+      p_moneda: "USD",
+      p_monto: 11,
+      p_proveedor_id: supplierAId,
+      p_arancel_porcentaje: null,
+      p_fecha: "2026-07-18",
+    }),
+  );
+  const directUsdRows = await must(
+    "read direct USD duplicate count",
+    adminSupabase
+      .from("producto_costos")
+      .select("id")
+      .eq("producto_id", productId)
+      .eq("costo_fabrica_moneda", "USD")
+      .is("contenedor_id", null)
+      .is("lote_producto", null),
+  );
+  assert.equal(directUsdRows.length, 1);
+
+  const unauthorizedUpsert = await unauthorizedSupabase.rpc(
+    "upsert_current_factory_cost_by_currency",
+    {
+      p_producto_id: productId,
+      p_moneda: "USD",
+      p_monto: 12,
+      p_proveedor_id: supplierAId,
+      p_arancel_porcentaje: null,
+      p_fecha: "2026-07-19",
+    },
+  );
+  assert(
+    unauthorizedUpsert.error,
+    "usuario autenticado sin permisos no debe poder ejecutar upsert_current_factory_cost_by_currency",
+  );
+
+  const anonymousUpsert = await anonymousSupabase.rpc("upsert_current_factory_cost_by_currency", {
+    p_producto_id: productId,
+    p_moneda: "USD",
+    p_monto: 12,
+    p_proveedor_id: supplierAId,
+    p_arancel_porcentaje: null,
+    p_fecha: "2026-07-19",
+  });
+  assert(
+    anonymousUpsert.error,
+    "usuario anonimo no debe poder ejecutar upsert_current_factory_cost_by_currency",
+  );
+
+  const invalidCurrency = await authorizedSupabase.rpc("upsert_current_factory_cost_by_currency", {
+    p_producto_id: productId,
+    p_moneda: "RMB",
+    p_monto: 12,
+    p_proveedor_id: supplierAId,
+    p_arancel_porcentaje: null,
+    p_fecha: "2026-07-19",
+  });
+  assert(invalidCurrency.error, "moneda RMB debe ser rechazada");
+
+  const zeroAmount = await authorizedSupabase.rpc("upsert_current_factory_cost_by_currency", {
+    p_producto_id: productId,
+    p_moneda: "USD",
+    p_monto: 0,
+    p_proveedor_id: supplierAId,
+    p_arancel_porcentaje: null,
+    p_fecha: "2026-07-19",
+  });
+  assert(zeroAmount.error, "monto 0 debe ser rechazado");
+
+  const missingProduct = await authorizedSupabase.rpc("upsert_current_factory_cost_by_currency", {
+    p_producto_id: missingProductId,
+    p_moneda: "USD",
+    p_monto: 12,
+    p_proveedor_id: supplierAId,
+    p_arancel_porcentaje: null,
+    p_fecha: "2026-07-19",
+  });
+  assert(missingProduct.error, "producto inexistente debe ser rechazado");
 
   await must(
     "confirm rpc idempotente",

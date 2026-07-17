@@ -22,6 +22,17 @@ function mapItemsToRpcJson(input: ConfirmOrderInput) {
   }));
 }
 
+function requireSingleRpcRow<T>(data: T | T[] | null, context: string): T {
+  if (Array.isArray(data)) {
+    if (data.length === 1) return data[0] as T;
+    throw new Error(`${context}: respuesta RPC inesperada (${data.length} filas).`);
+  }
+  if (!data) {
+    throw new Error(`${context}: respuesta RPC vacia.`);
+  }
+  return data;
+}
+
 export async function confirmOrderWithCurrentFactoryCostsRpc(
   orderId: string,
   input: ConfirmOrderInput,
@@ -49,9 +60,12 @@ export async function confirmOrderWithCurrentFactoryCostsRpc(
     },
   );
 
-  if (error || !data) {
+  if (error) {
     throw new Error(error?.message ?? "No se pudo confirmar la orden.");
   }
 
-  return data as OrdenCompraRow;
+  return requireSingleRpcRow(
+    data as OrdenCompraRow | OrdenCompraRow[] | null,
+    "confirm_order_with_current_factory_costs",
+  );
 }

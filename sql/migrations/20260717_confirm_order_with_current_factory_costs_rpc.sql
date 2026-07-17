@@ -39,6 +39,10 @@ BEGIN
     RAISE EXCEPTION 'Orden no encontrada: %', p_order_id USING ERRCODE = 'P0002';
   END IF;
 
+  IF v_order.estado = 'confirmado' THEN
+    RETURN v_order;
+  END IF;
+
   IF v_order.estado <> 'borrador' THEN
     RAISE EXCEPTION 'No se puede confirmar una orden en estado %', v_order.estado
       USING ERRCODE = '22023';
@@ -97,6 +101,25 @@ BEGIN
       coste_unitario_eur numeric,
       lote_producto text
     )
+    JOIN public.orden_items oi
+      ON oi.id = item.item_id
+     AND oi.orden_id = p_order_id
+    GROUP BY oi.producto_id
+    HAVING count(DISTINCT item.coste_unitario_moneda) > 1
+  ) THEN
+    RAISE EXCEPTION 'Una misma orden contiene el mismo producto con costes distintos'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_to_recordset(p_items) AS item(
+      item_id uuid,
+      coste_unitario_moneda numeric,
+      coste_unitario_usd numeric,
+      coste_unitario_eur numeric,
+      lote_producto text
+    )
     LEFT JOIN public.orden_items oi
       ON oi.id = item.item_id
      AND oi.orden_id = p_order_id
@@ -126,15 +149,22 @@ BEGIN
     AND oi.orden_id = p_order_id;
 
   PERFORM public.upsert_current_factory_cost_by_currency(
-    oi.producto_id,
+    grouped.producto_id,
     v_moneda,
-    oi.coste_unitario_moneda,
-    oi.proveedor_id,
+    grouped.coste_unitario_moneda,
+    grouped.proveedor_id,
     NULL,
     CURRENT_DATE
   )
-  FROM public.orden_items oi
-  WHERE oi.orden_id = p_order_id;
+  FROM (
+    SELECT
+      oi.producto_id,
+      min(oi.proveedor_id) AS proveedor_id,
+      oi.coste_unitario_moneda
+    FROM public.orden_items oi
+    WHERE oi.orden_id = p_order_id
+    GROUP BY oi.producto_id, oi.coste_unitario_moneda
+  ) grouped;
 
   UPDATE public.ordenes_compra
   SET
@@ -168,3 +198,21 @@ BEGIN
   RETURN v_confirmed;
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION public.confirm_order_with_current_factory_costs(
+  uuid,
+  date,
+  date,
+  date,
+  integer,
+  integer,
+  text,
+  uuid,
+  text,
+  numeric,
+  numeric,
+  numeric,
+  integer,
+  text,
+  jsonb
+) TO authenticated, service_role;

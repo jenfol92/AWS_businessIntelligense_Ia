@@ -23,7 +23,8 @@ WITH latest_confirmed AS (
     upper(oc.moneda_compra),
     oc.fecha_confirmacion DESC NULLS LAST,
     oc.created_at DESC NULLS LAST,
-    oc.id DESC
+    oc.id DESC,
+    oi.id DESC
 )
 SELECT count(*) AS filas_producto_moneda_que_actualizaria
 FROM latest_confirmed;
@@ -47,7 +48,8 @@ WITH latest_confirmed AS (
     upper(oc.moneda_compra),
     oc.fecha_confirmacion DESC NULLS LAST,
     oc.created_at DESC NULLS LAST,
-    oc.id DESC
+    oc.id DESC,
+    oi.id DESC
 )
 SELECT public.upsert_current_factory_cost_by_currency(
   producto_id,

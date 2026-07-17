@@ -1,8 +1,32 @@
--- REVISAR ANTES DE EJECUTAR.
--- Archiva y elimina solo filas vigentes antiguas duplicadas del mismo producto + moneda.
--- No toca filas con contenedor_id o lote_producto. Termina en ROLLBACK para preview.
+-- Fase 1 costes - preparacion previa antes del indice unico.
+-- Orden interno:
+-- 1) Validar monedas existentes.
+-- 2) Normalizar trim + upper.
+-- 3) Archivar duplicados vigentes antiguos.
+-- 4) Eliminar solo duplicados vigentes antiguos.
+-- 5) Verificar cero duplicados.
+-- 6) Proteger moneda con CHECK.
 
-BEGIN;
+DO $$
+DECLARE
+  v_invalid text;
+BEGIN
+  SELECT string_agg(DISTINCT coalesce(costo_fabrica_moneda, '(NULL)'), ', ' ORDER BY coalesce(costo_fabrica_moneda, '(NULL)'))
+  INTO v_invalid
+  FROM public.producto_costos
+  WHERE costo_fabrica_moneda IS NULL
+     OR upper(trim(costo_fabrica_moneda)) NOT IN ('USD', 'EUR', 'GBP', 'CNY');
+
+  IF v_invalid IS NOT NULL THEN
+    RAISE EXCEPTION 'Monedas invalidas en producto_costos antes de normalizar: %', v_invalid
+      USING ERRCODE = '22023';
+  END IF;
+END $$;
+
+UPDATE public.producto_costos
+SET costo_fabrica_moneda = upper(trim(costo_fabrica_moneda))
+WHERE costo_fabrica_moneda IS NOT NULL
+  AND costo_fabrica_moneda <> upper(trim(costo_fabrica_moneda));
 
 CREATE TABLE IF NOT EXISTS public.producto_costos_current_duplicate_archive (
   archive_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -22,40 +46,14 @@ WITH ranked AS (
   SELECT
     pc.*,
     row_number() OVER (
-      PARTITION BY pc.producto_id, upper(trim(pc.costo_fabrica_moneda))
+      PARTITION BY pc.producto_id, pc.costo_fabrica_moneda
       ORDER BY
         pc.fecha DESC NULLS LAST,
         (to_jsonb(pc)->>'created_at') DESC NULLS LAST,
         pc.id DESC
     ) AS rn,
     count(*) OVER (
-      PARTITION BY pc.producto_id, upper(trim(pc.costo_fabrica_moneda))
-    ) AS group_count
-  FROM public.producto_costos pc
-  WHERE pc.contenedor_id IS NULL
-    AND pc.lote_producto IS NULL
-),
-to_archive AS (
-  SELECT *
-  FROM ranked
-  WHERE group_count > 1
-    AND rn > 1
-)
-SELECT count(*) AS filas_que_archivaria_y_eliminaria
-FROM to_archive;
-
-WITH ranked AS (
-  SELECT
-    pc.*,
-    row_number() OVER (
-      PARTITION BY pc.producto_id, upper(trim(pc.costo_fabrica_moneda))
-      ORDER BY
-        pc.fecha DESC NULLS LAST,
-        (to_jsonb(pc)->>'created_at') DESC NULLS LAST,
-        pc.id DESC
-    ) AS rn,
-    count(*) OVER (
-      PARTITION BY pc.producto_id, upper(trim(pc.costo_fabrica_moneda))
+      PARTITION BY pc.producto_id, pc.costo_fabrica_moneda
     ) AS group_count
   FROM public.producto_costos pc
   WHERE pc.contenedor_id IS NULL
@@ -99,14 +97,14 @@ WITH ranked AS (
   SELECT
     pc.id,
     row_number() OVER (
-      PARTITION BY pc.producto_id, upper(trim(pc.costo_fabrica_moneda))
+      PARTITION BY pc.producto_id, pc.costo_fabrica_moneda
       ORDER BY
         pc.fecha DESC NULLS LAST,
         (to_jsonb(pc)->>'created_at') DESC NULLS LAST,
         pc.id DESC
     ) AS rn,
     count(*) OVER (
-      PARTITION BY pc.producto_id, upper(trim(pc.costo_fabrica_moneda))
+      PARTITION BY pc.producto_id, pc.costo_fabrica_moneda
     ) AS group_count
   FROM public.producto_costos pc
   WHERE pc.contenedor_id IS NULL
@@ -122,7 +120,26 @@ DELETE FROM public.producto_costos pc
 USING to_delete d
 WHERE pc.id = d.id
   AND pc.contenedor_id IS NULL
-  AND pc.lote_producto IS NULL
-RETURNING pc.id, pc.producto_id, pc.costo_fabrica_moneda, pc.fecha;
+  AND pc.lote_producto IS NULL;
 
-ROLLBACK;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM public.producto_costos
+    WHERE contenedor_id IS NULL
+      AND lote_producto IS NULL
+    GROUP BY producto_id, costo_fabrica_moneda
+    HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'Persisten duplicados vigentes despues de archivar/eliminar'
+      USING ERRCODE = '23505';
+  END IF;
+END $$;
+
+ALTER TABLE public.producto_costos
+DROP CONSTRAINT IF EXISTS producto_costos_costo_fabrica_moneda_check;
+
+ALTER TABLE public.producto_costos
+ADD CONSTRAINT producto_costos_costo_fabrica_moneda_check
+CHECK (costo_fabrica_moneda IN ('USD', 'EUR', 'GBP', 'CNY'));

@@ -46,6 +46,20 @@ BEGIN
       USING ERRCODE = '23502';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.productos p
+    WHERE p.id = p_producto_id
+  ) THEN
+    RAISE EXCEPTION 'Producto no existe: %', p_producto_id
+      USING ERRCODE = '23503';
+  END IF;
+
+  IF p_monto IS NULL OR p_monto <= 0 THEN
+    RAISE EXCEPTION 'El coste vigente requiere monto positivo'
+      USING ERRCODE = '22023';
+  END IF;
+
   INSERT INTO public.producto_costos (
     producto_id,
     proveedor_id,
@@ -59,7 +73,7 @@ BEGIN
   VALUES (
     p_producto_id,
     p_proveedor_id,
-    CASE WHEN p_monto > 0 THEN p_monto ELSE NULL END,
+    p_monto,
     v_moneda,
     p_arancel_porcentaje,
     coalesce(p_fecha, CURRENT_DATE),
@@ -79,3 +93,12 @@ BEGIN
   RETURN v_row;
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION public.upsert_current_factory_cost_by_currency(
+  uuid,
+  text,
+  numeric,
+  uuid,
+  numeric,
+  date
+) TO authenticated, service_role;

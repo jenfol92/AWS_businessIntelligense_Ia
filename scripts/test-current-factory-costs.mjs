@@ -206,6 +206,17 @@ assert.match(confirmRpcSql, /CREATE OR REPLACE FUNCTION public\.confirm_order_wi
 assert.match(confirmRpcSql, /FOR UPDATE/);
 assert.match(confirmRpcSql, /upsert_current_factory_cost_by_currency/);
 assert.match(confirmRpcSql, /estado = 'confirmado'/);
+assert.match(confirmRpcSql, /v_order\.estado = 'confirmado'[\s\S]*RETURN v_order/);
+assert.match(confirmRpcSql, /mismo producto con costes distintos/);
+
+const confirmService = fs.readFileSync(
+  path.join(repoRoot, "modules/orders/services/confirmOrderService.ts"),
+  "utf8",
+);
+assert.match(confirmService, /confirmOrderWithCurrentFactoryCostsRpc/);
+assert.doesNotMatch(confirmService, /updateOrderItemCostsForConfirmation/);
+assert.doesNotMatch(confirmService, /confirmOrderHeader/);
+assert.doesNotMatch(confirmService, /upsertCurrentFactoryCostByCurrency/);
 
 const snapshotRepositoryUrl = pathToFileURL(
   path.join(repoRoot, "modules/orders/repositories/orderConfirmedCostSnapshotRepository.ts"),

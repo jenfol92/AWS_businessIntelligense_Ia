@@ -7,6 +7,7 @@ export type ConfirmedOrderCostCandidate = {
   amount: number | null;
   confirmedAt: string | null;
   createdAt: string | null;
+  lineId?: string | null;
 };
 
 export function selectLatestConfirmedCostByProductCurrency(
@@ -22,7 +23,9 @@ export function selectLatestConfirmedCostByProductCurrency(
       String(a.createdAt ?? ""),
     );
     if (created !== 0) return created;
-    return String(b.orderId).localeCompare(String(a.orderId));
+    const order = String(b.orderId).localeCompare(String(a.orderId));
+    if (order !== 0) return order;
+    return String(b.lineId ?? "").localeCompare(String(a.lineId ?? ""));
   });
 
   for (const row of ordered) {

@@ -1238,7 +1238,10 @@ export default function PedidosPage() {
             setModalItems(undefined);
             clearOrderIdFromUrl();
           }}
-          onSaved={() => {
+          onSaved={(orden) => {
+            if (orden?.id) {
+              ordersList.patchOrder(orden as Partial<OrderListRow> & { id: string });
+            }
             setShowForm(false);
             setEditOrden(null);
             setReadonlyOrden(null);

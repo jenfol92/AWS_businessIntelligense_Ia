@@ -83,7 +83,7 @@ export interface OrderFormModalProps {
   /** Callback al cerrar sin guardar. */
   onClose: () => void;
   /** Callback al guardar con éxito (refresca el listado). */
-  onSaved: () => void;
+  onSaved: (orden?: OrdenRow) => void;
 }
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
@@ -515,7 +515,7 @@ export default function OrderFormModal({
         window.open(`/api/orders/${initialOrden.id}/proforma`, "_blank", "noopener,noreferrer");
       }
 
-      onSaved();
+      onSaved(j1.orden as OrdenRow | undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error desconocido");
     } finally {

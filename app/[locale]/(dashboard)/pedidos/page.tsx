@@ -49,6 +49,7 @@ import { OrderContainerActions }     from "@/modules/orders/components/OrderCont
 import { OrderContainerSummary }     from "@/modules/orders/components/OrderContainerSummary";
 import { PedidosCreateContainerFlow } from "@/modules/orders/components/PedidosCreateContainerFlow";
 import type { OrderListRow }         from "@/modules/orders/types/orderList.types";
+import type { OrdenCompraRow }       from "@/modules/orders/types/orderPersistence.types";
 import type { SugerenciaRow }        from "@/modules/orders/types/orderSuggestions.types";
 import { useOrdersList }             from "@/modules/orders/hooks/useOrdersList";
 import type { EstadoFiltro }         from "@/modules/orders/hooks/useOrdersList";
@@ -492,7 +493,7 @@ function ReopenModal({
 }: {
   orden: OrderListRow;
   onClose: () => void;
-  onReopened: () => void;
+  onReopened: (orden: OrdenCompraRow) => void;
 }) {
   const { motivo, setMotivo, saving, error, handleReopen } =
     useReopenOrder(orden.id, onReopened);
@@ -520,6 +521,7 @@ function ReopenModal({
               Motivo (opcional)
             </label>
             <textarea
+              disabled={saving}
               value={motivo}
               onChange={(e) => setMotivo(e.target.value)}
               rows={3}
@@ -1281,7 +1283,11 @@ export default function PedidosPage() {
         <ReopenModal
           orden={reopenOrden}
           onClose={() => setReopenOrden(null)}
-          onReopened={() => {
+          onReopened={(orden) => {
+            ordersList.patchOrder({
+              ...orden,
+              estado: "borrador" as const,
+            });
             setReopenOrden(null);
             showToast(`Orden ${reopenOrden.numero_orden} reabierta a borrador.`);
             ordersList.refresh();

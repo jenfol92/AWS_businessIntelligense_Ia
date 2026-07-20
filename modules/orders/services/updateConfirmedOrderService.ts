@@ -46,6 +46,15 @@ function compactHeader(input: UpdateOrderDraftInput): Record<string, unknown> {
   return header;
 }
 
+function requireSingleRpcRow<T>(data: T | T[] | null, context: string): T {
+  if (Array.isArray(data)) {
+    if (data.length === 1) return data[0] as T;
+    throw new Error(`${context}: respuesta RPC inesperada (${data.length} filas).`);
+  }
+  if (!data) throw new Error(`${context}: respuesta RPC vacia.`);
+  return data;
+}
+
 async function reconcileLogisticsAssignmentForTipoEnvio(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   orderId: string,
@@ -99,22 +108,26 @@ export async function updateConfirmedOrderService(
 
   await reconcileLogisticsAssignmentForTipoEnvio(supabase, orderId, input.tipo_envio);
 
-  for (const item of items ?? []) {
-    if (!item.item_id) continue;
-    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
-    if (item.cantidad !== undefined) patch.cantidad = item.cantidad;
-    if (item.coste_unitario_moneda !== undefined) patch.coste_unitario_moneda = item.coste_unitario_moneda;
-    if (item.coste_unitario_usd !== undefined) patch.coste_unitario_usd = item.coste_unitario_usd;
-    if (item.coste_unitario_eur !== undefined) patch.coste_unitario_eur = item.coste_unitario_eur;
-    if (item.lote_producto !== undefined) patch.lote_producto = item.lote_producto;
-
-    const { error } = await supabase
-      .from("orden_items")
-      .update(patch)
-      .eq("id", item.item_id)
-      .eq("orden_id", orderId);
+  const costItems = (items ?? []).filter((item) => item.item_id);
+  if (costItems.length > 0) {
+    const { data, error } = await supabase.rpc(
+      "update_confirmed_purchase_order_costs",
+      {
+        p_order_id: orderId,
+        p_items: costItems.map((item) => ({
+          item_id: item.item_id,
+          coste_unitario_moneda: item.coste_unitario_moneda ?? null,
+          coste_unitario_usd: item.coste_unitario_usd ?? null,
+          coste_unitario_eur: item.coste_unitario_eur ?? null,
+        })),
+      },
+    );
 
     if (error) throw new Error(error.message);
+    requireSingleRpcRow(
+      data as OrdenCompraRow | OrdenCompraRow[] | null,
+      "update_confirmed_purchase_order_costs",
+    );
   }
 
   const { data: updated, error: readError } = await supabase

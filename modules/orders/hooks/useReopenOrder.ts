@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { reopenOrder } from "@/modules/orders/api/orderClient";
+import { fetchOrderDetail, reopenOrder } from "@/modules/orders/api/orderClient";
+import type { OrdenCompraRow } from "@/modules/orders/types/orderPersistence.types";
 
 export type UseReopenOrderResult = {
   motivo:      string;
@@ -20,19 +21,21 @@ export type UseReopenOrderResult = {
  */
 export function useReopenOrder(
   orderId: string,
-  onReopened: () => void,
+  onReopened: (orden: OrdenCompraRow) => void,
 ): UseReopenOrderResult {
   const [motivo, setMotivo] = useState("");
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState<string | null>(null);
 
   async function handleReopen() {
+    if (saving) return;
     setSaving(true);
     setError(null);
     try {
-      await reopenOrder(orderId, motivo);
-      onReopened();
+      const orden = await reopenOrder(orderId, motivo);
+      onReopened(orden);
     } catch (err: unknown) {
+      await fetchOrderDetail(orderId);
       setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
       setSaving(false);

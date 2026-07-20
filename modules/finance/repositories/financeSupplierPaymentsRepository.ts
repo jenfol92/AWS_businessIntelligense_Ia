@@ -264,12 +264,7 @@ export async function voidPendingSupplierPaymentsForOrder(
   const supabase = createSupabaseRouteClient();
   const { error } = await supabase
     .from("finance_supplier_payments")
-    .update({
-      status: "anulado",
-      due_date: null,
-      notes: "Pago previsto anulado al pasar la orden a borrador.",
-      updated_at: new Date().toISOString(),
-    })
+    .delete()
     .eq("orden_id", ordenId)
     .in("status", ["pendiente", "vencido"]);
 
@@ -295,7 +290,6 @@ export async function fetchSupplierPaymentsInRange(
        contenedores(id, identificador_embarque, tipo_contenedor)`,
     )
     .or(`due_date.gte.${fromDate},due_date.lte.${toDate},due_date.is.null`)
-    .not("status", "in", "(anulado,inactive)")
     .order("due_date", { ascending: true, nullsFirst: false });
 
   if (error) throw new Error(formatSupabaseError(error));

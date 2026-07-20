@@ -271,7 +271,6 @@ function buildSupplierPaymentEvents(
       payment["ordenes_compra"] as Record<string, unknown> | Record<string, unknown>[] | null,
     );
     const rawStatus = asString(payment["status"]);
-    if (rawStatus === "anulado" || rawStatus === "inactive") continue;
     const container = firstRelation(
       payment["contenedores"] as Record<string, unknown> | Record<string, unknown>[] | null,
     );

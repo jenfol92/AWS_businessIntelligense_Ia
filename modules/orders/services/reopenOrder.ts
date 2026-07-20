@@ -1,6 +1,14 @@
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import type { OrdenCompraRow } from "@/modules/orders/repositories/ordersRepository";
-import { voidPendingSupplierPaymentsForOrder } from "@/modules/finance/repositories/financeSupplierPaymentsRepository";
+
+function requireSingleRpcRow<T>(data: T | T[] | null, context: string): T {
+  if (Array.isArray(data)) {
+    if (data.length === 1) return data[0] as T;
+    throw new Error(`${context}: respuesta RPC inesperada (${data.length} filas).`);
+  }
+  if (!data) throw new Error(`${context}: respuesta RPC vacia.`);
+  return data;
+}
 
 /**
  * Reabre una orden confirmada a borrador sin borrar datos logísticos ni económicos.
@@ -11,36 +19,17 @@ export async function reopenOrder(
 ): Promise<OrdenCompraRow> {
   const supabase = createSupabaseRouteClient();
 
-  const { data: ordenActual, error: ordenError } = await supabase
-    .from("ordenes_compra")
-    .select("id, estado")
-    .eq("id", orderId)
-    .single();
+  const { data, error } = await supabase.rpc(
+    "reopen_confirmed_purchase_order",
+    { p_order_id: orderId },
+  );
 
-  if (ordenError || !ordenActual) {
-    throw new Error("Orden no encontrada");
+  if (error) {
+    throw new Error(error.message || "No se pudo reabrir la orden.");
   }
 
-  if (ordenActual.estado !== "confirmado") {
-    throw new Error("Solo se pueden reabrir ordenes confirmadas.");
-  }
-
-  const { data: orden, error: updateError } = await supabase
-    .from("ordenes_compra")
-    .update({
-      estado: "borrador",
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", orderId)
-    .eq("estado", "confirmado")
-    .select("*")
-    .single();
-
-  if (updateError || !orden) {
-    throw new Error(updateError?.message ?? "No se pudo reabrir la orden.");
-  }
-
-  await voidPendingSupplierPaymentsForOrder(orderId);
-
-  return orden as OrdenCompraRow;
+  return requireSingleRpcRow(
+    data as OrdenCompraRow | OrdenCompraRow[] | null,
+    "reopen_confirmed_purchase_order",
+  );
 }

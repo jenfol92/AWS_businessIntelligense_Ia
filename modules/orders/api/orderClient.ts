@@ -4,6 +4,7 @@ import type { OrderLinkedContainer, OrderListRow } from "@/modules/orders/types/
 import type { SugerenciaRow } from "@/modules/orders/types/orderSuggestions.types";
 import type { ProductoSearch } from "@/modules/orders/types/orderProductSearch.types";
 import type { RawOrderDetail } from "@/modules/orders/types/orderFormState.types";
+import type { OrdenCompraRow } from "@/modules/orders/types/orderPersistence.types";
 import type {
   OrderLeadTimeSuggestion,
   OrderLeadTimeSuggestionRequestItem,
@@ -122,13 +123,14 @@ export async function uploadOrderProforma(
 export async function reopenOrder(
   orderId: string,
   motivo: string,
-): Promise<void> {
+): Promise<OrdenCompraRow> {
   const res = await fetch(`/api/orders/${orderId}/reopen`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ motivo }),
   });
-  await parseApiResponse(res);
+  const json = await parseApiResponse<{ ok: true; orden: OrdenCompraRow }>(res);
+  return json.orden;
 }
 
 // ─── Detalle de orden ─────────────────────────────────────────────────────────

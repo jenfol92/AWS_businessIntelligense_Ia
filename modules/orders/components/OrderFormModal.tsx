@@ -52,12 +52,10 @@ export type OrdenRow = {
   agente_contacto?: string | null;
   lead_time_produccion: number | null;
   lead_time_transito: number | null;
-  tipo_cambio_usd_eur: number | null;
   eta: string | null;
   etd?: string | null;
   eta_real?: string | null;
   moneda_compra?: string | null;
-  tipo_cambio_moneda_eur?: number | null;
   proforma_firmada_url?: string | null;
 };
 
@@ -130,7 +128,6 @@ function mapOrdenRowToOperationsFields(orden: OrdenRow): ConfirmedOperationsFiel
     agente_id: orden.agente_id,
     numero_pedido_agente: orden.numero_pedido_agente,
     notas: orden.notas,
-    tipo_cambio_moneda_eur: orden.tipo_cambio_moneda_eur ?? null,
   };
 }
 
@@ -203,9 +200,6 @@ export default function OrderFormModal({
   const [etdTouched, setEtdTouched] = useState(false);
   const [etaTouched, setEtaTouched] = useState(false);
   const [monedaCompra, setMonedaCompra] = useState(initialOrden?.moneda_compra ?? "USD");
-  const [tipoCambio, setTipoCambio] = useState<number | "">(
-    initialOrden?.tipo_cambio_moneda_eur ?? initialOrden?.tipo_cambio_usd_eur ?? "",
-  );
   const [numeroPedidoAgente, setNumeroPedidoAgente] = useState(
     initialOrden?.numero_pedido_agente ?? "",
   );
@@ -299,8 +293,6 @@ export default function OrderFormModal({
     (sum, item) => sum + Number(item.coste_unitario_moneda ?? 0) * Number(item.cantidad ?? 0),
     0,
   );
-  const fx = monedaCompra === "EUR" ? 1 : tipoCambio === "" ? null : Number(tipoCambio);
-  const totalEurPreview = fx != null ? totalOriginal * fx : null;
 
   // ─── Carga de orden al editar ─────────────────────────────────────────────
 
@@ -321,7 +313,6 @@ export default function OrderFormModal({
     setEta(detailState.eta);
     setEtaReal(detailState.etaReal);
     setMonedaCompra(detailState.monedaCompra);
-    setTipoCambio(detailState.tipoCambio);
     setNumeroPedidoAgente(detailState.numeroPedidoAgente);
     setLeadProduccion(detailState.leadProduccion);
     setLeadTransito(detailState.leadTransito);
@@ -340,8 +331,6 @@ export default function OrderFormModal({
         agente_id: detailState.agenteId || null,
         numero_pedido_agente: detailState.numeroPedidoAgente || null,
         notas: detailState.notas || null,
-        tipo_cambio_moneda_eur:
-          detailState.tipoCambio === "" ? null : Number(detailState.tipoCambio),
       });
     }
   }, [detailState, isConfirmedEdit]);
@@ -527,7 +516,6 @@ export default function OrderFormModal({
       etd,
       eta,
       monedaCompra,
-      tipoCambio,
       numeroPedidoAgente,
       leadProduccion,
       leadTransito,
@@ -545,12 +533,6 @@ export default function OrderFormModal({
           agente_id: agenteId,
           numero_pedido_agente: numeroPedidoAgente,
           notas,
-          tipo_cambio_moneda_eur:
-            monedaCompra === "EUR"
-              ? 1
-              : tipoCambio === ""
-                ? null
-                : Number(tipoCambio),
         };
         const baseline = operationalBaseline ?? currentOperationalFields;
         const operationsPatch = buildConfirmedOperationsPatch(currentOperationalFields, baseline);
@@ -887,23 +869,6 @@ export default function OrderFormModal({
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  1 {monedaCompra} = EUR
-                </label>
-                <input
-                  type="number"
-                  step="0.0001"
-                  min="0.000001"
-                  required
-                  value={tipoCambio}
-                  disabled={monedaCompra === "EUR"}
-                  onChange={(e) =>
-                    setTipoCambio(e.target.value === "" ? "" : Number(e.target.value))
-                  }
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
-                />
-              </div>
-              <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">Nº pedido agente</label>
                 <input
                   value={numeroPedidoAgente}
@@ -939,14 +904,6 @@ export default function OrderFormModal({
                 <p className="font-semibold text-slate-800">
                   {initialOrden.lead_time_produccion ?? "—"} /{" "}
                   {initialOrden.lead_time_transito ?? "—"} días
-                </p>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-emerald-700/80 font-medium">
-                  Cambio USD→EUR
-                </span>
-                <p className="font-semibold text-slate-800">
-                  {initialOrden.tipo_cambio_usd_eur ?? "—"}
                 </p>
               </div>
               <div>
@@ -1481,9 +1438,6 @@ export default function OrderFormModal({
               <span className="font-semibold text-slate-600">Total orden</span>
               <span className="font-bold text-slate-900">
                 {formatMoney(totalOriginal, monedaCompra)}
-                <span className="ml-3 text-blue-700">
-                  {totalEurPreview != null ? `EUR ${totalEurPreview.toFixed(2)}` : "EUR pendiente"}
-                </span>
               </span>
             </div>
           </div>

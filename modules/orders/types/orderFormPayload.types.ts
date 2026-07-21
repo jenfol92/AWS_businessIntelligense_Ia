@@ -16,7 +16,6 @@ export type OrderFormHeaderOpts = {
   etd: string;
   eta: string;
   monedaCompra: string;
-  tipoCambio: number | "";
   numeroPedidoAgente: string;
   leadProduccion: number | "";
   leadTransito: number | "";
@@ -65,8 +64,6 @@ export type OrderFormPayload = {
   etd: string | null;
   eta: string | null;
   moneda_compra: string;
-  tipo_cambio_moneda_eur: number | null;
-  tipo_cambio_usd_eur: number | null;
   numero_pedido_agente: string | null;
   lead_time_produccion: number | null;
   lead_time_transito: number | null;

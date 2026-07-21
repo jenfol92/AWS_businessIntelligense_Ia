@@ -9,17 +9,9 @@ export type ConfirmedOperationsFields = {
   agente_id: string | null;
   numero_pedido_agente: string | null;
   notas: string | null;
-  tipo_cambio_moneda_eur: number | null;
 };
 
 export type ConfirmedOperationsPatch = Partial<ConfirmedOperationsFields>;
-
-export class ConfirmedOperationsPatchValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ConfirmedOperationsPatchValidationError";
-  }
-}
 
 function normalizeText(value: string | null | undefined): string | null {
   const trimmed = (value ?? "").trim();
@@ -41,12 +33,8 @@ function normalizeNumber(
 
 /**
  * Compara el estado operativo actual contra la última línea base confirmada.
- * Solo devuelve claves modificadas; nunca incluye líneas ni datos comerciales.
- *
- * `finance_supplier_payments.amount_eur` es NOT NULL, aunque el tipo de cambio
- * y otros importes informativos sí admiten NULL. No existe por tanto una
- * limpieza atómica coherente con el esquema actual: un FX vacío, cero,
- * negativo o no finito se rechaza en vez de omitirse silenciosamente.
+ * Solo devuelve claves operativas modificadas; nunca incluye líneas, costes,
+ * moneda comercial ni tipos de cambio.
  */
 export function buildConfirmedOperationsPatch(
   current: ConfirmedOperationsFields,
@@ -78,23 +66,21 @@ export function buildConfirmedOperationsPatch(
     patch.eta_real = etaRealCurrent;
   }
 
-  const leadProduccionCurrent = normalizeNumber(
-    current.lead_time_produccion,
-  );
+  const productionCurrent = normalizeNumber(current.lead_time_produccion);
   if (
-    leadProduccionCurrent !== normalizeNumber(baseline.lead_time_produccion)
+    productionCurrent !== normalizeNumber(baseline.lead_time_produccion)
   ) {
-    patch.lead_time_produccion = leadProduccionCurrent;
+    patch.lead_time_produccion = productionCurrent;
   }
 
-  const leadTransitoCurrent = normalizeNumber(current.lead_time_transito);
-  if (leadTransitoCurrent !== normalizeNumber(baseline.lead_time_transito)) {
-    patch.lead_time_transito = leadTransitoCurrent;
+  const transitCurrent = normalizeNumber(current.lead_time_transito);
+  if (transitCurrent !== normalizeNumber(baseline.lead_time_transito)) {
+    patch.lead_time_transito = transitCurrent;
   }
 
-  const agenteIdCurrent = normalizeText(current.agente_id);
-  if (agenteIdCurrent !== normalizeText(baseline.agente_id)) {
-    patch.agente_id = agenteIdCurrent;
+  const agentCurrent = normalizeText(current.agente_id);
+  if (agentCurrent !== normalizeText(baseline.agente_id)) {
+    patch.agente_id = agentCurrent;
   }
 
   const agentOrderCurrent = normalizeText(current.numero_pedido_agente);
@@ -104,21 +90,9 @@ export function buildConfirmedOperationsPatch(
     patch.numero_pedido_agente = agentOrderCurrent;
   }
 
-  const notasCurrent = normalizeText(current.notas);
-  if (notasCurrent !== normalizeText(baseline.notas)) {
-    patch.notas = notasCurrent;
-  }
-
-  const fxCurrent = normalizeNumber(current.tipo_cambio_moneda_eur);
-  if (fxCurrent == null || fxCurrent <= 0) {
-    throw new ConfirmedOperationsPatchValidationError(
-      "El tipo de cambio a EUR es obligatorio y debe ser un número positivo.",
-    );
-  }
-  if (
-    fxCurrent !== normalizeNumber(baseline.tipo_cambio_moneda_eur)
-  ) {
-    patch.tipo_cambio_moneda_eur = fxCurrent;
+  const notesCurrent = normalizeText(current.notas);
+  if (notesCurrent !== normalizeText(baseline.notas)) {
+    patch.notas = notesCurrent;
   }
 
   return patch;

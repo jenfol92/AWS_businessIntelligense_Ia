@@ -216,8 +216,6 @@ export default function ConfirmOrderModal({
 
           const monedaOrden = (ordenData.moneda_compra ?? "USD").toString().toUpperCase();
           setMoneda(monedaOrden);
-          const tcOrden =
-            ordenData.tipo_cambio_moneda_eur ?? ordenData.tipo_cambio_usd_eur;
           setAgenteId(
             (ordenData.agente_id as string | null | undefined) ??
               orden.agente_id ??
@@ -226,12 +224,6 @@ export default function ConfirmOrderModal({
           if (ordenData.numero_pedido_agente) {
             setNumeroPedidoAgente(String(ordenData.numero_pedido_agente));
           }
-          if (monedaOrden === "EUR") {
-            setCambio(1);
-          } else if (tcOrden != null) {
-            setCambio(Number(tcOrden));
-          }
-
           const { diasProduccion: prod, diasTransito: trans, fuente } =
             resolveInitialLeadTimes({ ...orden, ...ordenData }, rawItems);
           setDiasProduccion(prod);
@@ -308,8 +300,6 @@ export default function ConfirmOrderModal({
   const [numeroPedidoAgente, setNumeroPedidoAgente] = useState("");
   const [agenteId, setAgenteId] = useState(orden.agente_id ?? "");
   const [moneda,  setMoneda]  = useState("USD");
-  /** 1 unidad de moneda = X EUR */
-  const [cambio,  setCambio]  = useState<number | "">(0.92);
   const [etd,     setEtd]     = useState("");
   const [eta,     setEta]     = useState("");
   const [etaTouched, setEtaTouched] = useState(false);
@@ -346,32 +336,13 @@ export default function ConfirmOrderModal({
   // ─── Helpers de moneda ────────────────────────────────────────────────────
 
   const monedaInfo = MONEDAS.find((m) => m.code === moneda) ?? MONEDAS[0];
-  const tipoCambio = cambio === "" ? null : Number(cambio);
-
-  /** Convierte precio en moneda de compra a EUR. */
-  function toEur(unitMoneda: number | null): number | null {
-    if (unitMoneda == null) return null;
-    if (moneda === "EUR") return unitMoneda;
-    if (!tipoCambio) return null;
-    return unitMoneda * tipoCambio;
-  }
 
   const totalMoneda = items.reduce(
     (s, i) => s + (i.coste_unitario_moneda ?? 0) * i.cantidad,
     0,
   );
-  const totalEur = items.reduce((s, i) => {
-    const eur = toEur(i.coste_unitario_moneda);
-    return s + (eur ?? 0) * i.cantidad;
-  }, 0);
-
   function handleMonedaChange(nueva: string) {
     setMoneda(nueva);
-    if (nueva === "EUR") setCambio(1);
-    else if (cambio === 1 || cambio === "") {
-      const defaults: Record<string, number> = { USD: 0.92, GBP: 1.17, CNY: 0.13 };
-      setCambio(defaults[nueva] ?? "");
-    }
   }
 
   // ─── Edición de costes ────────────────────────────────────────────────────
@@ -406,7 +377,6 @@ export default function ConfirmOrderModal({
     setSaving(true);
     setError(null);
     try {
-      const tc = moneda === "EUR" ? 1 : tipoCambio;
       const r = await fetch(`/api/orders/${orden.id}/confirm`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
@@ -418,22 +388,16 @@ export default function ConfirmOrderModal({
           numero_pedido_agente:      numeroPedidoAgente || null,
           agente_id:                 agenteId || null,
           moneda_compra:             moneda,
-          tipo_cambio_moneda_eur:    tc,
-          tipo_cambio_usd_eur:       moneda === "USD" ? tc : null,
           deposito_porcentaje:       depositoPct,
           balance_dias_antes_eta:    balanceDiasAntesEta,
           balance_condiciones_texto: balanceCondiciones,
-          items_costes: items.map((i) => {
-            const unitMoneda = i.coste_unitario_moneda;
-            const unitEur = toEur(unitMoneda);
-            return {
+          items_costes: items.map((i) => ({
               item_id:               i.id,
-              coste_unitario_moneda: unitMoneda,
-              coste_unitario_eur:    unitEur,
-              coste_unitario_usd:    moneda === "USD" ? unitMoneda : null,
+              coste_unitario_moneda: i.coste_unitario_moneda,
+              coste_unitario_eur:    moneda === "EUR" ? i.coste_unitario_moneda : null,
+              coste_unitario_usd:    moneda === "USD" ? i.coste_unitario_moneda : null,
               lote_producto:         i.lote_producto,
-            };
-          }),
+          })),
         }),
       });
       const j = await r.json() as {
@@ -567,22 +531,6 @@ export default function ConfirmOrderModal({
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  1 {moneda} = EUR
-                </label>
-                <input
-                  type="number"
-                  step="0.0001"
-                  min={0}
-                  value={cambio}
-                  disabled={moneda === "EUR"}
-                  onChange={(e) =>
-                    setCambio(e.target.value === "" ? "" : Number(e.target.value))
-                  }
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50"
-                />
-              </div>
             </div>
 
             <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -689,7 +637,7 @@ export default function ConfirmOrderModal({
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-sm font-semibold text-slate-700">Costes unitarios</h3>
               <span className="text-xs text-slate-400">
-                Moneda: {moneda} · Cambio: {cambio === "" ? "—" : cambio}
+                Moneda comercial: {moneda}
               </span>
             </div>
 
@@ -706,16 +654,12 @@ export default function ConfirmOrderModal({
                         Precio unitario
                       </th>
                       <th className="px-3 py-2.5 text-right w-28">Total {moneda}</th>
-                      {moneda !== "EUR" && (
-                        <th className="px-3 py-2.5 text-right w-28">Total EUR</th>
-                      )}
                       <th className="px-3 py-2.5 text-center w-32">Lote</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {items.map((item) => {
                       const unitMoneda = item.coste_unitario_moneda;
-                      const eurUnit = toEur(unitMoneda);
                       return (
                         <tr key={item.id} className="hover:bg-slate-50">
                           <td className="px-3 py-2">
@@ -749,13 +693,6 @@ export default function ConfirmOrderModal({
                               ? `${monedaInfo.simbolo}${(unitMoneda * item.cantidad).toFixed(2)}`
                               : "—"}
                           </td>
-                          {moneda !== "EUR" && (
-                            <td className="px-3 py-2 text-right font-semibold text-blue-700">
-                              {eurUnit != null
-                                ? `€${(eurUnit * item.cantidad).toFixed(2)}`
-                                : "—"}
-                            </td>
-                          )}
                           <td className="px-3 py-2">
                             <input
                               type="text"
@@ -780,11 +717,6 @@ export default function ConfirmOrderModal({
                       <td className="px-3 py-2.5 text-right font-bold text-slate-800">
                         {monedaInfo.simbolo}{totalMoneda.toFixed(2)}
                       </td>
-                      {moneda !== "EUR" && (
-                        <td className="px-3 py-2.5 text-right font-bold text-blue-700">
-                          €{totalEur.toFixed(2)}
-                        </td>
-                      )}
                       <td />
                     </tr>
                   </tfoot>
@@ -810,9 +742,7 @@ export default function ConfirmOrderModal({
           <button
             type="button"
             onClick={() => {
-              const params = new URLSearchParams({ moneda });
-              if (cambio !== "") params.set("cambio", String(cambio));
-              const url = `/api/orders/${orden.id}/proforma?${params.toString()}`;
+              const url = `/api/orders/${orden.id}/proforma`;
               window.open(url, "_blank", "noopener,noreferrer");
             }}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-blue-200 text-blue-600 bg-blue-50 hover:bg-blue-100 transition"

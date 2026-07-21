@@ -51,8 +51,10 @@ export async function confirmOrderWithCurrentFactoryCostsRpc(
       p_numero_pedido_agente: input.numero_pedido_agente ?? null,
       p_agente_id: input.agente_id ?? null,
       p_moneda_compra: input.moneda_compra ?? null,
-      p_tipo_cambio_moneda_eur: input.tipo_cambio_moneda_eur ?? null,
-      p_tipo_cambio_usd_eur: input.tipo_cambio_usd_eur ?? null,
+      // Parámetros legacy conservados por compatibilidad de firma de la RPC.
+      // El flujo nuevo no recoge ni propaga FX de orden.
+      p_tipo_cambio_moneda_eur: null,
+      p_tipo_cambio_usd_eur: null,
       p_deposito_porcentaje: input.deposito_porcentaje ?? 30,
       p_balance_dias_antes_eta: input.balance_dias_antes_eta ?? 10,
       p_balance_condiciones_texto: input.balance_condiciones_texto ?? null,

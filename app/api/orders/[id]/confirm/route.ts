@@ -25,8 +25,6 @@ type Params = { params: { id: string } };
  * @param lead_time_transito        - Dias de transito maritimo
  * @param numero_pedido_agente      - Referencia del agente
  * @param moneda_compra             - Moneda de compra (USD, EUR, CNY, GBP, ...)
- * @param tipo_cambio_moneda_eur    - Tipo de cambio moneda → EUR (1 unidad = X EUR)
- * @param tipo_cambio_usd_eur       - Compatibilidad: solo si moneda_compra = USD
  * @param deposito_porcentaje       - Porcentaje de deposito (default 30)
  * @param balance_dias_antes_eta    - Dias antes de ETA para pagar balance (default 10)
  * @param balance_condiciones_texto - Texto libre de condiciones de pago
@@ -49,8 +47,6 @@ export async function POST(req: Request, { params }: Params) {
     numero_pedido_agente?: string | null;
     agente_id?: string | null;
     moneda_compra?: string | null;
-    tipo_cambio_moneda_eur?: number | null;
-    tipo_cambio_usd_eur?: number | null;
     deposito_porcentaje?: number;
     balance_dias_antes_eta?: number;
     balance_condiciones_texto?: string;
@@ -83,8 +79,6 @@ export async function POST(req: Request, { params }: Params) {
       numero_pedido_agente: body.numero_pedido_agente,
       agente_id: body.agente_id,
       moneda_compra: body.moneda_compra,
-      tipo_cambio_moneda_eur: body.tipo_cambio_moneda_eur,
-      tipo_cambio_usd_eur: body.tipo_cambio_usd_eur,
       deposito_porcentaje: body.deposito_porcentaje ?? 30,
       balance_dias_antes_eta: body.balance_dias_antes_eta ?? 10,
       balance_condiciones_texto: body.balance_condiciones_texto,

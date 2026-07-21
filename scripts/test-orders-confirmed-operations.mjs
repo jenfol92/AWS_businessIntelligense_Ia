@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  buildConfirmedOperationsPatch,
-  ConfirmedOperationsPatchValidationError,
-} from "../modules/orders/utils/buildConfirmedOperationsPatch.ts";
+import { buildConfirmedOperationsPatch } from "../modules/orders/utils/buildConfirmedOperationsPatch.ts";
 import {
   loadProformaData,
   prepareProformaVersion,
@@ -14,7 +11,7 @@ import {
 const root = process.cwd();
 const read = (path) => readFileSync(join(root, path), "utf8");
 
-const rpcSql = read("sql/migrations/20260721_harden_confirmed_order_operations.sql");
+const rpcSql = read("sql/migrations/20260721_remove_order_fx_from_operational_flow.sql");
 const versionSql = read("sql/migrations/20260721_safe_order_proforma_versioning.sql");
 const cleanupSql = read("sql/migrations/20260721_remove_confirmed_commercial_edit_rpc.sql");
 const operationsRoute = read("app/api/orders/[id]/confirmed-operations/route.ts");
@@ -26,6 +23,9 @@ const proformaService = read("modules/orders/services/orderProformaData.ts");
 const modal = read("modules/orders/components/OrderFormModal.tsx");
 const ordersPage = read("app/[locale]/(dashboard)/pedidos/page.tsx");
 const diagnosticSql = read("sql/diagnostics/confirmed_order_operations_validation.sql");
+const confirmModal = read("modules/orders/components/ConfirmOrderModal.tsx");
+const confirmRoute = read("app/api/orders/[id]/confirm/route.ts");
+const confirmRepository = read("modules/orders/repositories/orderConfirmRepository.ts");
 
 assert.doesNotMatch(operationsRoute, /\bitems\b|orden_items|producto_costos/);
 assert.doesNotMatch(operationsService, /\bitems\b|orden_items|producto_costos/);
@@ -137,9 +137,9 @@ assert.match(
 
 assert.match(rpcSql, /lead_time_produccion debe ser un entero mayor o igual que cero/);
 assert.match(rpcSql, /lead_time_transito debe ser un entero mayor o igual que cero/);
-assert.match(rpcSql, /tipo_cambio_moneda_eur debe ser positivo/);
 assert.match(rpcSql, /tipo_envio debe ser propio o amazon_agl/);
 assert.match(rpcSql, /La edición operativa contiene campos no permitidos/);
+assert.doesNotMatch(rpcSql, /tipo_cambio_moneda_eur|planned_fx_rate|amount_eur|coste_total_eur|v_changed_fx|orden_items/);
 
 assert.match(
   versionSql,
@@ -201,7 +201,6 @@ const BASELINE = {
   agente_id: "11111111-1111-1111-1111-111111111111",
   numero_pedido_agente: "PO-1",
   notas: "nota base",
-  tipo_cambio_moneda_eur: 1.1,
 };
 
 // Cambiar solo destino envía exactamente { destino: ... }.
@@ -263,29 +262,6 @@ assert.deepEqual(
   { lead_time_transito: null },
 );
 
-// amount_eur es NOT NULL en el esquema: vaciar, usar cero, negativo o NaN
-// debe producir un error claro, nunca un patch vacío silencioso.
-for (const invalidFx of [null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-  assert.throws(
-    () =>
-      buildConfirmedOperationsPatch(
-        { ...BASELINE, tipo_cambio_moneda_eur: invalidFx },
-        BASELINE,
-      ),
-    (error) =>
-      error instanceof ConfirmedOperationsPatchValidationError &&
-      /obligatorio.*positivo/i.test(error.message),
-    `FX inválido ${String(invalidFx)} debe rechazarse`,
-  );
-}
-assert.deepEqual(
-  buildConfirmedOperationsPatch(
-    { ...BASELINE, tipo_cambio_moneda_eur: 1.25 },
-    BASELINE,
-  ),
-  { tipo_cambio_moneda_eur: 1.25 },
-);
-
 // Nunca debe incluir items, costes ni campos comerciales: el tipo devuelto solo
 // puede contener claves operativas conocidas.
 const ALLOWED_PATCH_KEYS = new Set([
@@ -299,7 +275,6 @@ const ALLOWED_PATCH_KEYS = new Set([
   "agente_id",
   "numero_pedido_agente",
   "notas",
-  "tipo_cambio_moneda_eur",
 ]);
 const fullyChangedPatch = buildConfirmedOperationsPatch(
   {
@@ -313,7 +288,6 @@ const fullyChangedPatch = buildConfirmedOperationsPatch(
     agente_id: "22222222-2222-2222-2222-222222222222",
     numero_pedido_agente: "PO-2",
     notas: "otra nota",
-    tipo_cambio_moneda_eur: 1.3,
   },
   BASELINE,
 );
@@ -334,6 +308,18 @@ assert.ok(
   !("agente_id" in concurrentSafePatch) && !("eta" in concurrentSafePatch),
   "campos no tocados por el usuario no deben viajar en el patch",
 );
+
+// Confirmar USD, CNY o EUR no pide ni envía un tipo de cambio de orden.
+for (const currency of ["USD", "CNY", "EUR"]) {
+  assert.match(confirmModal, new RegExp(`\\{ code: "${currency}"`));
+}
+assert.doesNotMatch(confirmModal, /tipo_cambio_moneda_eur|tipo_cambio_usd_eur|1 \{moneda\} = EUR/);
+assert.doesNotMatch(confirmRoute, /tipo_cambio_moneda_eur|tipo_cambio_usd_eur/);
+assert.match(
+  confirmRepository,
+  /p_tipo_cambio_moneda_eur:\s*null[\s\S]*p_tipo_cambio_usd_eur:\s*null/,
+);
+assert.doesNotMatch(modal, /tipoCambio|setTipoCambio|tipo_cambio_moneda_eur:/);
 
 // El modal debe usar el helper y mantener una línea base operativa que se
 // actualiza tras cada guardado con la orden devuelta por el servidor.

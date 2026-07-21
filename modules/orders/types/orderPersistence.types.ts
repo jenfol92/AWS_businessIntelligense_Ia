@@ -229,8 +229,6 @@ export type ConfirmOrderInput = {
   numero_pedido_agente?: string | null;
   agente_id?: string | null;
   moneda_compra?: string | null;
-  tipo_cambio_moneda_eur?: number | null;
-  tipo_cambio_usd_eur?: number | null;
   deposito_porcentaje?: number;
   balance_dias_antes_eta?: number;
   balance_condiciones_texto?: string;

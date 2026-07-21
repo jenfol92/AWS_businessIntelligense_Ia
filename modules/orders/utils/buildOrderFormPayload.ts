@@ -18,7 +18,6 @@ export function buildOrderFormPayload(
   itemList: OrderFormItemInput[],
   opts: OrderFormHeaderOpts,
 ): OrderFormPayload {
-  const tc = opts.tipoCambio === "" ? null : Number(opts.tipoCambio);
   return {
     tipo_envio:  opts.tipoEnvio,
     fob_puerto:  opts.fob     || null,
@@ -30,8 +29,6 @@ export function buildOrderFormPayload(
     etd:         opts.etd || null,
     eta:         opts.eta || null,
     moneda_compra: opts.monedaCompra || "USD",
-    tipo_cambio_moneda_eur: tc,
-    tipo_cambio_usd_eur: opts.monedaCompra === "USD" ? tc : null,
     numero_pedido_agente: opts.numeroPedidoAgente || null,
     lead_time_produccion: opts.leadProduccion === "" ? null : Number(opts.leadProduccion),
     lead_time_transito:   opts.leadTransito   === "" ? null : Number(opts.leadTransito),

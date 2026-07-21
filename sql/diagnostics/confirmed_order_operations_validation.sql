@@ -332,39 +332,41 @@ BEGIN
 END;
 $$;
 
--- 8) Cambio de tipo de cambio: solo debe afectar equivalentes EUR de pagos
---    no realizados (pendiente/vencido), usando el mismo fx efectivo que la
---    RPC (1 si la orden es EUR, el valor del patch en cualquier otro caso).
+-- 8) El FX ya no es operativo: la RPC debe rechazarlo y preservar todos los
+--    importes estimados/legacy y reales de los pagos.
 DO $$
 DECLARE
   v_order_id uuid;
-  v_new_fx numeric := 1.2345;
-  v_effective_fx numeric;
-  v_actual record;
+  v_rejected boolean := false;
+  v_changed_count integer;
 BEGIN
   SELECT order_id INTO v_order_id FROM _confirmed_order_test_context;
 
-  SELECT CASE WHEN upper(coalesce(moneda_compra, '')) = 'EUR' THEN 1 ELSE v_new_fx END
-  INTO v_effective_fx
-  FROM public.ordenes_compra WHERE id = v_order_id;
+  BEGIN
+    PERFORM public.update_confirmed_purchase_order_operations(
+      v_order_id,
+      jsonb_build_object('tipo_cambio_moneda_eur', 1.2345)
+    );
+  EXCEPTION
+    WHEN SQLSTATE '22023' THEN
+      v_rejected := true;
+  END;
 
-  PERFORM public.update_confirmed_purchase_order_operations(
-    v_order_id,
-    jsonb_build_object('tipo_cambio_moneda_eur', v_new_fx)
-  );
-
-  SELECT amount_original, amount_eur, planned_fx_rate, status INTO v_actual
-  FROM public.finance_supplier_payments
-  WHERE orden_id = v_order_id AND payment_type = 'BALANCE_70';
-
-  IF v_actual.status NOT IN ('pendiente', 'vencido') THEN
-    RAISE EXCEPTION 'test_8_FALLO: BALANCE_70 no está pendiente/vencido, no se puede validar el cambio de FX (status=%)', v_actual.status;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'test_8_FALLO: la RPC debería rechazar tipo_cambio_moneda_eur';
   END IF;
 
-  IF v_actual.planned_fx_rate IS DISTINCT FROM v_effective_fx
-     OR v_actual.amount_eur IS DISTINCT FROM round(v_actual.amount_original * v_effective_fx, 4) THEN
-    RAISE EXCEPTION 'test_8_FALLO: amount_eur/planned_fx_rate no reflejan el fx efectivo % (amount_original=%, amount_eur=%, planned_fx_rate=%)',
-      v_effective_fx, v_actual.amount_original, v_actual.amount_eur, v_actual.planned_fx_rate;
+  SELECT count(*) INTO v_changed_count
+  FROM public.finance_supplier_payments fsp
+  JOIN _snapshot_finance_supplier_payments s ON s.id = fsp.id
+  WHERE (fsp.amount_original, fsp.original_currency, fsp.amount_eur,
+         fsp.planned_fx_rate, fsp.actual_fx_rate, fsp.actual_amount_eur)
+        IS DISTINCT FROM
+        (s.amount_original, s.original_currency, s.amount_eur,
+         s.planned_fx_rate, s.actual_fx_rate, s.actual_amount_eur);
+
+  IF v_changed_count <> 0 THEN
+    RAISE EXCEPTION 'test_8_FALLO: el patch FX rechazado modificó % pago(s)', v_changed_count;
   END IF;
 
   RAISE NOTICE 'test_8_ok';

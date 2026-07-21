@@ -11,7 +11,7 @@ const service = read(
 );
 const route = read("app/api/orders/[id]/confirmed-operations/route.ts");
 const rpcSql = read(
-  "sql/migrations/20260721_confirmed_order_operations.sql",
+  "sql/migrations/20260721_remove_order_fx_from_operational_flow.sql",
 );
 const proformaSql = read(
   "sql/migrations/20260721_order_proforma_versions.sql",
@@ -41,8 +41,9 @@ assert.doesNotMatch(rpcSql, /status = 'pagado'/);
 
 assert.match(
   rpcSql,
-  /key\.name NOT IN \([\s\S]*'destino'[\s\S]*'tipo_cambio_moneda_eur'/,
+  /key\.name NOT IN \([\s\S]*'destino'[\s\S]*'notas'/,
 );
+assert.doesNotMatch(rpcSql, /tipo_cambio_moneda_eur|planned_fx_rate|actual_fx_rate/);
 assert.doesNotMatch(
   rpcSql,
   /key\.name NOT IN \([\s\S]*'moneda_compra'/,
@@ -67,15 +68,7 @@ assert.doesNotMatch(
   /amount_original\s*=/,
   "la edición operativa conserva importes comerciales originales",
 );
-assert.match(
-  rpcSql,
-  /amount_eur = fsp\.amount_original \* v_fx/,
-  "el tipo de cambio actualiza solo el equivalente EUR",
-);
-assert.match(
-  rpcSql,
-  /coste_total_eur = coalesce\(\([\s\S]*coste_unitario_moneda/,
-);
+assert.doesNotMatch(rpcSql, /amount_eur\s*=|coste_total_eur\s*=|orden_items/);
 assert.match(rpcSql, /contenedor propio activo/);
 assert.match(rpcSql, /envío Amazon inbound activo/);
 assert.doesNotMatch(rpcSql, /DELETE FROM public\.contenedor_ordenes/);
@@ -120,7 +113,7 @@ assert.match(
 );
 assert.match(modal, /disabled=\{readonly \|\| isConfirmedEdit\}[\s\S]*value=\{item\.lote_producto/);
 assert.match(modal, /value=\{monedaCompra\}[\s\S]{0,120}disabled=\{isConfirmedEdit\}/);
-assert.match(modal, /value=\{tipoCambio\}[\s\S]{0,120}disabled=\{monedaCompra === "EUR"\}/);
+assert.doesNotMatch(modal, /tipoCambio|setTipoCambio|1 \{monedaCompra\} = EUR/);
 
 assert.match(proformaSql, /CREATE TABLE IF NOT EXISTS public\.order_proforma_versions/);
 assert.match(proformaSql, /UNIQUE \(orden_id, version\)/);

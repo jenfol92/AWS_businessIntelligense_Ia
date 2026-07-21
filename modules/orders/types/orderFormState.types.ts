@@ -49,7 +49,6 @@ export type OrderFormLoaderState = {
   eta: string;
   etaReal: string;
   monedaCompra: string;
-  tipoCambio: number | "";
   numeroPedidoAgente: string;
   leadProduccion: number | "";
   leadTransito: number | "";

@@ -15,7 +15,6 @@ const CBM_LIMITE_DEFAULT = 65;
 
 export function mapOrderDetailToFormState(detail: RawOrderDetail): OrderFormLoaderState {
   const orden = detail.orden;
-  const tc    = (orden.tipo_cambio_moneda_eur ?? orden.tipo_cambio_usd_eur) as number | null;
 
   return {
     tipoEnvio:          orden.tipo_envio === "amazon_agl" ? "amazon_agl" : "propio",
@@ -29,7 +28,6 @@ export function mapOrderDetailToFormState(detail: RawOrderDetail): OrderFormLoad
     eta:                orden.eta ? String(orden.eta).slice(0, 10) : "",
     etaReal:            orden.eta_real ? String(orden.eta_real).slice(0, 10) : "",
     monedaCompra:       String(orden.moneda_compra ?? "USD"),
-    tipoCambio:         tc != null ? Number(tc) : "",
     numeroPedidoAgente: (orden.numero_pedido_agente  as string | null) ?? "",
     leadProduccion:     (orden.lead_time_produccion  as number | null) ?? "",
     leadTransito:       (orden.lead_time_transito    as number | null) ?? "",

@@ -15,13 +15,13 @@ function requireSingleRpcRow<T>(data: T | T[] | null, context: string): T {
  */
 export async function reopenOrder(
   orderId: string,
-  _motivo?: string | null,
+  motivo?: string | null,
 ): Promise<OrdenCompraRow> {
   const supabase = createSupabaseRouteClient();
 
   const { data, error } = await supabase.rpc(
     "reopen_confirmed_purchase_order",
-    { p_order_id: orderId },
+    { p_order_id: orderId, p_motivo: motivo ?? null },
   );
 
   if (error) {

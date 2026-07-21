@@ -44,6 +44,20 @@ function requireSingleRpcRow<T>(data: T | T[] | null, context: string): T {
   return data;
 }
 
+function buildConfirmedCostItemPayload(item: ConfirmedOrderItemPatch): Record<string, unknown> {
+  const payload: Record<string, unknown> = { item_id: item.item_id };
+  if (Object.prototype.hasOwnProperty.call(item, "coste_unitario_moneda")) {
+    payload.coste_unitario_moneda = item.coste_unitario_moneda;
+  }
+  if (Object.prototype.hasOwnProperty.call(item, "coste_unitario_usd")) {
+    payload.coste_unitario_usd = item.coste_unitario_usd;
+  }
+  if (Object.prototype.hasOwnProperty.call(item, "coste_unitario_eur")) {
+    payload.coste_unitario_eur = item.coste_unitario_eur;
+  }
+  return payload;
+}
+
 export async function updateConfirmedOrderService(
   orderId: string,
   input: UpdateConfirmedOrderInput,
@@ -57,12 +71,7 @@ export async function updateConfirmedOrderService(
     {
       p_order_id: orderId,
       p_header: header,
-      p_items: (items ?? []).map((item) => ({
-        item_id: item.item_id,
-        coste_unitario_moneda: item.coste_unitario_moneda ?? null,
-        coste_unitario_usd: item.coste_unitario_usd ?? null,
-        coste_unitario_eur: item.coste_unitario_eur ?? null,
-      })),
+      p_items: (items ?? []).map(buildConfirmedCostItemPayload),
     },
   );
 

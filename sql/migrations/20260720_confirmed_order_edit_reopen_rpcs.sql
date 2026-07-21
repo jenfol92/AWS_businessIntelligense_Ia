@@ -1,8 +1,13 @@
 -- Ordenes confirmadas: reapertura y edicion de costes transaccionales.
 -- No aplicar en produccion sin ejecutar primero en base de pruebas.
 
+BEGIN;
+
+DROP FUNCTION IF EXISTS public.update_confirmed_purchase_order_costs(uuid, jsonb);
+
 CREATE OR REPLACE FUNCTION public.reopen_confirmed_purchase_order(
-  p_order_id uuid
+  p_order_id uuid,
+  p_motivo text DEFAULT NULL
 )
 RETURNS public.ordenes_compra
 LANGUAGE plpgsql
@@ -44,6 +49,16 @@ BEGIN
   UPDATE public.ordenes_compra
   SET
     estado = 'borrador',
+    notas = concat_ws(
+      E'\n',
+      nullif(notas, ''),
+      concat(
+        '[',
+        to_char(now(), 'YYYY-MM-DD HH24:MI'),
+        '] REAPERTURA: ',
+        coalesce(nullif(trim(p_motivo), ''), 'Sin motivo indicado.')
+      )
+    ),
     updated_at = now()
   WHERE id = p_order_id
     AND estado = 'confirmado'
@@ -57,202 +72,10 @@ BEGIN
 END;
 $$;
 
-REVOKE EXECUTE ON FUNCTION public.reopen_confirmed_purchase_order(uuid)
+REVOKE EXECUTE ON FUNCTION public.reopen_confirmed_purchase_order(uuid, text)
 FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION public.reopen_confirmed_purchase_order(uuid)
-TO authenticated, service_role;
-
-CREATE OR REPLACE FUNCTION public.update_confirmed_purchase_order_costs(
-  p_order_id uuid,
-  p_items jsonb
-)
-RETURNS public.ordenes_compra
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  v_order public.ordenes_compra;
-  v_updated public.ordenes_compra;
-  v_input_count integer;
-  v_distinct_input_count integer;
-  v_currency text;
-BEGIN
-  SELECT *
-  INTO v_order
-  FROM public.ordenes_compra
-  WHERE id = p_order_id
-  FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Orden no encontrada: %', p_order_id USING ERRCODE = 'P0002';
-  END IF;
-
-  IF v_order.estado <> 'confirmado' THEN
-    RAISE EXCEPTION 'Solo se pueden editar costes de ordenes confirmadas abiertas.'
-      USING ERRCODE = '22023';
-  END IF;
-
-  IF EXISTS (
-    SELECT 1
-    FROM public.finance_supplier_payments fsp
-    WHERE fsp.orden_id = p_order_id
-      AND fsp.status = 'pagado'
-    FOR UPDATE
-  ) THEN
-    RAISE EXCEPTION 'No se puede modificar el coste porque la orden tiene pagos realizados.'
-      USING ERRCODE = '22023';
-  END IF;
-
-  v_currency := upper(trim(coalesce(v_order.moneda_compra, '')));
-  IF v_currency NOT IN ('USD', 'EUR', 'GBP', 'CNY') THEN
-    RAISE EXCEPTION 'Moneda de compra no valida para actualizar costes: %', coalesce(v_order.moneda_compra, '(null)')
-      USING ERRCODE = '22023';
-  END IF;
-
-  SELECT count(*), count(DISTINCT item_id)
-  INTO v_input_count, v_distinct_input_count
-  FROM jsonb_to_recordset(coalesce(p_items, '[]'::jsonb)) AS item(
-    item_id uuid,
-    coste_unitario_moneda numeric,
-    coste_unitario_usd numeric,
-    coste_unitario_eur numeric
-  );
-
-  IF v_input_count = 0 THEN
-    RETURN v_order;
-  END IF;
-
-  IF v_input_count <> v_distinct_input_count THEN
-    RAISE EXCEPTION 'Hay lineas repetidas en la edicion de costes.'
-      USING ERRCODE = '22023';
-  END IF;
-
-  IF EXISTS (
-    SELECT 1
-    FROM jsonb_to_recordset(p_items) AS item(
-      item_id uuid,
-      coste_unitario_moneda numeric,
-      coste_unitario_usd numeric,
-      coste_unitario_eur numeric
-    )
-    LEFT JOIN public.orden_items oi
-      ON oi.id = item.item_id
-     AND oi.orden_id = p_order_id
-    WHERE oi.id IS NULL
-       OR oi.producto_id IS NULL
-       OR item.coste_unitario_moneda IS NULL
-       OR item.coste_unitario_moneda <= 0
-  ) THEN
-    RAISE EXCEPTION 'Hay lineas ajenas, sin producto o sin coste valido.'
-      USING ERRCODE = '22023';
-  END IF;
-
-  IF EXISTS (
-    SELECT 1
-    FROM jsonb_to_recordset(p_items) AS item(
-      item_id uuid,
-      coste_unitario_moneda numeric,
-      coste_unitario_usd numeric,
-      coste_unitario_eur numeric
-    )
-    JOIN public.orden_items oi
-      ON oi.id = item.item_id
-     AND oi.orden_id = p_order_id
-    JOIN public.producto_costos pc
-      ON pc.producto_id = oi.producto_id
-     AND pc.contenedor_id IS NOT NULL
-     AND coalesce(pc.lote_producto, '') = coalesce(oi.lote_producto, '')
-  ) THEN
-    RAISE EXCEPTION 'No se puede modificar el coste porque la linea ya tiene coste facturado o lote definitivo.'
-      USING ERRCODE = '22023';
-  END IF;
-
-  PERFORM 1
-  FROM public.orden_items oi
-  JOIN jsonb_to_recordset(p_items) AS item(
-    item_id uuid,
-    coste_unitario_moneda numeric,
-    coste_unitario_usd numeric,
-    coste_unitario_eur numeric
-  )
-    ON item.item_id = oi.id
-  WHERE oi.orden_id = p_order_id
-  FOR UPDATE OF oi;
-
-  UPDATE public.orden_items oi
-  SET
-    coste_unitario_moneda = item.coste_unitario_moneda,
-    coste_unitario_usd = coalesce(item.coste_unitario_usd, oi.coste_unitario_usd),
-    coste_unitario_eur = coalesce(item.coste_unitario_eur, oi.coste_unitario_eur)
-  FROM jsonb_to_recordset(p_items) AS item(
-    item_id uuid,
-    coste_unitario_moneda numeric,
-    coste_unitario_usd numeric,
-    coste_unitario_eur numeric
-  )
-  WHERE oi.id = item.item_id
-    AND oi.orden_id = p_order_id;
-
-  IF EXISTS (
-    SELECT 1
-    FROM public.orden_items oi
-    JOIN jsonb_to_recordset(p_items) AS item(
-      item_id uuid,
-      coste_unitario_moneda numeric,
-      coste_unitario_usd numeric,
-      coste_unitario_eur numeric
-    )
-      ON item.item_id = oi.id
-    WHERE oi.orden_id = p_order_id
-    GROUP BY oi.producto_id
-    HAVING count(DISTINCT oi.coste_unitario_moneda) > 1
-  ) THEN
-    RAISE EXCEPTION 'Una misma orden contiene el mismo producto con costes distintos.'
-      USING ERRCODE = '22023';
-  END IF;
-
-  PERFORM public.upsert_current_factory_cost_by_currency(
-    grouped.producto_id,
-    v_currency,
-    grouped.coste_unitario_moneda,
-    grouped.proveedor_id,
-    NULL,
-    CURRENT_DATE
-  )
-  FROM (
-    SELECT
-      oi.producto_id,
-      (array_agg(DISTINCT oi.proveedor_id) FILTER (WHERE oi.proveedor_id IS NOT NULL))[1] AS proveedor_id,
-      oi.coste_unitario_moneda
-    FROM public.orden_items oi
-    JOIN jsonb_to_recordset(p_items) AS item(
-      item_id uuid,
-      coste_unitario_moneda numeric,
-      coste_unitario_usd numeric,
-      coste_unitario_eur numeric
-    )
-      ON item.item_id = oi.id
-    WHERE oi.orden_id = p_order_id
-    GROUP BY oi.producto_id, oi.coste_unitario_moneda
-  ) grouped;
-
-  DELETE FROM public.finance_supplier_payments fsp
-  WHERE fsp.orden_id = p_order_id
-    AND fsp.status IN ('pendiente', 'vencido');
-
-  SELECT *
-  INTO v_updated
-  FROM public.ordenes_compra
-  WHERE id = p_order_id;
-
-  RETURN v_updated;
-END;
-$$;
-
-REVOKE EXECUTE ON FUNCTION public.update_confirmed_purchase_order_costs(uuid, jsonb)
-FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION public.update_confirmed_purchase_order_costs(uuid, jsonb)
+GRANT EXECUTE ON FUNCTION public.reopen_confirmed_purchase_order(uuid, text)
 TO authenticated, service_role;
 
 CREATE OR REPLACE FUNCTION public.update_confirmed_purchase_order(
@@ -267,7 +90,9 @@ DECLARE
   v_order public.ordenes_compra;
   v_updated public.ordenes_compra;
   v_changed_cost_count integer := 0;
+  v_changed_item_ids uuid[] := ARRAY[]::uuid[];
   v_changed_eta boolean := false;
+  v_changed_tipo_envio boolean := false;
   v_changed_payments boolean := false;
   v_currency text;
   v_deposit_pct numeric;
@@ -315,27 +140,106 @@ BEGIN
       USING ERRCODE = '22023';
   END IF;
 
-  SELECT count(*)
-  INTO v_changed_cost_count
-  FROM jsonb_to_recordset(coalesce(p_items, '[]'::jsonb)) AS item(
-    item_id uuid,
-    coste_unitario_moneda numeric,
-    coste_unitario_usd numeric,
-    coste_unitario_eur numeric
-  )
+  IF jsonb_typeof(coalesce(p_items, '[]'::jsonb)) <> 'array' THEN
+    RAISE EXCEPTION 'Las lineas de la edicion confirmada deben enviarse como array.'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
+    WHERE NOT (raw.elem ? 'item_id')
+       OR nullif(raw.elem->>'item_id', '') IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Todas las lineas deben incluir item_id.'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM (
+      SELECT raw.elem->>'item_id' AS item_id
+      FROM jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
+      GROUP BY raw.elem->>'item_id'
+      HAVING count(*) > 1
+    ) repeated
+  ) THEN
+    RAISE EXCEPTION 'Hay lineas repetidas en la edicion confirmada.'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
+    LEFT JOIN public.orden_items oi
+      ON oi.id = (raw.elem->>'item_id')::uuid
+     AND oi.orden_id = p_order_id
+    WHERE oi.id IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Hay lineas ajenas a la orden confirmada.'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
+    WHERE (
+        raw.elem ? 'coste_unitario_moneda'
+        AND (
+          (raw.elem->>'coste_unitario_moneda') IS NULL
+          OR (raw.elem->>'coste_unitario_moneda')::numeric <= 0
+        )
+      )
+      OR (
+        raw.elem ? 'coste_unitario_usd'
+        AND (
+          (raw.elem->>'coste_unitario_usd') IS NULL
+          OR (raw.elem->>'coste_unitario_usd')::numeric <= 0
+        )
+      )
+      OR (
+        raw.elem ? 'coste_unitario_eur'
+        AND (
+          (raw.elem->>'coste_unitario_eur') IS NULL
+          OR (raw.elem->>'coste_unitario_eur')::numeric <= 0
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION 'Los costes enviados deben ser positivos.'
+      USING ERRCODE = '22023';
+  END IF;
+
+  SELECT coalesce(array_agg(oi.id), ARRAY[]::uuid[])
+  INTO v_changed_item_ids
+  FROM jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
   JOIN public.orden_items oi
-    ON oi.id = item.item_id
+    ON oi.id = (raw.elem->>'item_id')::uuid
    AND oi.orden_id = p_order_id
-  WHERE item.coste_unitario_moneda IS DISTINCT FROM oi.coste_unitario_moneda
-     OR item.coste_unitario_usd IS DISTINCT FROM oi.coste_unitario_usd
-     OR item.coste_unitario_eur IS DISTINCT FROM oi.coste_unitario_eur;
+  WHERE (
+      raw.elem ? 'coste_unitario_moneda'
+      AND (raw.elem->>'coste_unitario_moneda')::numeric IS DISTINCT FROM oi.coste_unitario_moneda
+    )
+    OR (
+      raw.elem ? 'coste_unitario_usd'
+      AND (raw.elem->>'coste_unitario_usd')::numeric IS DISTINCT FROM oi.coste_unitario_usd
+    )
+    OR (
+      raw.elem ? 'coste_unitario_eur'
+      AND (raw.elem->>'coste_unitario_eur')::numeric IS DISTINCT FROM oi.coste_unitario_eur
+    );
+
+  v_changed_cost_count := cardinality(v_changed_item_ids);
 
   v_changed_eta :=
     (p_header ? 'eta' AND (p_header->>'eta') IS DISTINCT FROM v_order.eta::text)
     OR (p_header ? 'eta_real' AND (p_header->>'eta_real') IS DISTINCT FROM v_order.eta_real::text)
     OR (p_header ? 'etd' AND (p_header->>'etd') IS DISTINCT FROM v_order.etd::text);
 
-  v_changed_payments := v_changed_eta OR v_changed_cost_count > 0;
+  v_changed_tipo_envio :=
+    p_header ? 'tipo_envio'
+    AND (p_header->>'tipo_envio') IS DISTINCT FROM v_order.tipo_envio;
+
+  v_changed_payments := v_changed_eta OR v_changed_tipo_envio OR v_changed_cost_count > 0;
 
   IF v_changed_cost_count > 0
      AND EXISTS (
@@ -397,39 +301,15 @@ BEGIN
 
     IF EXISTS (
       SELECT 1
-      FROM jsonb_to_recordset(p_items) AS item(
-        item_id uuid,
-        coste_unitario_moneda numeric,
-        coste_unitario_usd numeric,
-        coste_unitario_eur numeric
-      )
-      LEFT JOIN public.orden_items oi
-        ON oi.id = item.item_id
-       AND oi.orden_id = p_order_id
-      WHERE oi.id IS NULL
-         OR oi.producto_id IS NULL
-         OR item.coste_unitario_moneda IS NULL
-         OR item.coste_unitario_moneda <= 0
-    ) THEN
-      RAISE EXCEPTION 'Hay lineas ajenas, sin producto o sin coste valido.'
-        USING ERRCODE = '22023';
-    END IF;
-
-    IF EXISTS (
-      SELECT 1
-      FROM jsonb_to_recordset(p_items) AS item(
-        item_id uuid,
-        coste_unitario_moneda numeric,
-        coste_unitario_usd numeric,
-        coste_unitario_eur numeric
-      )
+      FROM jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
       JOIN public.orden_items oi
-        ON oi.id = item.item_id
+        ON oi.id = (raw.elem->>'item_id')::uuid
        AND oi.orden_id = p_order_id
       JOIN public.producto_costos pc
         ON pc.producto_id = oi.producto_id
        AND pc.contenedor_id IS NOT NULL
        AND coalesce(pc.lote_producto, '') = coalesce(oi.lote_producto, '')
+      WHERE oi.id = ANY(v_changed_item_ids)
     ) THEN
       RAISE EXCEPTION 'No se puede modificar el coste porque la linea ya tiene coste facturado o lote definitivo.'
         USING ERRCODE = '22023';
@@ -437,51 +317,76 @@ BEGIN
 
     PERFORM 1
     FROM public.orden_items oi
-    JOIN jsonb_to_recordset(p_items) AS item(
-      item_id uuid,
-      coste_unitario_moneda numeric,
-      coste_unitario_usd numeric,
-      coste_unitario_eur numeric
-    )
-      ON item.item_id = oi.id
+    JOIN jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
+      ON (raw.elem->>'item_id')::uuid = oi.id
     WHERE oi.orden_id = p_order_id
-      AND (
-        item.coste_unitario_moneda IS DISTINCT FROM oi.coste_unitario_moneda
-        OR item.coste_unitario_usd IS DISTINCT FROM oi.coste_unitario_usd
-        OR item.coste_unitario_eur IS DISTINCT FROM oi.coste_unitario_eur
-      )
+      AND oi.id = ANY(v_changed_item_ids)
     FOR UPDATE OF oi;
 
     UPDATE public.orden_items oi
     SET
-      coste_unitario_moneda = item.coste_unitario_moneda,
-      coste_unitario_usd = item.coste_unitario_usd,
-      coste_unitario_eur = item.coste_unitario_eur
-    FROM jsonb_to_recordset(p_items) AS item(
-      item_id uuid,
-      coste_unitario_moneda numeric,
-      coste_unitario_usd numeric,
-      coste_unitario_eur numeric
-    )
-    WHERE oi.id = item.item_id
+      coste_unitario_moneda = CASE
+        WHEN raw.elem ? 'coste_unitario_moneda'
+          THEN (raw.elem->>'coste_unitario_moneda')::numeric
+        ELSE oi.coste_unitario_moneda
+      END,
+      coste_unitario_usd = CASE
+        WHEN raw.elem ? 'coste_unitario_usd'
+          THEN (raw.elem->>'coste_unitario_usd')::numeric
+        ELSE oi.coste_unitario_usd
+      END,
+      coste_unitario_eur = CASE
+        WHEN raw.elem ? 'coste_unitario_eur'
+          THEN (raw.elem->>'coste_unitario_eur')::numeric
+        ELSE oi.coste_unitario_eur
+      END
+    FROM jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
+    WHERE oi.id = (raw.elem->>'item_id')::uuid
       AND oi.orden_id = p_order_id
-      AND (
-        item.coste_unitario_moneda IS DISTINCT FROM oi.coste_unitario_moneda
-        OR item.coste_unitario_usd IS DISTINCT FROM oi.coste_unitario_usd
-        OR item.coste_unitario_eur IS DISTINCT FROM oi.coste_unitario_eur
-      );
+      AND oi.id = ANY(v_changed_item_ids);
+
+    UPDATE public.ordenes_compra oc
+    SET
+      cbm_total = coalesce((
+        SELECT sum(oi.cbm_total)
+        FROM public.orden_items oi
+        WHERE oi.orden_id = p_order_id
+      ), 0),
+      coste_total_eur = coalesce((
+        SELECT sum(
+          CASE
+            WHEN v_currency = 'EUR' THEN oi.coste_unitario_moneda
+            ELSE oi.coste_unitario_eur
+          END * oi.cantidad
+        )
+        FROM public.orden_items oi
+        WHERE oi.orden_id = p_order_id
+      ), 0),
+      coste_total_usd = CASE
+        WHEN v_currency = 'USD' THEN coalesce((
+          SELECT sum(oi.coste_unitario_moneda * oi.cantidad)
+          FROM public.orden_items oi
+          WHERE oi.orden_id = p_order_id
+        ), 0)
+        ELSE coalesce((
+          SELECT sum(oi.coste_unitario_usd * oi.cantidad)
+          FROM public.orden_items oi
+          WHERE oi.orden_id = p_order_id
+        ), 0)
+      END,
+      updated_at = now()
+    WHERE oc.id = p_order_id;
 
     IF EXISTS (
       SELECT 1
       FROM public.orden_items oi
-      JOIN jsonb_to_recordset(p_items) AS item(
-        item_id uuid,
-        coste_unitario_moneda numeric,
-        coste_unitario_usd numeric,
-        coste_unitario_eur numeric
-      )
-        ON item.item_id = oi.id
       WHERE oi.orden_id = p_order_id
+        AND oi.producto_id IN (
+          SELECT changed.producto_id
+          FROM public.orden_items changed
+          WHERE changed.orden_id = p_order_id
+            AND changed.id = ANY(v_changed_item_ids)
+        )
       GROUP BY oi.producto_id
       HAVING count(DISTINCT oi.coste_unitario_moneda) > 1
     ) THEN
@@ -503,14 +408,10 @@ BEGIN
         (array_agg(DISTINCT oi.proveedor_id) FILTER (WHERE oi.proveedor_id IS NOT NULL))[1] AS proveedor_id,
         oi.coste_unitario_moneda
       FROM public.orden_items oi
-      JOIN jsonb_to_recordset(p_items) AS item(
-        item_id uuid,
-        coste_unitario_moneda numeric,
-        coste_unitario_usd numeric,
-        coste_unitario_eur numeric
-      )
-        ON item.item_id = oi.id
+      JOIN jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS raw(elem)
+        ON (raw.elem->>'item_id')::uuid = oi.id
       WHERE oi.orden_id = p_order_id
+        AND oi.id = ANY(v_changed_item_ids)
       GROUP BY oi.producto_id, oi.coste_unitario_moneda
     ) grouped;
   END IF;
@@ -567,6 +468,11 @@ BEGIN
         WHEN fsp.payment_type = 'DEPOSITO_30' THEN v_base_eur * (v_deposit_pct / 100)
         ELSE v_base_eur * (v_balance_pct / 100)
       END,
+      logistics_type = CASE
+        WHEN v_updated.tipo_envio = 'amazon_agl' THEN 'amazon_agl'
+        WHEN v_updated.tipo_envio = 'propio' THEN 'propio'
+        ELSE fsp.logistics_type
+      END,
       status = CASE
         WHEN (
           CASE WHEN fsp.payment_type = 'DEPOSITO_30' THEN v_deposit_due ELSE v_balance_due END
@@ -579,7 +485,14 @@ BEGIN
       END,
       updated_at = now()
     WHERE fsp.orden_id = p_order_id
-      AND fsp.status IN ('pendiente', 'vencido');
+      AND fsp.status IN ('pendiente', 'vencido')
+      AND (
+        v_changed_cost_count > 0
+        OR (
+          (v_changed_eta OR v_changed_tipo_envio)
+          AND fsp.payment_type = 'BALANCE_70'
+        )
+      );
   END IF;
 
   SELECT *
@@ -596,3 +509,5 @@ FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION public.update_confirmed_purchase_order(uuid, jsonb, jsonb)
 TO authenticated, service_role;
+
+COMMIT;

@@ -32,6 +32,16 @@ assert.doesNotMatch(
   /filter\(\(item\) => item\.item_id\)/,
   "no basta con item_id para considerar una linea como cambio economico",
 );
+assert.match(
+  updateConfirmedService,
+  /hasOwnProperty\.call\(item, "coste_unitario_moneda"\)/,
+  "el servicio debe preservar la diferencia entre coste omitido y coste null",
+);
+assert.doesNotMatch(
+  updateConfirmedService,
+  /coste_unitario_moneda:\s*item\.coste_unitario_moneda \?\? null/,
+  "el servicio no debe convertir coste omitido en null",
+);
 assert.doesNotMatch(
   updateConfirmedService,
   /from\(["']orden_items["']\)[\s\S]{0,300}\.update\(\s*patch\s*\)/,
@@ -43,6 +53,11 @@ assert.doesNotMatch(
   "la edicion de linea no debe incluir updated_at porque orden_items no tiene esa columna",
 );
 
+assert.match(
+  reopenService,
+  /p_motivo:\s*motivo \?\? null/,
+  "la reapertura debe enviar el motivo a la RPC",
+);
 assert.match(
   reopenService,
   /reopen_confirmed_purchase_order/,
@@ -71,26 +86,30 @@ assert.match(
 );
 
 assert.match(rpcSql, /CREATE OR REPLACE FUNCTION public\.reopen_confirmed_purchase_order/);
+assert.match(rpcSql, /p_motivo text DEFAULT NULL/);
+assert.match(rpcSql, /REAPERTURA:/);
 assert.match(rpcSql, /FOR UPDATE/);
 assert.match(rpcSql, /status = 'pagado'/);
 assert.match(rpcSql, /No se puede reabrir la orden porque tiene pagos realizados/);
 assert.match(rpcSql, /DELETE FROM public\.finance_supplier_payments[\s\S]*status IN \('pendiente', 'vencido'\)/);
 assert.doesNotMatch(rpcSql, /finance_supplier_payments[\s\S]{0,200}(anulado|cancelado|inactive)/);
 
-assert.match(rpcSql, /CREATE OR REPLACE FUNCTION public\.update_confirmed_purchase_order_costs/);
-assert.match(rpcSql, /No se puede modificar el coste porque la orden tiene pagos realizados/);
-assert.match(rpcSql, /UPDATE public\.orden_items oi\s+SET\s+coste_unitario_moneda/);
+assert.match(rpcSql, /DROP FUNCTION IF EXISTS public\.update_confirmed_purchase_order_costs\(uuid, jsonb\)/);
+assert.doesNotMatch(rpcSql, /CREATE OR REPLACE FUNCTION public\.update_confirmed_purchase_order_costs/);
+assert.doesNotMatch(rpcSql, /GRANT EXECUTE ON FUNCTION public\.update_confirmed_purchase_order_costs/);
 assert.doesNotMatch(rpcSql, /UPDATE public\.orden_items[\s\S]{0,300}updated_at/);
 assert.match(rpcSql, /upsert_current_factory_cost_by_currency/);
 assert.match(rpcSql, /v_currency/);
 
+assert.match(rpcSql, /^BEGIN;/m);
+assert.match(rpcSql, /^COMMIT;/m);
 assert.match(rpcSql, /CREATE OR REPLACE FUNCTION public\.update_confirmed_purchase_order\(/);
 assert.match(rpcSql, /p_header jsonb/);
 assert.match(rpcSql, /p_items jsonb/);
 assert.match(
   rpcSql,
-  /IS DISTINCT FROM oi\.coste_unitario_moneda[\s\S]*IS DISTINCT FROM oi\.coste_unitario_usd[\s\S]*IS DISTINCT FROM oi\.coste_unitario_eur/,
-  "la RPC unificada debe comparar costes reales antes de tocar lineas",
+  /raw\.elem \? 'coste_unitario_moneda'[\s\S]*IS DISTINCT FROM oi\.coste_unitario_moneda/,
+  "la RPC unificada debe comparar solo claves economicas presentes",
 );
 assert.match(
   rpcSql,
@@ -99,8 +118,18 @@ assert.match(
 );
 assert.match(
   rpcSql,
+  /v_changed_tipo_envio[\s\S]*v_changed_payments := v_changed_eta OR v_changed_tipo_envio OR v_changed_cost_count > 0/,
+  "cambiar tipo_envio debe recalcular pagos pendientes/vencidos",
+);
+assert.match(
+  rpcSql,
   /WHERE fsp\.orden_id = p_order_id\s+AND fsp\.status IN \('pendiente', 'vencido'\)/,
   "solo se recalculan pagos pendiente/vencido",
+);
+assert.match(
+  rpcSql,
+  /v_changed_cost_count > 0[\s\S]*fsp\.payment_type = 'BALANCE_70'/,
+  "ETA/ETD o tipo_envio solo deben recalcular pagos dependientes de vencimiento, no depositos",
 );
 assert.doesNotMatch(
   rpcSql,
@@ -112,11 +141,35 @@ assert.match(
   /UPDATE public\.ordenes_compra oc[\s\S]*updated_at = now\(\)/,
   "la cabecera confirmada se actualiza dentro de la RPC",
 );
+assert.match(
+  rpcSql,
+  /coste_total_eur = coalesce\(\([\s\S]*WHEN v_currency = 'EUR' THEN oi\.coste_unitario_moneda/,
+  "para moneda EUR el total EUR debe recalcularse desde lineas nuevas",
+);
+assert.match(
+  rpcSql,
+  /oi\.id = ANY\(v_changed_item_ids\)[\s\S]*upsert_current_factory_cost_by_currency/,
+  "producto_costos debe limitarse a lineas realmente cambiadas",
+);
+assert.match(rpcSql, /logistics_type = CASE/);
 
 assert.match(orderClient, /Promise<OrdenCompraRow>/);
 assert.match(useReopenOrder, /if \(saving\) return/);
 assert.match(useReopenOrder, /fetchOrderDetail\(orderId\)/);
 assert.match(pedidosPage, /ordersList\.patchOrder\(\{[\s\S]*estado: "borrador"/);
 assert.match(pedidosPage, /onSaved=\{\(orden\) =>[\s\S]*ordersList\.patchOrder\(orden/);
+
+const orderFormModal = read("modules/orders/components/OrderFormModal.tsx");
+assert.match(orderFormModal, /disabled=\{readonly \|\| isConfirmedEdit\}[\s\S]*value=\{fecha\}/);
+assert.match(orderFormModal, /disabled=\{readonly \|\| isConfirmedEdit\}[\s\S]*value=\{cbmLimite\}/);
+assert.match(orderFormModal, /value=\{monedaCompra\}[\s\S]{0,120}disabled=\{isConfirmedEdit\}/);
+assert.match(orderFormModal, /disabled=\{monedaCompra === "EUR" \|\| isConfirmedEdit\}/);
+assert.match(orderFormModal, /disabled=\{readonly \|\| isConfirmedEdit\}[\s\S]*value=\{item\.cantidad\}/);
+assert.match(orderFormModal, /disabled=\{readonly \|\| isConfirmedEdit\}[\s\S]*value=\{item\.lote_producto/);
+
+const omittedCostItem = { item_id: "item-1" };
+const nullCostItem = { item_id: "item-1", coste_unitario_moneda: null };
+assert.equal(Object.prototype.hasOwnProperty.call(omittedCostItem, "coste_unitario_moneda"), false);
+assert.equal(Object.prototype.hasOwnProperty.call(nullCostItem, "coste_unitario_moneda"), true);
 
 console.log("orders confirmed edit/reopen hardening: ok");

@@ -13,7 +13,6 @@ export type MappedOrderItemCost = {
 export function mapFactoryCostToOrderItem(params: {
   factoryCost: LatestFactoryCost | null | undefined;
   orderMoneda: string;
-  orderTipoCambio: number | null;
   userCosteMoneda?: number | null;
   userCosteEur?: number | null;
   userCosteUsd?: number | null;
@@ -25,7 +24,7 @@ export function mapFactoryCostToOrderItem(params: {
     const eur =
       params.userCosteEur != null && isPositiveCostMonto(params.userCosteEur)
         ? Number(params.userCosteEur)
-        : computeOrderItemCostEur(monto, orderMoneda, params.orderTipoCambio);
+        : computeOrderItemCostEur(monto, orderMoneda, null);
     return {
       coste_unitario_moneda: monto,
       coste_unitario_eur: eur,
@@ -55,8 +54,11 @@ export function mapFactoryCostToOrderItem(params: {
   } else if (monedaLinea === "EUR") {
     eur = Number(monto.toFixed(4));
   } else {
-    const tipoCambio = factory.tipo_cambio_aplicado ?? params.orderTipoCambio;
-    eur = computeOrderItemCostEur(monto, monedaLinea, tipoCambio);
+    eur = computeOrderItemCostEur(
+      monto,
+      monedaLinea,
+      factory.tipo_cambio_aplicado ?? null,
+    );
   }
 
   return {

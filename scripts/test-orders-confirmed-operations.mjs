@@ -26,9 +26,19 @@ const diagnosticSql = read("sql/diagnostics/confirmed_order_operations_validatio
 const confirmModal = read("modules/orders/components/ConfirmOrderModal.tsx");
 const confirmRoute = read("app/api/orders/[id]/confirm/route.ts");
 const confirmRepository = read("modules/orders/repositories/orderConfirmRepository.ts");
+const itemPersistence = read(
+  "modules/orders/services/prepareOrderItemsForPersistence.ts",
+);
+const factoryCostMapper = read(
+  "modules/orders/utils/mapFactoryCostToOrderItem.ts",
+);
 
 assert.doesNotMatch(operationsRoute, /\bitems\b|orden_items|producto_costos/);
 assert.doesNotMatch(operationsService, /\bitems\b|orden_items|producto_costos/);
+assert.doesNotMatch(
+  operationsService,
+  /tipo_cambio_moneda_eur|tipo_cambio_usd_eur/,
+);
 
 const paymentBlock = rpcSql.slice(rpcSql.indexOf("IF v_changed_schedule"));
 assert.match(
@@ -320,6 +330,11 @@ assert.match(
   /p_tipo_cambio_moneda_eur:\s*null[\s\S]*p_tipo_cambio_usd_eur:\s*null/,
 );
 assert.doesNotMatch(modal, /tipoCambio|setTipoCambio|tipo_cambio_moneda_eur:/);
+assert.doesNotMatch(
+  itemPersistence,
+  /tipo_cambio_moneda_eur|tipo_cambio_usd_eur|orderTipoCambio/,
+);
+assert.doesNotMatch(factoryCostMapper, /orderTipoCambio/);
 
 // El modal debe usar el helper y mantener una línea base operativa que se
 // actualiza tras cada guardado con la orden devuelta por el servidor.

@@ -12,7 +12,6 @@ export type ConfirmedOrderOperationsPatch = {
   agente_id?: string | null;
   numero_pedido_agente?: string | null;
   notas?: string | null;
-  tipo_cambio_moneda_eur?: number | null;
 };
 
 const ALLOWED_KEYS = new Set<keyof ConfirmedOrderOperationsPatch>([
@@ -26,7 +25,6 @@ const ALLOWED_KEYS = new Set<keyof ConfirmedOrderOperationsPatch>([
   "agente_id",
   "numero_pedido_agente",
   "notas",
-  "tipo_cambio_moneda_eur",
 ]);
 
 function requireSingleRpcRow<T>(data: T | T[] | null, context: string): T {

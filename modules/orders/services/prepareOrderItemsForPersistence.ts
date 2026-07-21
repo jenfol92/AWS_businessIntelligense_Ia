@@ -87,15 +87,13 @@ export async function resolveOrderItemsCosteUnitario(
   const supabase = createSupabaseRouteClient();
   const { data: order, error: orderError } = await supabase
     .from("ordenes_compra")
-    .select("moneda_compra, tipo_cambio_moneda_eur, tipo_cambio_usd_eur")
+    .select("moneda_compra")
     .eq("id", orderId)
     .maybeSingle();
 
   if (orderError) throw new Error(orderError.message);
 
   const monedaOrden = (order?.moneda_compra ?? "USD").toString().toUpperCase();
-  const tipoCambioOrden =
-    order?.tipo_cambio_moneda_eur ?? order?.tipo_cambio_usd_eur ?? null;
 
   const productIds = Array.from(
     new Set(items.map((item) => item.producto_id).filter(Boolean)),
@@ -107,7 +105,6 @@ export async function resolveOrderItemsCosteUnitario(
     const mapped = mapFactoryCostToOrderItem({
       factoryCost: factoryCostMap.get(item.producto_id),
       orderMoneda: monedaOrden,
-      orderTipoCambio: tipoCambioOrden != null ? Number(tipoCambioOrden) : null,
       userCosteMoneda: isPositiveCostMonto(item.coste_unitario_moneda)
         ? item.coste_unitario_moneda
         : isPositiveCostMonto(item.coste_unitario_usd) && monedaOrden === "USD"

@@ -19,9 +19,13 @@ export type SupplierPaymentRow = {
   actual_amount_eur: number | null;
   bank_fee_eur: number | null;
   ff_fee_eur: number | null;
+  bank_reference: string | null;
   logistics_type: string | null;
   contenedor_id: string | null;
   payment_source: string | null;
+  payment_source_type?: string | null;
+  cash_account_id?: string | null;
+  credit_line_id?: string | null;
   status: SupplierPaymentStatus;
   notes: string | null;
   created_at: string;

@@ -58,20 +58,6 @@ function originalOrderAmount(
   return 0;
 }
 
-function readPlannedFx(
-  order: NonNullable<Awaited<ReturnType<typeof fetchOrderForSupplierPayments>>>,
-  currency: string,
-): number | null {
-  if (currency === "EUR") return 1;
-  const orderRate = asNumber(order.tipo_cambio_moneda_eur, 0);
-  if (orderRate > 0) return orderRate;
-  if (currency === "USD") {
-    const usdRate = asNumber(order.tipo_cambio_usd_eur, 0);
-    if (usdRate > 0) return usdRate;
-  }
-  return null;
-}
-
 function paymentStatus(dueDate: string | null): "pendiente" | "vencido" {
   if (dueDate && dueDate < new Date().toISOString().slice(0, 10)) return "vencido";
   return "pendiente";
@@ -120,14 +106,10 @@ export async function syncSupplierPaymentsForOrder(
   const depositPct = asNumber(order.deposito_porcentaje, 30);
   const balancePct = Math.max(0, 100 - depositPct);
   const originalCurrency = (order.moneda_compra ?? "USD").trim().toUpperCase() || "USD";
-  const plannedFx = readPlannedFx(order, originalCurrency);
   const baseOriginal = originalOrderAmount(order, originalCurrency);
-  const baseEur =
-    originalCurrency === "EUR"
-      ? asNumber(order.coste_total_eur)
-      : plannedFx
-        ? baseOriginal * plannedFx
-        : asNumber(order.coste_total_eur);
+  // amount_eur es obligatorio por compatibilidad legacy. Para monedas no EUR
+  // no se inventa una estimación; los campos reales permanecen null hasta pagar.
+  const legacyAmountEur = originalCurrency === "EUR" ? baseOriginal : 0;
 
   const depositDate = resolveDepositDueDate(order);
   const balanceDate = resolveBalanceDueDate({ logisticsType, order, container, amazonInbound });
@@ -139,8 +121,8 @@ export async function syncSupplierPaymentsForOrder(
     due_date: depositDate,
     amount_original: baseOriginal * (depositPct / 100),
     original_currency: originalCurrency,
-    planned_fx_rate: plannedFx,
-    amount_eur: baseEur * (depositPct / 100),
+    planned_fx_rate: null,
+    amount_eur: legacyAmountEur * (depositPct / 100),
     logistics_type: logisticsType,
     contenedor_id: container?.id ?? null,
     status: paymentStatus(depositDate),
@@ -152,8 +134,8 @@ export async function syncSupplierPaymentsForOrder(
     due_date: balanceDate,
     amount_original: baseOriginal * (balancePct / 100),
     original_currency: originalCurrency,
-    planned_fx_rate: plannedFx,
-    amount_eur: baseEur * (balancePct / 100),
+    planned_fx_rate: null,
+    amount_eur: legacyAmountEur * (balancePct / 100),
     logistics_type: logisticsType,
     contenedor_id: container?.id ?? null,
     status: paymentStatus(balanceDate),

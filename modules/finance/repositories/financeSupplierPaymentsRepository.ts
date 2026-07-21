@@ -31,8 +31,6 @@ export type OrderForSupplierPayments = {
   eta_real: string | null;
   etd: string | null;
   moneda_compra: string | null;
-  tipo_cambio_moneda_eur: number | null;
-  tipo_cambio_usd_eur: number | null;
   coste_total_eur: number | null;
   coste_total_usd: number | null;
   deposito_porcentaje: number | null;
@@ -75,8 +73,7 @@ export async function fetchOrderForSupplierPayments(
     .select(
       `id, estado, tipo_envio, numero_orden, numero_pedido_agente,
        fecha_confirmacion, fecha_orden, eta, eta_real, etd,
-       moneda_compra, tipo_cambio_moneda_eur, tipo_cambio_usd_eur,
-       coste_total_eur, coste_total_usd,
+       moneda_compra, coste_total_eur, coste_total_usd,
        deposito_porcentaje, balance_dias_antes_eta, fecha_pago_balance,
        agentes_compra(contacto),
        orden_items(cantidad, coste_unitario_moneda)`,
@@ -190,6 +187,7 @@ export async function fetchSupplierPaymentsByOrderIds(
       `id, orden_id, contenedor_id, payment_type,
        amount_original, original_currency, planned_fx_rate, amount_eur,
        actual_amount_original, actual_amount_eur, actual_fx_rate, bank_fee_eur, ff_fee_eur,
+       bank_reference,
        due_date, paid_at, status`,
     )
     .in("orden_id", uniqueOrderIds);
@@ -282,8 +280,7 @@ export async function fetchSupplierPaymentsInRange(
       `*,
        ordenes_compra(
          id, numero_orden, numero_pedido_agente, estado,
-         moneda_compra, tipo_cambio_moneda_eur,
-         deposito_porcentaje, coste_total_eur,
+         moneda_compra, deposito_porcentaje,
          orden_items(cantidad, coste_unitario_moneda),
          agentes_compra(contacto)
        ),

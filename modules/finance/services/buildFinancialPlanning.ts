@@ -47,9 +47,7 @@ function asString(value: unknown): string | null {
 function paidRealAmountEur(payment: Record<string, unknown>): number {
   const actual = asNumber(payment["actual_amount_eur"], NaN);
   if (Number.isFinite(actual) && actual > 0) return actual;
-
-  const isLegacyPaid = Boolean(asString(payment["paid_at"])) || asString(payment["status"]) === "pagado";
-  return isLegacyPaid ? asNumber(payment["amount_eur"]) : 0;
+  return 0;
 }
 
 function paidRealAmountOriginal(payment: Record<string, unknown>): number {
@@ -60,64 +58,11 @@ function paidRealAmountOriginal(payment: Record<string, unknown>): number {
   return isLegacyPaid ? asNumber(payment["amount_original"]) : 0;
 }
 
-function orderTotalEurFromPayment(payment: Record<string, unknown>): number {
-  const order = firstRelation(
-    payment["ordenes_compra"] as Record<string, unknown> | Record<string, unknown>[] | null,
-  );
-  if (!order) return 0;
-
-  const costEur = asNumber(order["coste_total_eur"]);
-  if (costEur > 0) return costEur;
-
-  const currency = String(order["moneda_compra"] ?? payment["original_currency"] ?? "USD").trim().toUpperCase();
-  const items = (order["orden_items"] as Array<Record<string, unknown>> | null) ?? [];
-  const originalTotal = items.reduce(
-    (sum, item) => sum + asNumber(item["cantidad"]) * asNumber(item["coste_unitario_moneda"]),
-    0,
-  );
-  if (currency === "EUR" && originalTotal > 0) return originalTotal;
-
-  const fx = asNumber(order["tipo_cambio_moneda_eur"], 0) || asNumber(payment["planned_fx_rate"], 0);
-  if (originalTotal > 0 && fx > 0) return originalTotal * fx;
-
-  const costUsd = asNumber(order["coste_total_usd"]);
-  if (costUsd > 0 && fx > 0) return costUsd * fx;
-
-  return 0;
-}
-
-function orderTotalOriginalFromPayment(payment: Record<string, unknown>): number {
-  const order = firstRelation(
-    payment["ordenes_compra"] as Record<string, unknown> | Record<string, unknown>[] | null,
-  );
-  if (!order) return 0;
-
-  const items = (order["orden_items"] as Array<Record<string, unknown>> | null) ?? [];
-  const originalTotal = items.reduce(
-    (sum, item) => sum + asNumber(item["cantidad"]) * asNumber(item["coste_unitario_moneda"]),
-    0,
-  );
-  if (originalTotal > 0) return originalTotal;
-
-  const currency = String(order["moneda_compra"] ?? payment["original_currency"] ?? "USD").trim().toUpperCase();
-  if (currency === "EUR") {
-    const costEur = asNumber(order["coste_total_eur"]);
-    if (costEur > 0) return costEur;
-  }
-
-  const costUsd = asNumber(order["coste_total_usd"]);
-  if (currency === "USD" && costUsd > 0) return costUsd;
-
-  return 0;
-}
-
 function buildOrderPaymentStats(payments: Record<string, unknown>[]) {
   const stats = new Map<string, {
     totalOriginal: number;
-    totalEur: number;
     paidRealOriginal: number;
     paidRealEur: number;
-    hasRealPayments: boolean;
   }>();
 
   for (const payment of payments) {
@@ -129,35 +74,20 @@ function buildOrderPaymentStats(payments: Record<string, unknown>[]) {
 
     const current = stats.get(orderId) ?? {
       totalOriginal: 0,
-      totalEur: 0,
       paidRealOriginal: 0,
       paidRealEur: 0,
-      hasRealPayments: false,
     };
-    current.totalOriginal = Math.max(current.totalOriginal, orderTotalOriginalFromPayment(payment));
-    current.totalEur = Math.max(current.totalEur, orderTotalEurFromPayment(payment));
-
     const paidReal = paidRealAmountEur(payment);
     const paidRealOriginal = paidRealAmountOriginal(payment);
     if (paidReal > 0 || paidRealOriginal > 0) {
       current.paidRealEur += paidReal;
       current.paidRealOriginal += paidRealOriginal;
-      current.hasRealPayments = true;
     }
 
     stats.set(orderId, current);
   }
 
   for (const [orderId, current] of Array.from(stats.entries())) {
-    if (current.totalEur <= 0) {
-      const orderPayments = payments.filter((payment) => {
-        const order = firstRelation(
-          payment["ordenes_compra"] as Record<string, unknown> | Record<string, unknown>[] | null,
-        );
-        return (asString(order?.["id"]) ?? asString(payment["orden_id"])) === orderId;
-      });
-      current.totalEur = orderPayments.reduce((sum, payment) => sum + asNumber(payment["amount_eur"]), 0);
-    }
     if (current.totalOriginal <= 0) {
       const orderPayments = payments.filter((payment) => {
         const order = firstRelation(
@@ -288,16 +218,12 @@ function buildSupplierPaymentEvents(
     const actualFxRate = asNumber(payment["actual_fx_rate"], 0) || null;
     const paidAt = asString(payment["paid_at"]);
     const paymentSource = supplierPaymentSource(payment["payment_source"]);
+    const bankReference = asString(payment["bank_reference"]);
     const bankFeeEur = asNumber(payment["bank_fee_eur"], 0) || null;
     const ffFeeEur = asNumber(payment["ff_fee_eur"], 0) || null;
-    const totalOperationEur = actualAmountEur != null
-      ? actualAmountEur + (bankFeeEur ?? 0) + (ffFeeEur ?? 0)
-      : null;
     const orderId = asString(order?.["id"]) ?? asString(payment["orden_id"]);
     const orderStats = orderId ? orderPaymentStats.get(orderId) : null;
-    const orderTotalEur = orderStats?.totalEur && orderStats.totalEur > 0
-      ? orderStats.totalEur
-      : null;
+    const orderTotalEur = null;
     const orderTotalOriginal = orderStats?.totalOriginal && orderStats.totalOriginal > 0
       ? orderStats.totalOriginal
       : null;
@@ -306,19 +232,9 @@ function buildSupplierPaymentEvents(
       ? Math.max(0, orderTotalOriginal - orderPaidRealOriginal)
       : null;
     const orderPaidRealEur = orderStats?.paidRealEur ?? 0;
-    const orderPendingRealEur = orderTotalEur != null
-      ? Math.max(0, orderTotalEur - orderPaidRealEur)
-      : null;
-    const displayOriginalAmount =
-      mappedPaymentType.paymentType === "BALANCE_70" && orderStats?.hasRealPayments
-        ? orderPendingRealOriginal ?? plannedOriginalAmount
-        : plannedOriginalAmount;
-    const displayAmountEur =
-      mappedPaymentType.paymentType === "BALANCE_70" && orderStats?.hasRealPayments
-        ? orderPendingRealOriginal != null && plannedFxRate != null
-          ? orderPendingRealOriginal * plannedFxRate
-          : orderPendingRealEur ?? plannedAmountEur
-        : plannedAmountEur;
+    const orderPendingRealEur = null;
+    const displayOriginalAmount = plannedOriginalAmount;
+    const displayAmountEur = plannedAmountEur;
     const recommendation = recommendCreditLineForAmount(displayAmountEur, creditLines, cashBalance);
     const logisticsType = logisticsLabel(asString(payment["logistics_type"]));
     const depositPercent = asNumber(order?.["deposito_porcentaje"], 30);
@@ -335,13 +251,7 @@ function buildSupplierPaymentEvents(
       asString(payment["paid_at"]),
       dueDate,
     );
-    const displayStatus =
-      mappedPaymentType.paymentType === "BALANCE_70" &&
-      orderStats?.hasRealPayments &&
-      orderPendingRealOriginal != null &&
-      orderPendingRealOriginal > 0
-        ? statusFromRow(null, null, dueDate)
-        : status;
+    const displayStatus = status;
 
     events.push({
       id: String(payment["id"]),
@@ -363,7 +273,7 @@ function buildSupplierPaymentEvents(
       depositPercent,
       balancePercent,
       plannedFxRate,
-      plannedFxSource: "order",
+      plannedFxSource: plannedFxRate != null ? "legacy" : "not_configured",
       plannedAmountEur: displayAmountEur,
       paidAmountEur: actualAmountEur,
       actualAmountOriginal,
@@ -371,9 +281,9 @@ function buildSupplierPaymentEvents(
       actualFxRate,
       paidAt,
       paymentSource,
+      bankReference,
       bankFeeEur,
       ffFeeEur,
-      totalOperationEur,
       orderTotalEur,
       orderPaidRealOriginal,
       orderPendingRealOriginal,
@@ -559,7 +469,7 @@ function effectiveEventAmountEur(event: FinancePlanningEvent): number {
     (event.type === "supplier_deposit" || event.type === "supplier_balance") &&
     event.status === "pagado"
   ) {
-    return event.totalOperationEur ?? event.actualAmountEur ?? event.plannedAmountEur;
+    return event.actualAmountEur ?? 0;
   }
 
   return event.plannedAmountEur;

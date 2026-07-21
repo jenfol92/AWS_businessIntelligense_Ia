@@ -56,7 +56,7 @@ export type FinancePlanningEvent = {
   depositPercent?: number | null;
   balancePercent?: number | null;
   plannedFxRate: number | null;
-  plannedFxSource: "order" | "container" | "global_setting" | "not_configured";
+  plannedFxSource: "legacy" | "order" | "container" | "global_setting" | "not_configured";
   plannedAmountEur: number;
   paidAmountEur: number | null;
   actualAmountOriginal?: number | null;
@@ -64,6 +64,7 @@ export type FinancePlanningEvent = {
   actualFxRate?: number | null;
   paidAt?: string | null;
   paymentSource?: FinancePaymentSource | null;
+  bankReference?: string | null;
   bankFeeEur?: number | null;
   ffFeeEur?: number | null;
   totalOperationEur?: number | null;

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildConfirmedOperationsPatch } from "../modules/orders/utils/buildConfirmedOperationsPatch.ts";
+import {
+  buildConfirmedOperationsPatch,
+  ConfirmedOperationsPatchValidationError,
+} from "../modules/orders/utils/buildConfirmedOperationsPatch.ts";
+import {
+  loadProformaData,
+  prepareProformaVersion,
+  renderProformaHtml,
+} from "../modules/orders/services/orderProformaData.ts";
 
 const root = process.cwd();
 const read = (path) => readFileSync(join(root, path), "utf8");
@@ -14,6 +22,7 @@ const operationsService = read(
   "modules/orders/services/updateConfirmedOrderOperationsService.ts",
 );
 const proformaRoute = read("app/api/orders/[id]/proforma/route.ts");
+const proformaService = read("modules/orders/services/orderProformaData.ts");
 const modal = read("modules/orders/components/OrderFormModal.tsx");
 const ordersPage = read("app/[locale]/(dashboard)/pedidos/page.tsx");
 const diagnosticSql = read("sql/diagnostics/confirmed_order_operations_validation.sql");
@@ -78,7 +87,10 @@ for (const forbidden of [
   "Balance (EUR)",
   "Exchange rate pending",
 ]) {
-  assert.doesNotMatch(proformaRoute, new RegExp(forbidden.replace(/[()]/g, "\\$&")));
+    assert.doesNotMatch(
+      `${proformaRoute}\n${proformaService}`,
+      new RegExp(forbidden.replace(/[()]/g, "\\$&")),
+    );
 }
 for (const removedName of [
   "tipoCambio",
@@ -91,7 +103,10 @@ for (const removedName of [
   "cambioLabel",
   "avisoCambio",
 ]) {
-  assert.doesNotMatch(proformaRoute, new RegExp(`\\b${removedName}\\b`));
+  assert.doesNotMatch(
+    `${proformaRoute}\n${proformaService}`,
+    new RegExp(`\\b${removedName}\\b`),
+  );
 }
 
 const confirmedSave = modal.slice(
@@ -138,9 +153,9 @@ assert.doesNotMatch(
   proformaRoute,
   /\.from\("order_proforma_versions"\)\s*\.insert/,
 );
-assert.match(proformaRoute, /select\("id, proforma_firmada_url"\)/);
+assert.match(proformaRoute, /\.from\("ordenes_compra"\)[\s\S]*?\.select\("\*"\)/);
 assert.doesNotMatch(
-  `${rpcSql}\n${versionSql}\n${proformaRoute}`,
+  `${rpcSql}\n${versionSql}\n${proformaRoute}\n${proformaService}`,
   /(?:update|set)\s+proforma_firmada_url/i,
 );
 
@@ -151,7 +166,8 @@ const getHandler = proformaRoute.slice(
   proformaRoute.indexOf("export async function GET"),
   proformaRoute.indexOf("export async function POST"),
 );
-assert.match(getHandler, /return renderCurrentProforma\(req, \{ params \}\);/);
+assert.match(getHandler, /loadProformaData\(/);
+assert.match(getHandler, /renderProformaHtml\(loaded\.data, params\.id\)/);
 assert.match(
   getHandler,
   /if \(requestedVersion\) \{[\s\S]*?La versión solicitada no existe/,
@@ -160,10 +176,10 @@ assert.match(
 
 // El coste comercial debe tener fallback también para órdenes EUR antiguas sin
 // coste_unitario_moneda (no solo USD); GBP/CNY no tuvieron nunca columna propia.
-assert.match(proformaRoute, /unitEurStored/);
+assert.match(proformaService, /legacyEurCost/);
 assert.match(
-  proformaRoute,
-  /moneda === "EUR"\) unitMoneda = unitEurStored/,
+  proformaService,
+  /currency === "EUR"\) return legacyEurCost/,
 );
 
 // El REVOKE de la RPC comercial antigua no debe fallar si la función no existe
@@ -247,16 +263,21 @@ assert.deepEqual(
   { lead_time_transito: null },
 );
 
-// tipo_cambio_moneda_eur nunca se envía como null explícito aunque se vacíe
-// (la RPC lo rechaza); solo se envía si el nuevo valor es positivo y distinto.
-assert.deepEqual(
-  buildConfirmedOperationsPatch(
-    { ...BASELINE, tipo_cambio_moneda_eur: null },
-    BASELINE,
-  ),
-  {},
-  "vaciar tipo_cambio_moneda_eur no debe enviar null explícito",
-);
+// amount_eur es NOT NULL en el esquema: vaciar, usar cero, negativo o NaN
+// debe producir un error claro, nunca un patch vacío silencioso.
+for (const invalidFx of [null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assert.throws(
+    () =>
+      buildConfirmedOperationsPatch(
+        { ...BASELINE, tipo_cambio_moneda_eur: invalidFx },
+        BASELINE,
+      ),
+    (error) =>
+      error instanceof ConfirmedOperationsPatchValidationError &&
+      /obligatorio.*positivo/i.test(error.message),
+    `FX inválido ${String(invalidFx)} debe rechazarse`,
+  );
+}
 assert.deepEqual(
   buildConfirmedOperationsPatch(
     { ...BASELINE, tipo_cambio_moneda_eur: 1.25 },
@@ -334,51 +355,139 @@ const noChangesGuard = modal.slice(
 );
 assert.doesNotMatch(noChangesGuard, /setError\(/);
 
-// ── ISSUE_2: la proforma nunca muestra totales parciales ni 0,00 por falta de coste ──
+// ── Proforma: pruebas funcionales de carga, validación e HTML ─────────────
 
-assert.match(proformaRoute, /hasMissingCommercialCosts:\s*missingSkus\.length > 0/);
-assert.match(
-  proformaRoute,
-  /missingSkus\s*=\s*rows\s*\.filter\(\(row\) => row\.unitMoneda == null \|\| row\.totalMoneda == null\)/,
-);
+const TEST_ORDER = {
+  id: "order-1",
+  numero_orden: "PO-TEST",
+  moneda_compra: "USD",
+  deposito_porcentaje: 30,
+  proforma_firmada_url: null,
+};
 
-// GET (previsualización): nunca debe pintar 0,00 cuando falta coste; usa
-// "Coste pendiente" y avisa visiblemente.
-assert.match(
-  proformaRoute,
-  /function fmtAmount\(simbolo: string, amount: number \| null\): string \{\s*return amount != null[\s\S]*?"Coste pendiente"/,
-);
-assert.match(
-  proformaRoute,
-  /const grandTotalMoneda = hasMissingCommercialCosts\s*\?\s*null\s*:\s*rows\.reduce/,
-);
-assert.match(proformaRoute, /class="cost-warning"/);
-assert.match(proformaRoute, /missingCostsWarningHtml/);
-assert.doesNotMatch(
-  proformaRoute,
-  /fmtAmount\(simbolo, grandTotalMoneda\)[\s\S]{0,10}0\.00/,
-);
+function itemWithCost(cost, sku = "SKU-1", quantity = 2) {
+  return {
+    cantidad: quantity,
+    coste_unitario_moneda: cost,
+    coste_unitario_usd: null,
+    coste_unitario_eur: null,
+    cbm_total: 1,
+    productos: { sku, nombre: `Producto ${sku}`, producto_detalle: null },
+    proveedores: { nombre: "Proveedor" },
+    lote_producto: null,
+  };
+}
 
-// POST (generación de versión): rechaza ANTES de llamar a la RPC de versionado,
-// con 422 + código MISSING_COMMERCIAL_COSTS, y nunca inserta una versión.
-const postHandler = proformaRoute.slice(proformaRoute.indexOf("export async function POST"));
-const missingCostsCheckIndex = postHandler.indexOf("MISSING_COMMERCIAL_COSTS");
-const rpcCallIndex = postHandler.indexOf('"create_order_proforma_version"');
-assert.ok(missingCostsCheckIndex >= 0, "debe existir el chequeo de costes faltantes en POST");
-assert.ok(rpcCallIndex >= 0, "debe existir la llamada a create_order_proforma_version en POST");
-assert.ok(
-  missingCostsCheckIndex < rpcCallIndex,
-  "el rechazo por costes faltantes debe ocurrir antes de llamar a create_order_proforma_version",
+function sourceFixture({ order = TEST_ORDER, items = [], orderError = null, itemsError = null } = {}) {
+  const calls = { order: 0, items: 0 };
+  return {
+    calls,
+    source: {
+      async getOrder() {
+        calls.order += 1;
+        return { data: order, error: orderError };
+      },
+      async getItems() {
+        calls.items += 1;
+        return { data: items, error: itemsError };
+      },
+    },
+  };
+}
+
+// Un error consultando líneas se conserva como error controlado; nunca pasa a [].
+{
+  const fixture = sourceFixture({
+    itemsError: { message: "fallo simulado de orden_items" },
+  });
+  const result = await loadProformaData(fixture.source, "order-1");
+  assert.deepEqual(result, {
+    ok: false,
+    status: 500,
+    code: "PROFORMA_DATA_QUERY_FAILED",
+    error:
+      "No se pudieron consultar las líneas de la proforma: fallo simulado de orden_items",
+  });
+  assert.deepEqual(fixture.calls, { order: 1, items: 1 });
+}
+
+// La orden sin líneas se rechaza antes de que pueda existir HTML versionable.
+{
+  const fixture = sourceFixture({ items: [] });
+  const result = await prepareProformaVersion(fixture.source, "order-1");
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 422);
+  assert.equal(result.code, "EMPTY_ORDER_ITEMS");
+  assert.deepEqual(fixture.calls, { order: 1, items: 1 });
+}
+
+// Null, cero, negativo y valores no finitos son costes inválidos. GET puede
+// renderizarlos como pendientes; la preparación de POST nunca queda `ok`.
+for (const [cost, sku] of [
+  [null, "SKU-NULL"],
+  [0, "SKU-ZERO"],
+  [-3, "SKU-NEG"],
+  ["NaN", "SKU-NAN"],
+  ["Infinity", "SKU-INF"],
+]) {
+  const fixture = sourceFixture({ items: [itemWithCost(cost, sku)] });
+  const loaded = await loadProformaData(fixture.source, "order-1");
+  assert.equal(loaded.ok, true);
+  assert.equal(loaded.data.hasInvalidCommercialCosts, true);
+  assert.deepEqual(loaded.data.invalidCostSkus, [sku]);
+
+  const previewHtml = renderProformaHtml(loaded.data, "order-1");
+  assert.match(previewHtml, /Coste pendiente/);
+  assert.match(previewHtml, new RegExp(sku));
+  assert.doesNotMatch(previewHtml, /Total USD<\/label><span>\$0\.00/);
+
+  const postFixture = sourceFixture({ items: [itemWithCost(cost, sku)] });
+  const prepared = await prepareProformaVersion(postFixture.source, "order-1");
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.status, 422);
+  assert.equal(prepared.code, "MISSING_COMMERCIAL_COSTS");
+}
+
+// Un total no finito también invalida la línea aunque el unitario sea positivo.
+{
+  const fixture = sourceFixture({
+    items: [itemWithCost(Number.MAX_VALUE, "SKU-OVERFLOW", Number.MAX_VALUE)],
+  });
+  const result = await loadProformaData(fixture.source, "order-1");
+  assert.equal(result.ok, true);
+  assert.equal(result.data.hasInvalidCommercialCosts, true);
+  assert.deepEqual(result.data.invalidCostSkus, ["SKU-OVERFLOW"]);
+}
+
+// POST carga orden y líneas exactamente una vez; el HTML persistible deriva de
+// esa misma instantánea validada, sin una segunda consulta.
+{
+  const items = [itemWithCost(10, "SKU-SNAPSHOT")];
+  const fixture = sourceFixture({ items });
+  const prepared = await prepareProformaVersion(fixture.source, "order-1");
+  assert.equal(prepared.ok, true);
+  assert.deepEqual(fixture.calls, { order: 1, items: 1 });
+  assert.equal(prepared.data.rows[0].unitMoneda, 10);
+  assert.match(prepared.htmlContent, /SKU-SNAPSHOT/);
+  assert.match(prepared.htmlContent, /\$10\.00/);
+  assert.match(prepared.htmlContent, /\$20\.00/);
+  items[0].coste_unitario_moneda = 999;
+  assert.doesNotMatch(prepared.htmlContent, /\$999\.00/);
+}
+
+// El handler POST usa el preparador una sola vez y entrega exactamente su HTML
+// a la RPC; los resultados 422/500 retornan antes de esa llamada.
+const postHandler = proformaRoute.slice(
+  proformaRoute.indexOf("export async function POST"),
 );
-assert.match(
-  postHandler,
-  /if \(proformaData\.hasMissingCommercialCosts\) \{[\s\S]*?code: "MISSING_COMMERCIAL_COSTS"[\s\S]*?status: 422/,
+assert.equal(
+  (postHandler.match(/prepareProformaVersion\(/g) ?? []).length,
+  1,
 );
-assert.doesNotMatch(
-  postHandler.slice(0, missingCostsCheckIndex),
-  /\.rpc\(\s*"create_order_proforma_version"/,
-  "no debe llamar a la RPC de versionado antes del chequeo de costes faltantes",
-);
+assert.doesNotMatch(postHandler, /loadProformaData\(/);
+assert.match(postHandler, /p_html_content: prepared\.htmlContent/);
+assert.match(proformaService, /code: "EMPTY_ORDER_ITEMS"/);
+assert.match(proformaService, /code: "MISSING_COMMERCIAL_COSTS"/);
 
 // ── ISSUE_3: el script de validación evita falsos positivos en negativos ──
 

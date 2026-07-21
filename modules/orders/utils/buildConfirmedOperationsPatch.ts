@@ -1,15 +1,3 @@
-/**
- * Módulo   : orders
- * Archivo  : modules/orders/utils/buildConfirmedOperationsPatch.ts
- * Qué hace : Helper puro que compara el estado operativo actual del
- *            formulario contra una línea base (último estado confirmado
- *            cargado o última respuesta guardada) y devuelve únicamente las
- *            claves realmente modificadas, listas para
- *            PATCH /api/orders/[id]/confirmed-operations.
- * No debe  : Incluir items, costes ni campos comerciales — la RPC
- *            update_confirmed_purchase_order_operations no los acepta.
- */
-
 export type ConfirmedOperationsFields = {
   destino: string | null;
   tipo_envio: "propio" | "amazon_agl";
@@ -24,37 +12,41 @@ export type ConfirmedOperationsFields = {
   tipo_cambio_moneda_eur: number | null;
 };
 
-export type ConfirmedOperationsPatch = Partial<
-  Omit<ConfirmedOperationsFields, "tipo_envio"> & { tipo_envio: "propio" | "amazon_agl" }
->;
+export type ConfirmedOperationsPatch = Partial<ConfirmedOperationsFields>;
+
+export class ConfirmedOperationsPatchValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfirmedOperationsPatchValidationError";
+  }
+}
 
 function normalizeText(value: string | null | undefined): string | null {
   const trimmed = (value ?? "").trim();
   return trimmed === "" ? null : trimmed;
 }
 
-/** Compara solo por fecha (YYYY-MM-DD); ignora hora/zona si llegara con ella. */
 function normalizeDate(value: string | null | undefined): string | null {
   const trimmed = (value ?? "").trim();
   return trimmed === "" ? null : trimmed.slice(0, 10);
 }
 
-function normalizeNumber(value: number | string | null | undefined): number | null {
+function normalizeNumber(
+  value: number | string | null | undefined,
+): number | null {
   if (value === "" || value == null) return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 /**
- * Compara `current` contra `baseline` y devuelve un patch con exclusivamente
- * las claves cuyo valor normalizado cambió.
+ * Compara el estado operativo actual contra la última línea base confirmada.
+ * Solo devuelve claves modificadas; nunca incluye líneas ni datos comerciales.
  *
- * - Sin cambio: la clave se omite.
- * - Campo de texto/fecha/número vaciado: la clave se incluye con `null`.
- * - `tipo_cambio_moneda_eur`: la RPC rechaza un `null` explícito (debe ser
- *   positivo si se envía), así que solo se incluye cuando el valor nuevo es
- *   un número positivo distinto del de la línea base; nunca se envía como
- *   `null` aunque el campo se haya vaciado en el formulario.
+ * `finance_supplier_payments.amount_eur` es NOT NULL, aunque el tipo de cambio
+ * y otros importes informativos sí admiten NULL. No existe por tanto una
+ * limpieza atómica coherente con el esquema actual: un FX vacío, cero,
+ * negativo o no finito se rechaza en vez de omitirse silenciosamente.
  */
 export function buildConfirmedOperationsPatch(
   current: ConfirmedOperationsFields,
@@ -86,8 +78,12 @@ export function buildConfirmedOperationsPatch(
     patch.eta_real = etaRealCurrent;
   }
 
-  const leadProduccionCurrent = normalizeNumber(current.lead_time_produccion);
-  if (leadProduccionCurrent !== normalizeNumber(baseline.lead_time_produccion)) {
+  const leadProduccionCurrent = normalizeNumber(
+    current.lead_time_produccion,
+  );
+  if (
+    leadProduccionCurrent !== normalizeNumber(baseline.lead_time_produccion)
+  ) {
     patch.lead_time_produccion = leadProduccionCurrent;
   }
 
@@ -101,9 +97,11 @@ export function buildConfirmedOperationsPatch(
     patch.agente_id = agenteIdCurrent;
   }
 
-  const numeroPedidoAgenteCurrent = normalizeText(current.numero_pedido_agente);
-  if (numeroPedidoAgenteCurrent !== normalizeText(baseline.numero_pedido_agente)) {
-    patch.numero_pedido_agente = numeroPedidoAgenteCurrent;
+  const agentOrderCurrent = normalizeText(current.numero_pedido_agente);
+  if (
+    agentOrderCurrent !== normalizeText(baseline.numero_pedido_agente)
+  ) {
+    patch.numero_pedido_agente = agentOrderCurrent;
   }
 
   const notasCurrent = normalizeText(current.notas);
@@ -112,8 +110,14 @@ export function buildConfirmedOperationsPatch(
   }
 
   const fxCurrent = normalizeNumber(current.tipo_cambio_moneda_eur);
-  const fxBaseline = normalizeNumber(baseline.tipo_cambio_moneda_eur);
-  if (fxCurrent != null && fxCurrent > 0 && fxCurrent !== fxBaseline) {
+  if (fxCurrent == null || fxCurrent <= 0) {
+    throw new ConfirmedOperationsPatchValidationError(
+      "El tipo de cambio a EUR es obligatorio y debe ser un número positivo.",
+    );
+  }
+  if (
+    fxCurrent !== normalizeNumber(baseline.tipo_cambio_moneda_eur)
+  ) {
     patch.tipo_cambio_moneda_eur = fxCurrent;
   }
 

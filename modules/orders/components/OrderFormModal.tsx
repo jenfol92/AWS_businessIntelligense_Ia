@@ -545,7 +545,12 @@ export default function OrderFormModal({
           agente_id: agenteId,
           numero_pedido_agente: numeroPedidoAgente,
           notas,
-          tipo_cambio_moneda_eur: tipoCambio === "" ? null : Number(tipoCambio),
+          tipo_cambio_moneda_eur:
+            monedaCompra === "EUR"
+              ? 1
+              : tipoCambio === ""
+                ? null
+                : Number(tipoCambio),
         };
         const baseline = operationalBaseline ?? currentOperationalFields;
         const operationsPatch = buildConfirmedOperationsPatch(currentOperationalFields, baseline);
@@ -888,6 +893,8 @@ export default function OrderFormModal({
                 <input
                   type="number"
                   step="0.0001"
+                  min="0.000001"
+                  required
                   value={tipoCambio}
                   disabled={monedaCompra === "EUR"}
                   onChange={(e) =>

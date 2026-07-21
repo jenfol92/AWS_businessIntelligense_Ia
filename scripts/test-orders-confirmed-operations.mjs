@@ -5,7 +5,7 @@ import { join } from "node:path";
 const root = process.cwd();
 const read = (path) => readFileSync(join(root, path), "utf8");
 
-const rpcSql = read("sql/migrations/20260721_fix_confirmed_order_operations.sql");
+const rpcSql = read("sql/migrations/20260721_harden_confirmed_order_operations.sql");
 const versionSql = read("sql/migrations/20260721_safe_order_proforma_versioning.sql");
 const cleanupSql = read("sql/migrations/20260721_remove_confirmed_commercial_edit_rpc.sql");
 const operationsRoute = read("app/api/orders/[id]/confirmed-operations/route.ts");
@@ -31,11 +31,34 @@ assert.match(
 );
 assert.match(
   paymentBlock,
-  /logistics_type = CASE[\s\S]*WHEN v_changed_shipping/,
-);
-assert.match(
-  paymentBlock,
   /v_balance_due < CURRENT_DATE THEN 'vencido'[\s\S]*ELSE 'pendiente'/,
+);
+
+// logistics_type debe sincronizarse en TODOS los pagos no realizados (igual que
+// syncSupplierPaymentsForOrder, que fija el mismo valor en DEPOSITO_30 y BALANCE_70),
+// mientras que due_date/status siguen limitados a BALANCE_70.
+const dueDateUpdate = paymentBlock.match(
+  /UPDATE public\.finance_supplier_payments fsp\s+SET\s+due_date[\s\S]*?status IN \('pendiente', 'vencido'\);/,
+)?.[0] ?? "";
+assert.ok(dueDateUpdate, "debe existir el UPDATE de due_date/status");
+assert.match(dueDateUpdate, /payment_type = 'BALANCE_70'/);
+assert.doesNotMatch(dueDateUpdate, /logistics_type/);
+
+const logisticsUpdate = paymentBlock.match(
+  /IF v_changed_shipping THEN\s+UPDATE public\.finance_supplier_payments fsp\s+SET\s+logistics_type[\s\S]*?status IN \('pendiente', 'vencido'\);/,
+)?.[0] ?? "";
+assert.ok(logisticsUpdate, "debe existir el UPDATE de logistics_type");
+assert.doesNotMatch(
+  logisticsUpdate,
+  /payment_type = 'BALANCE_70'/,
+  "logistics_type debe actualizarse en DEPOSITO_30 y BALANCE_70, no solo en BALANCE_70",
+);
+
+// agente_id inválido debe rechazarse con un mensaje entendible (no un error crudo de cast).
+assert.match(rpcSql, /agente_id debe ser un UUID válido/);
+assert.match(
+  rpcSql,
+  /agente_id[\s\S]{0,200}!~\*\s*\n?\s*'\^\[0-9a-f\]\{8\}/,
 );
 
 const destinationUpdate = rpcSql.match(
@@ -118,5 +141,33 @@ assert.doesNotMatch(
   `${rpcSql}\n${versionSql}\n${proformaRoute}`,
   /(?:update|set)\s+proforma_firmada_url/i,
 );
+
+// GET sin versión explícita y sin ninguna versión persistida debe renderizar el
+// estado actual (comportamiento aceptado: ConfirmOrderModal abre esta misma ruta
+// antes de que exista ninguna versión guardada).
+const getHandler = proformaRoute.slice(
+  proformaRoute.indexOf("export async function GET"),
+  proformaRoute.indexOf("export async function POST"),
+);
+assert.match(getHandler, /return renderCurrentProforma\(req, \{ params \}\);/);
+assert.match(
+  getHandler,
+  /if \(requestedVersion\) \{[\s\S]*?La versión solicitada no existe/,
+  "una versión explícita inexistente debe seguir devolviendo error",
+);
+
+// El coste comercial debe tener fallback también para órdenes EUR antiguas sin
+// coste_unitario_moneda (no solo USD); GBP/CNY no tuvieron nunca columna propia.
+assert.match(proformaRoute, /unitEurStored/);
+assert.match(
+  proformaRoute,
+  /moneda === "EUR"\) unitMoneda = unitEurStored/,
+);
+
+// El REVOKE de la RPC comercial antigua no debe fallar si la función no existe
+// en el entorno (bases que no aplicaron 20260720 todavía).
+assert.match(cleanupSql, /DO \$\$/);
+assert.match(cleanupSql, /IF EXISTS \(/);
+assert.match(cleanupSql, /FROM pg_proc/);
 
 console.log("confirmed operations and proforma assertions: ok");

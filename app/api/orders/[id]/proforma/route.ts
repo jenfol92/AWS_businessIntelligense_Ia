@@ -126,11 +126,17 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
     const unitUsd = it["coste_unitario_usd"] != null ? Number(it["coste_unitario_usd"]) : null;
 
+    const unitEurStored = it["coste_unitario_eur"] != null
+      ? Number(it["coste_unitario_eur"])
+      : null;
+
     let unitMoneda = unitMonedaStored;
 
     if (unitMoneda == null) {
 
       if (moneda === "USD") unitMoneda = unitUsd;
+
+      else if (moneda === "EUR") unitMoneda = unitEurStored;
     }
 
     return unitMoneda;
@@ -652,7 +658,12 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
 }
 
-/** Abre una versión existente; nunca genera una nueva proforma. */
+/**
+ * Abre una versión guardada si existe. Sin `version` explícita y sin
+ * ninguna versión persistida, renderiza el estado actual de la orden
+ * (usado por el modal de confirmación para previsualizar/imprimir antes
+ * de que exista ninguna versión guardada).
+ */
 export async function GET(req: Request, { params }: Params) {
   const supabase = createSupabaseRouteClient();
   const {
@@ -684,10 +695,13 @@ export async function GET(req: Request, { params }: Params) {
     return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
   }
   if (!data) {
-    return NextResponse.json(
-      { ok: false, error: "La orden no tiene una proforma generada" },
-      { status: 404 },
-    );
+    if (requestedVersion) {
+      return NextResponse.json(
+        { ok: false, error: "La versión solicitada no existe" },
+        { status: 404 },
+      );
+    }
+    return renderCurrentProforma(req, { params });
   }
 
   return new Response(String(data.html_content), {

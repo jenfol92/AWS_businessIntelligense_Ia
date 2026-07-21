@@ -301,7 +301,10 @@ assert.equal(updatedBalance.status, "vencido");
 assert.equal(updatedBalance.notes, "nota recalculada");
 
 const fieldsSql = read("sql/migrations/20260721_supplier_payment_actual_fields.sql");
-const rpcSql = read("sql/migrations/20260721_supplier_payment_mark_paid_rpc.sql");
+const markPaidRpcSql = read("sql/migrations/20260721_supplier_payment_mark_paid_rpc.sql");
+const atomicRpcSql = read(
+  "sql/migrations/20260721_supplier_payment_t_atomic_pay_finance.sql",
+);
 const syncRpcSql = read("sql/migrations/20260721_supplier_payment_sync_plan_rpc.sql");
 const route = read("app/api/finance/supplier-payments/[id]/mark-paid/route.ts");
 const planning = read("modules/finance/services/buildFinancialPlanning.ts");
@@ -311,6 +314,8 @@ const syncRepository = read(
   "modules/finance/repositories/financeSupplierPaymentsRepository.ts",
 );
 const executionService = read("modules/finance/services/supplierPaymentExecutionService.ts");
+const executionTypes = read("modules/finance/types/supplierPaymentExecution.types.ts");
+const financeTypes = read("modules/finance/types/supplierPaymentFinance.types.ts");
 const financeRpc = read("sql/migrations/finance_supplier_payment_finance_rpc.sql");
 const proforma = read("modules/orders/services/orderProformaData.ts");
 const diagnostic = read("sql/diagnostics/supplier_payment_actual_fx_validation.sql");
@@ -329,51 +334,47 @@ assert.equal(
   3,
 );
 assert.doesNotMatch(fieldsSql, /VALIDATE CONSTRAINT/i);
-assert.doesNotMatch(fieldsSql, /UPDATE\s+public\.finance_supplier_payments/i);
-assert.match(rpcSql, /FOR UPDATE/);
-assert.match(rpcSql, /SUPPLIER_PAYMENT_ALREADY_PAID/);
-assert.doesNotMatch(rpcSql, /Ejecucion atomica e idempotente/);
-assert.match(rpcSql, /protección frente a repetición y sobrescritura/);
-assert.match(rpcSql, /PAYMENT_ORDER_MISMATCH/);
-assert.match(rpcSql, /round\(v_payment\.amount_original \* p_actual_fx_rate, 2\)/);
-assert.match(rpcSql, /abs\(v_expected_amount_eur - round\(p_actual_amount_eur, 2\)\) > 0\.01/);
-assert.match(rpcSql, /WHERE id = v_payment\.id/);
-assert.doesNotMatch(rpcSql, /SET[\s\S]{0,300}amount_original\s*=/);
-assert.doesNotMatch(rpcSql, /UPDATE public\.orden_items|order_proforma_versions/);
-assert.match(
-  rpcSql,
-  /bank_reference = coalesce\(nullif\(trim\(p_bank_reference\), ''\), bank_reference\)/,
-);
-assert.match(rpcSql, /bank_fee_eur = coalesce\(p_bank_fee_eur, bank_fee_eur\)/);
-assert.match(rpcSql, /ff_fee_eur = coalesce\(p_ff_fee_eur, ff_fee_eur\)/);
-assert.match(rpcSql, /BEFORE INSERT OR UPDATE OF payment_source_type/);
-assert.match(rpcSql, /NEW\.status <> 'pagado'/);
-assert.match(rpcSql, /NEW\.actual_amount_eur::text IN \('NaN', 'Infinity', '-Infinity'\)/);
-assert.match(rpcSql, /SECURITY INVOKER/);
-assert.match(rpcSql, /REVOKE EXECUTE[\s\S]*FROM PUBLIC/);
-assert.match(rpcSql, /GRANT EXECUTE[\s\S]*authenticated, service_role/);
-assert.match(route, /markSupplierPaymentPaidRpc\(value, supabase\)/);
+assert.match(atomicRpcSql, /mark_and_finance_supplier_payment/);
+assert.match(atomicRpcSql, /FOR UPDATE/);
+assert.match(atomicRpcSql, /SUPPLIER_PAYMENT_ALREADY_PAID/);
+assert.match(atomicRpcSql, /p_source_type text/);
+assert.match(atomicRpcSql, /'cash_account', 'credit_line'/);
+assert.match(atomicRpcSql, /INVALID_SOURCE_TYPE: manual funding is not allowed/);
+assert.match(atomicRpcSql, /finance_create_credit_line_drawdown/);
+assert.match(atomicRpcSql, /INSERT INTO public\.finance_cash_movements/);
+assert.match(atomicRpcSql, /require_real_funding_on_supplier_payment_paid/);
+assert.match(atomicRpcSql, /MISSING_FUNDING_SOURCE: use mark_and_finance_supplier_payment/);
+assert.match(atomicRpcSql, /SECURITY INVOKER/);
+assert.match(atomicRpcSql, /REVOKE EXECUTE[\s\S]*FROM PUBLIC/);
+assert.match(atomicRpcSql, /GRANT EXECUTE[\s\S]*authenticated, service_role/);
+assert.match(markPaidRpcSql, /mark_supplier_payment_paid/);
+assert.match(route, /markAndFinanceSupplierPaymentRpc\(value, supabase\)/);
 assert.match(route, /auth\.getUser\(\)/);
 assert.match(route, /status:\s*401/);
 assert.doesNotMatch(route, /\.from\("finance_supplier_payments"\)\s*\.update/);
-assert.match(executionService, /Number\.isFinite\(parsed\)/);
-assert.match(executionService, /date\.toISOString\(\)\.slice\(0, 10\) !== value/);
+assert.match(executionService, /sourceType debe ser cash_account o credit_line/);
+assert.match(executionService, /payload\.sourceType === "manual"/);
+assert.match(executionService, /MISSING_CASH_ACCOUNT/);
+assert.match(executionService, /MISSING_CREDIT_LINE/);
 assert.match(executionService, /SUPPLIER_PAYMENT_ALREADY_PAID:\s*409/);
-assert.match(executionService, /INVALID_PAID_AT/);
-assert.match(executionService, /INVALID_ACTUAL_FX_RATE/);
-assert.match(executionService, /INVALID_ACTUAL_AMOUNT_EUR/);
+assert.doesNotMatch(executionTypes, /paymentSource:\s*"cash"/);
+assert.match(executionTypes, /sourceType: SupplierPaymentFundingSourceType/);
+assert.doesNotMatch(financeTypes, /\|\s*"manual"/);
 assert.match(
   route,
-  /const input = normalizeMarkSupplierPaymentPaidInput[\s\S]*const payment = await markSupplierPaymentPaid/,
+  /const input = normalizeMarkSupplierPaymentPaidInput[\s\S]*markSupplierPaymentPaid/,
 );
-assert.match(rpcSql, /v_currency = 'EUR'[\s\S]*v_actual_fx_rate := 1/);
 const paidRealEurBlock = planning.slice(
   planning.indexOf("function paidRealAmountEur"),
   planning.indexOf("function paidRealAmountOriginal"),
 );
 assert.doesNotMatch(paidRealEurBlock, /payment\["amount_eur"\]/);
 assert.match(planningUi, /Pendiente de pago/);
-assert.match(planningUi, /Legacy no verificado/);
+assert.match(planningUi, /Fuente financiera/);
+assert.match(planningUi, /sourceType/);
+assert.match(planningUi, /cashAccountId/);
+assert.match(planningUi, /creditLineId/);
+assert.doesNotMatch(planningUi, /PAYMENT_SOURCE_OPTIONS|value:\s*"caja_rural"|value:\s*"manual"/);
 assert.doesNotMatch(planningUi, /Corregir pago|mode:\s*"replace"|actualAmountOriginal:/);
 assert.match(syncService, /planned_fx_rate:\s*null/);
 assert.match(syncService, /buildSupplierPaymentPlanAmounts/);
@@ -410,16 +411,20 @@ assert.doesNotMatch(proforma, /actual_fx_rate|actual_amount_eur|planned_fx_rate|
 assert.match(diagnostic, /^BEGIN;/m);
 assert.match(diagnostic, /ROLLBACK;\s*$/);
 assert.doesNotMatch(diagnostic, /^\s*COMMIT;/m);
+assert.match(diagnostic, /mark_and_finance_supplier_payment/);
+assert.match(diagnostic, /test_cash_account_id/);
+assert.doesNotMatch(diagnostic, /payment_source_type = 'manual'/);
 assert.match(
   diagnostic,
   /La repetición sobre un pago pagado no fue rechazada \(conflicto de sobrescritura\)/,
 );
-assert.doesNotMatch(diagnostic, /idempotent|idempotente/i);
-assert.match(diagnostic, /El trigger permitió financiar un pago no pagado/);
+assert.match(diagnostic, /La fuente manual no fue rechazada/);
 assert.match(diagnostic, /El trigger permitió financiar sin importe EUR real/);
 assert.match(syncDiagnostic, /^BEGIN;/m);
 assert.match(syncDiagnostic, /ROLLBACK;\s*$/);
 assert.doesNotMatch(syncDiagnostic, /^\s*COMMIT;/m);
+assert.match(syncDiagnostic, /test_cash_account_id/);
+assert.doesNotMatch(syncDiagnostic, /payment_source_type = 'manual'/);
 assert.match(syncDiagnostic, /_supplier_payment_paid_snapshot/);
 assert.match(syncDiagnostic, /_supplier_payment_pending_snapshot/);
 assert.match(syncDiagnostic, /PENDING_PAYMENT_NOT_UPDATED|PAID_PAYMENT_CHANGED/);

@@ -1,7 +1,6 @@
 export type SupplierPaymentFinanceSourceType =
   | "cash_account"
-  | "credit_line"
-  | "manual";
+  | "credit_line";
 
 export type SupplierPaymentFinancePayload = {
   sourceType?: unknown;

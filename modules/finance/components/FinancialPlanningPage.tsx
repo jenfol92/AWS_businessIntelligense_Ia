@@ -17,29 +17,22 @@ import {
 } from "lucide-react";
 import type {
   FinanceCashAccount,
+  FinanceCreditLine,
   FinancePlanningEvent,
   FinancePlanningResponse,
 } from "../types/planning.types";
 import type { MarkSupplierPaymentPaidResult } from "../types/supplierPaymentExecution.types";
+import type { SupplierPaymentFundingSourceType } from "../types/supplierPaymentExecution.types";
 import { LOGISTICS_LABELS } from "../utils/logisticsLabels";
 import { resolveSupplierPaymentActuals } from "../utils/resolveSupplierPaymentActuals";
 
-const PAYMENT_SOURCE_OPTIONS = [
-  { value: "cash", label: "Caja propia" },
-  { value: "caja_rural", label: "Caja Rural" },
-  { value: "la_caixa", label: "La Caixa" },
-  { value: "bbva", label: "BBVA" },
+const FUNDING_SOURCE_OPTIONS: Array<{
+  value: SupplierPaymentFundingSourceType;
+  label: string;
+}> = [
+  { value: "cash_account", label: "Caja / cuenta propia" },
+  { value: "credit_line", label: "Línea de crédito" },
 ];
-
-function normalizePaymentSourceForUi(
-  source: FinancePlanningEvent["recommendedSource"],
-): string {
-  if (source === "cash") return "cash";
-  if (source === "caja_rural") return "caja_rural";
-  if (source === "la_caixa") return "la_caixa";
-  if (source === "bbva") return "bbva";
-  return "cash";
-}
 
 const STATUS_FILTER_OPTIONS = [
   { value: "ALL", label: "Todos" },
@@ -210,16 +203,31 @@ function canRepayCreditLineEvent(event: FinancePlanningEvent): boolean {
 
 function PaymentModal({
   event,
+  cashAccounts,
+  creditLines,
   onClose,
   onSaved,
 }: {
   event: FinancePlanningEvent;
+  cashAccounts: FinanceCashAccount[];
+  creditLines: FinanceCreditLine[];
   onClose: () => void;
   onSaved: (payment: MarkSupplierPaymentPaidResult) => void;
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const isEurPayment = event.originalCurrency.trim().toUpperCase() === "EUR";
   const originalAmount = event.originalAmount ?? 0;
+  const activeCreditLines = creditLines.filter(
+    (line) => line.status.trim().toLowerCase() === "activa",
+  );
+  const defaultSourceType: SupplierPaymentFundingSourceType =
+    event.recommendedSource === "cash" || cashAccounts.length > 0
+      ? "cash_account"
+      : "credit_line";
+  const [sourceType, setSourceType] =
+    useState<SupplierPaymentFundingSourceType>(defaultSourceType);
+  const [cashAccountId, setCashAccountId] = useState(cashAccounts[0]?.id ?? "");
+  const [creditLineId, setCreditLineId] = useState(activeCreditLines[0]?.id ?? "");
   const [actualFxRate, setActualFxRate] = useState(isEurPayment ? "1" : "");
   const [actualAmountEur, setActualAmountEur] = useState(
     isEurPayment && originalAmount > 0 ? String(originalAmount) : "",
@@ -227,9 +235,6 @@ function PaymentModal({
   const [bankFeeEur, setBankFeeEur] = useState("");
   const [ffFeeEur, setFfFeeEur] = useState("");
   const [bankReference, setBankReference] = useState("");
-  const [paymentSource, setPaymentSource] = useState<string>(
-    normalizePaymentSourceForUi(event.recommendedSource),
-  );
   const [paidAt, setPaidAt] = useState(today);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
@@ -259,6 +264,15 @@ function PaymentModal({
 
     if (!Number.isFinite(originalAmount) || originalAmount <= 0) {
       setError(`El importe original ${event.originalCurrency} debe ser mayor que 0.`);
+      return;
+    }
+
+    if (sourceType === "cash_account" && !cashAccountId) {
+      setError("Selecciona una caja o cuenta propia.");
+      return;
+    }
+    if (sourceType === "credit_line" && !creditLineId) {
+      setError("Selecciona una línea de crédito activa.");
       return;
     }
 
@@ -326,7 +340,9 @@ function PaymentModal({
             orderId: event.orderId,
             actualFxRate: isEurPayment ? undefined : actualFxRateNumber,
             actualAmountEur: isEurPayment ? undefined : actualAmountEurNumber,
-            paymentSource,
+            sourceType,
+            cashAccountId: sourceType === "cash_account" ? cashAccountId : null,
+            creditLineId: sourceType === "credit_line" ? creditLineId : null,
             paidAt,
             bankReference: bankReference.trim() || null,
             bankFeeEur: bankFeeEur.trim() ? Number(bankFeeEur) : null,
@@ -453,20 +469,57 @@ function PaymentModal({
               />
             </label>
             <label className="text-xs font-medium text-slate-600">
-              Fuente de pago
+              Fuente financiera
               <select
                 required
-                value={paymentSource}
-                onChange={(e) => setPaymentSource(e.target.value)}
+                value={sourceType}
+                onChange={(e) =>
+                  setSourceType(e.target.value as SupplierPaymentFundingSourceType)
+                }
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
               >
-                {PAYMENT_SOURCE_OPTIONS.map((option) => (
+                {FUNDING_SOURCE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
                 ))}
               </select>
             </label>
+            {sourceType === "cash_account" ? (
+              <label className="text-xs font-medium text-slate-600">
+                Caja / cuenta propia
+                <select
+                  required
+                  value={cashAccountId}
+                  onChange={(e) => setCashAccountId(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
+                >
+                  <option value="">Selecciona una cuenta</option>
+                  {cashAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name} ({eur(account.balance)})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label className="text-xs font-medium text-slate-600">
+                Línea de crédito
+                <select
+                  required
+                  value={creditLineId}
+                  onChange={(e) => setCreditLineId(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
+                >
+                  <option value="">Selecciona una línea</option>
+                  {activeCreditLines.map((line) => (
+                    <option key={line.id} value={line.id}>
+                      {line.bankName} / {line.lineName} (disp. {eur(line.availableAmount)})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="text-xs font-medium text-slate-600">
               Fecha de pago
               <input
@@ -976,6 +1029,13 @@ export function FinancialPlanningPage() {
               actualFxRate,
               paidAt: payment.paid_at,
               paymentSource: payment.payment_source as FinancePlanningEvent["paymentSource"],
+              paymentSourceType:
+                payment.payment_source_type === "cash_account" ||
+                payment.payment_source_type === "credit_line"
+                  ? payment.payment_source_type
+                  : null,
+              paymentCashAccountId: payment.cash_account_id ?? null,
+              paymentCreditLineId: payment.credit_line_id ?? null,
               bankReference: payment.bank_reference,
               bankFeeEur: payment.bank_fee_eur,
               ffFeeEur: payment.ff_fee_eur,
@@ -1358,6 +1418,8 @@ export function FinancialPlanningPage() {
       {selectedPaymentEvent && isSupplierPaymentEvent(selectedPaymentEvent) ? (
         <PaymentModal
           event={selectedPaymentEvent}
+          cashAccounts={data.cashAccounts}
+          creditLines={data.creditLines}
           onClose={() => setSelectedPaymentEvent(null)}
           onSaved={patchAfterSupplierPayment}
         />

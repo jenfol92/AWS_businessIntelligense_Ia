@@ -19,7 +19,7 @@ export function mapBankToPaymentSource(bankName: string): FinancePaymentSource {
   if (lower.includes("rural")) return "caja_rural";
   if (lower.includes("caixa")) return "la_caixa";
   if (lower.includes("bbva")) return "bbva";
-  return "manual";
+  return "cash";
 }
 
 export function recommendCreditLineForAmount(

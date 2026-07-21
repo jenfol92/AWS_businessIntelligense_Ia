@@ -5,7 +5,7 @@ import {
   markSupplierPaymentPaid,
   normalizeMarkSupplierPaymentPaidInput,
 } from "@/modules/finance/services/supplierPaymentExecutionService";
-import { markSupplierPaymentPaidRpc } from "@/modules/finance/repositories/supplierPaymentExecutionRepository";
+import { markAndFinanceSupplierPaymentRpc } from "@/modules/finance/repositories/supplierPaymentExecutionRepository";
 import type { MarkSupplierPaymentPaidPayload } from "@/modules/finance/types/supplierPaymentExecution.types";
 
 type Params = { params: { id: string } };
@@ -30,11 +30,11 @@ export async function PATCH(req: Request, { params }: Params) {
 
   try {
     const input = normalizeMarkSupplierPaymentPaidInput(params.id, body);
-    const payment = await markSupplierPaymentPaid(
+    const result = await markSupplierPaymentPaid(
       input,
-      (value) => markSupplierPaymentPaidRpc(value, supabase),
+      (value) => markAndFinanceSupplierPaymentRpc(value, supabase),
     );
-    return NextResponse.json({ ok: true, payment });
+    return NextResponse.json({ ok: true, payment: result.payment, financing: result });
   } catch (error) {
     const known = getSupplierPaymentExecutionErrorResponse(error);
     if (known) {

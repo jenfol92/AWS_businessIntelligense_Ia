@@ -1,6 +1,7 @@
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
+  MarkAndFinanceSupplierPaymentResult,
   MarkSupplierPaymentPaidInput,
   MarkSupplierPaymentPaidResult,
 } from "../types/supplierPaymentExecution.types";
@@ -21,25 +22,34 @@ function formatSupabaseError(error: {
   });
 }
 
-export async function markSupplierPaymentPaidRpc(
+export async function markAndFinanceSupplierPaymentRpc(
   input: MarkSupplierPaymentPaidInput,
   supabase: SupplierPaymentExecutionClient = createSupabaseRouteClient(),
-): Promise<MarkSupplierPaymentPaidResult> {
-  const { data, error } = await supabase.rpc("mark_supplier_payment_paid", {
+): Promise<MarkAndFinanceSupplierPaymentResult> {
+  const { data, error } = await supabase.rpc("mark_and_finance_supplier_payment", {
     p_supplier_payment_id: input.supplierPaymentId,
     p_order_id: input.orderId,
     p_paid_at: input.paidAt,
     p_actual_fx_rate: input.actualFxRate,
     p_actual_amount_eur: input.actualAmountEur,
     p_bank_reference: input.bankReference,
-    p_payment_source: input.paymentSource,
     p_bank_fee_eur: input.bankFeeEur,
     p_ff_fee_eur: input.ffFeeEur,
     p_notes: input.notes,
+    p_source_type: input.sourceType,
+    p_cash_account_id: input.cashAccountId,
+    p_credit_line_id: input.creditLineId,
   });
 
   if (error) throw new Error(formatSupabaseError(error));
-  const row = Array.isArray(data) ? data[0] : data;
-  if (!row) throw new Error("SUPPLIER_PAYMENT_NOT_FOUND: empty RPC response");
-  return row as MarkSupplierPaymentPaidResult;
+  const payload = (Array.isArray(data) ? data[0] : data) as
+    | MarkAndFinanceSupplierPaymentResult
+    | null;
+  if (!payload?.payment) {
+    throw new Error("SUPPLIER_PAYMENT_NOT_FOUND: empty RPC response");
+  }
+  return {
+    ...payload,
+    payment: payload.payment as MarkSupplierPaymentPaidResult,
+  };
 }

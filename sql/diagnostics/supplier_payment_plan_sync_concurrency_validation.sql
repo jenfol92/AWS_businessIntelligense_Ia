@@ -5,18 +5,21 @@ BEGIN;
 CREATE TEMP TABLE _supplier_payment_plan_sync_context (
   order_id uuid PRIMARY KEY,
   deposit_payment_id uuid NOT NULL,
-  balance_payment_id uuid NOT NULL
+  balance_payment_id uuid NOT NULL,
+  test_cash_account_id uuid NOT NULL
 ) ON COMMIT DROP;
 
 INSERT INTO _supplier_payment_plan_sync_context (
   order_id,
   deposit_payment_id,
-  balance_payment_id
+  balance_payment_id,
+  test_cash_account_id
 )
 VALUES (
   '00000000-0000-0000-0000-000000000001',
   '00000000-0000-0000-0000-000000000002',
-  '00000000-0000-0000-0000-000000000003'
+  '00000000-0000-0000-0000-000000000003',
+  '00000000-0000-0000-0000-000000000004'
 );
 
 DO $$
@@ -40,6 +43,15 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'TEST_CONTEXT_INVALID: order must have DEPOSITO_30 and BALANCE_70 rows';
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.finance_cash_accounts
+    WHERE id = v_context.test_cash_account_id
+      AND upper(trim(currency)) = 'EUR'
+  ) THEN
+    RAISE EXCEPTION 'TEST_CASH_ACCOUNT_MISSING: sustituye test_cash_account_id por una cuenta EUR real';
+  END IF;
 END;
 $$;
 
@@ -54,7 +66,9 @@ SET
   bank_fee_eur = 1.25,
   ff_fee_eur = 2.50,
   payment_source = 'cash',
-  payment_source_type = 'manual',
+  payment_source_type = 'cash_account',
+  cash_account_id = c.test_cash_account_id,
+  credit_line_id = NULL,
   notes = 'nota bancaria preservada',
   updated_at = timestamptz '2026-07-21 10:00:00+00'
 FROM _supplier_payment_plan_sync_context c
@@ -72,6 +86,8 @@ SET
   ff_fee_eur = NULL,
   payment_source = NULL,
   payment_source_type = NULL,
+  cash_account_id = NULL,
+  credit_line_id = NULL,
   notes = 'nota balance anterior',
   updated_at = timestamptz '2026-07-20 10:00:00+00'
 FROM _supplier_payment_plan_sync_context c

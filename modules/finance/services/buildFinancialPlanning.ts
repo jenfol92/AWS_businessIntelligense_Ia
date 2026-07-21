@@ -103,8 +103,12 @@ function buildOrderPaymentStats(payments: Record<string, unknown>[]) {
 }
 
 function supplierPaymentSourceType(value: unknown): FinanceSupplierPaymentSourceType | null {
-  if (value === "cash_account" || value === "credit_line" || value === "manual") {
+  if (value === "cash_account" || value === "credit_line") {
     return value;
+  }
+  // Legacy de solo lectura: no se propaga como fuente operativa nueva.
+  if (value === "manual") {
+    return null;
   }
   return null;
 }

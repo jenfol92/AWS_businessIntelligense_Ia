@@ -10,9 +10,14 @@ export type FinanceEventType =
 
 export type FinanceEventStatus = "pendiente" | "pagado" | "vencido" | "previsto";
 
-export type FinancePaymentSource = "cash" | "caja_rural" | "la_caixa" | "bbva" | "manual";
+export type FinancePaymentSource = "cash" | "caja_rural" | "la_caixa" | "bbva";
 
-export type FinanceSupplierPaymentSourceType = "cash_account" | "credit_line" | "manual";
+/** Fuentes contables oficiales. `manual` solo puede aparecer en lecturas legacy. */
+export type FinanceSupplierPaymentSourceType = "cash_account" | "credit_line";
+
+export type FinanceSupplierPaymentSourceTypeLegacy =
+  | FinanceSupplierPaymentSourceType
+  | "manual";
 
 export type FinanceCreditLine = {
   id: string;

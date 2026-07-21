@@ -1,13 +1,17 @@
-import { markSupplierPaymentPaidRpc } from "../repositories/supplierPaymentExecutionRepository";
+import { markAndFinanceSupplierPaymentRpc } from "../repositories/supplierPaymentExecutionRepository";
 import {
   SupplierPaymentExecutionError,
+  type MarkAndFinanceSupplierPaymentResult,
   type MarkSupplierPaymentPaidInput,
   type MarkSupplierPaymentPaidPayload,
-  type MarkSupplierPaymentPaidResult,
   type SupplierPaymentExecutionErrorCode,
+  type SupplierPaymentFundingSourceType,
 } from "../types/supplierPaymentExecution.types";
 
-const PAYMENT_SOURCES = ["cash", "caja_rural", "la_caixa", "bbva"] as const;
+const FUNDING_SOURCE_TYPES: SupplierPaymentFundingSourceType[] = [
+  "cash_account",
+  "credit_line",
+];
 
 const ERROR_STATUS: Record<SupplierPaymentExecutionErrorCode, number> = {
   INVALID_REQUEST: 400,
@@ -16,7 +20,9 @@ const ERROR_STATUS: Record<SupplierPaymentExecutionErrorCode, number> = {
   INVALID_ACTUAL_AMOUNT_EUR: 400,
   INVALID_BANK_FEE: 400,
   INVALID_FF_FEE: 400,
-  INVALID_PAYMENT_SOURCE: 400,
+  INVALID_SOURCE_TYPE: 400,
+  MISSING_CASH_ACCOUNT: 400,
+  MISSING_CREDIT_LINE: 400,
   MISSING_ACTUAL_VALUE: 400,
   INCONSISTENT_ACTUAL_VALUES: 422,
   SUPPLIER_PAYMENT_NOT_FOUND: 404,
@@ -24,6 +30,12 @@ const ERROR_STATUS: Record<SupplierPaymentExecutionErrorCode, number> = {
   SUPPLIER_PAYMENT_ALREADY_PAID: 409,
   INVALID_ORIGINAL_AMOUNT: 422,
   INVALID_ORIGINAL_CURRENCY: 422,
+  INSUFFICIENT_CASH: 409,
+  INSUFFICIENT_CREDIT: 409,
+  CREDIT_LINE_INACTIVE: 409,
+  INVALID_CASH_ACCOUNT_CURRENCY: 422,
+  LEGACY_MANUAL_PAYMENT: 409,
+  MISSING_FUNDING_SOURCE: 400,
 };
 
 function executionError(
@@ -83,12 +95,43 @@ export function normalizeMarkSupplierPaymentPaidInput(
     throw executionError("INVALID_REQUEST", "El identificador del pago es obligatorio.");
   }
 
-  const paymentSource = optionalString(payload.paymentSource);
+  if (payload.sourceType === "manual") {
+    throw executionError(
+      "INVALID_SOURCE_TYPE",
+      "La financiación manual no está permitida. Selecciona caja/cuenta o línea de crédito.",
+    );
+  }
+
   if (
-    paymentSource != null &&
-    !PAYMENT_SOURCES.includes(paymentSource as (typeof PAYMENT_SOURCES)[number])
+    typeof payload.sourceType !== "string" ||
+    !FUNDING_SOURCE_TYPES.includes(payload.sourceType as SupplierPaymentFundingSourceType)
   ) {
-    throw executionError("INVALID_PAYMENT_SOURCE", "La fuente de pago no es válida.");
+    throw executionError(
+      "INVALID_SOURCE_TYPE",
+      "sourceType debe ser cash_account o credit_line.",
+    );
+  }
+
+  const sourceType = payload.sourceType as SupplierPaymentFundingSourceType;
+  const cashAccountId = optionalString(payload.cashAccountId);
+  const creditLineId = optionalString(payload.creditLineId);
+
+  if (sourceType === "cash_account") {
+    if (!cashAccountId || creditLineId) {
+      throw executionError(
+        "MISSING_CASH_ACCOUNT",
+        "cashAccountId es obligatorio y creditLineId debe quedar vacío.",
+      );
+    }
+  }
+
+  if (sourceType === "credit_line") {
+    if (!creditLineId || cashAccountId) {
+      throw executionError(
+        "MISSING_CREDIT_LINE",
+        "creditLineId es obligatorio y cashAccountId debe quedar vacío.",
+      );
+    }
   }
 
   return {
@@ -106,7 +149,6 @@ export function normalizeMarkSupplierPaymentPaidInput(
       "actualAmountEur",
     ),
     bankReference: optionalString(payload.bankReference),
-    paymentSource: paymentSource as MarkSupplierPaymentPaidInput["paymentSource"],
     bankFeeEur: optionalNonNegativeNumber(
       payload.bankFeeEur,
       "INVALID_BANK_FEE",
@@ -118,6 +160,9 @@ export function normalizeMarkSupplierPaymentPaidInput(
       "ffFeeEur",
     ),
     notes: optionalString(payload.notes),
+    sourceType,
+    cashAccountId,
+    creditLineId,
   };
 }
 
@@ -143,8 +188,8 @@ export async function markSupplierPaymentPaid(
   input: MarkSupplierPaymentPaidInput,
   execute: (
     value: MarkSupplierPaymentPaidInput,
-  ) => Promise<MarkSupplierPaymentPaidResult> = markSupplierPaymentPaidRpc,
-): Promise<MarkSupplierPaymentPaidResult> {
+  ) => Promise<MarkAndFinanceSupplierPaymentResult> = markAndFinanceSupplierPaymentRpc,
+): Promise<MarkAndFinanceSupplierPaymentResult> {
   try {
     return await execute(input);
   } catch (error) {

@@ -33,9 +33,9 @@ const MONEDAS_VALIDAS = new Set(["USD", "EUR", "GBP", "CNY"]);
 
 
 
-/** GET /api/orders/[id]/proforma?moneda=USD&cambio=0.92 */
+/** Renderiza una nueva proforma desde el estado comercial congelado de la orden. */
 
-export async function GET(req: Request, { params }: Params) {
+async function renderCurrentProforma(req: Request, { params }: Params) {
 
   const supabase = createSupabaseRouteClient();
 
@@ -840,6 +840,134 @@ ${avisoCambio}
 
   });
 
+}
+
+/** Abre una versión existente; nunca genera una nueva proforma. */
+export async function GET(req: Request, { params }: Params) {
+  const supabase = createSupabaseRouteClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return new Response("No autorizado", { status: 401 });
+
+  const requestedVersion = new URL(req.url).searchParams.get("version");
+  let query = supabase
+    .from("order_proforma_versions")
+    .select("html_content, version")
+    .eq("orden_id", params.id);
+
+  if (requestedVersion) {
+    const parsedVersion = Number(requestedVersion);
+    if (!Number.isInteger(parsedVersion) || parsedVersion <= 0) {
+      return NextResponse.json(
+        { ok: false, error: "Versión de proforma inválida" },
+        { status: 400 },
+      );
+    }
+    query = query.eq("version", parsedVersion);
+  } else {
+    query = query.order("version", { ascending: false }).limit(1);
+  }
+
+  const { data, error } = await query.maybeSingle();
+  if (error) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
+  }
+  if (!data) {
+    return NextResponse.json(
+      { ok: false, error: "La orden no tiene una proforma generada" },
+      { status: 404 },
+    );
+  }
+
+  return new Response(String(data.html_content), {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "private, no-store",
+      "X-Proforma-Version": String(data.version),
+    },
+  });
+}
+
+/**
+ * Genera explícitamente una nueva versión no firmada.
+ * Si existe proforma firmada exige confirmación expresa, pero nunca la sustituye.
+ */
+export async function POST(req: Request, { params }: Params) {
+  const supabase = createSupabaseRouteClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
+  }
+
+  let body: { confirm_signed?: boolean } = {};
+  try {
+    body = (await req.json()) as { confirm_signed?: boolean };
+  } catch {
+    return NextResponse.json({ ok: false, error: "JSON inválido" }, { status: 400 });
+  }
+
+  const { data: order, error: orderError } = await supabase
+    .from("ordenes_compra")
+    .select("id, proforma_firmada_url")
+    .eq("id", params.id)
+    .maybeSingle();
+
+  if (orderError) {
+    return NextResponse.json({ ok: false, error: orderError.message }, { status: 400 });
+  }
+  if (!order) {
+    return NextResponse.json({ ok: false, error: "Orden no encontrada" }, { status: 404 });
+  }
+  if (order.proforma_firmada_url && body.confirm_signed !== true) {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "SIGNED_PROFORMA_EXISTS",
+        error:
+          "Existe una proforma firmada. Confirma expresamente la creación de una nueva versión no firmada.",
+      },
+      { status: 409 },
+    );
+  }
+
+  const rendered = await renderCurrentProforma(req, { params });
+  if (!rendered.ok) return rendered;
+  const htmlContent = await rendered.text();
+
+  const { data: latest, error: latestError } = await supabase
+    .from("order_proforma_versions")
+    .select("version")
+    .eq("orden_id", params.id)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (latestError) {
+    return NextResponse.json({ ok: false, error: latestError.message }, { status: 400 });
+  }
+
+  const version = Number(latest?.version ?? 0) + 1;
+  const { error: insertError } = await supabase
+    .from("order_proforma_versions")
+    .insert({
+      orden_id: params.id,
+      version,
+      html_content: htmlContent,
+      created_by: user.id,
+    });
+
+  if (insertError) {
+    return NextResponse.json({ ok: false, error: insertError.message }, { status: 400 });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    version,
+    url: `/api/orders/${encodeURIComponent(params.id)}/proforma?version=${version}`,
+  });
 }
 
 

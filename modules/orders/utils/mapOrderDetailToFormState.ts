@@ -27,6 +27,7 @@ export function mapOrderDetailToFormState(detail: RawOrderDetail): OrderFormLoad
     notas:              (orden.notas               as string | null) ?? "",
     etd:                orden.etd ? String(orden.etd).slice(0, 10) : "",
     eta:                orden.eta ? String(orden.eta).slice(0, 10) : "",
+    etaReal:            orden.eta_real ? String(orden.eta_real).slice(0, 10) : "",
     monedaCompra:       String(orden.moneda_compra ?? "USD"),
     tipoCambio:         tc != null ? Number(tc) : "",
     numeroPedidoAgente: (orden.numero_pedido_agente  as string | null) ?? "",

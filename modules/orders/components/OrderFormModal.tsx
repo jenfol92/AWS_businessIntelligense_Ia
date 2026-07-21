@@ -51,8 +51,10 @@ export type OrdenRow = {
   tipo_cambio_usd_eur: number | null;
   eta: string | null;
   etd?: string | null;
+  eta_real?: string | null;
   moneda_compra?: string | null;
   tipo_cambio_moneda_eur?: number | null;
+  proforma_firmada_url?: string | null;
 };
 
 /** Ítem dentro del formulario de orden (con _key local para listas React). */
@@ -173,6 +175,7 @@ export default function OrderFormModal({
   const [notas, setNotas]         = useState(initialOrden?.notas ?? "");
   const [etd, setEtd]               = useState(initialOrden?.etd?.slice(0, 10) ?? "");
   const [eta, setEta]               = useState(initialOrden?.eta?.slice(0, 10) ?? "");
+  const [etaReal, setEtaReal]       = useState(initialOrden?.eta_real?.slice(0, 10) ?? "");
   const [etdTouched, setEtdTouched] = useState(false);
   const [etaTouched, setEtaTouched] = useState(false);
   const [monedaCompra, setMonedaCompra] = useState(initialOrden?.moneda_compra ?? "USD");
@@ -191,6 +194,9 @@ export default function OrderFormModal({
   const [leadProduccionTouched, setLeadProduccionTouched] = useState(false);
   const [leadTransitoTouched, setLeadTransitoTouched] = useState(false);
   const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [generatingProforma, setGeneratingProforma] = useState(false);
+  const [savedOrder, setSavedOrder] = useState<OrdenRow | null>(initialOrden);
 
   // ─── Estado ítems ─────────────────────────────────────────────────────────
 
@@ -284,6 +290,7 @@ export default function OrderFormModal({
     setNotas(detailState.notas);
     setEtd(detailState.etd);
     setEta(detailState.eta);
+    setEtaReal(detailState.etaReal);
     setMonedaCompra(detailState.monedaCompra);
     setTipoCambio(detailState.tipoCambio);
     setNumeroPedidoAgente(detailState.numeroPedidoAgente);
@@ -294,6 +301,7 @@ export default function OrderFormModal({
 
   useEffect(() => {
     if (readonly) return;
+    if (isConfirmedEdit) return;
     if (isEdit && !detailState) return;
 
     // Sin productos no hay base para estimar producción, tránsito ni fechas.
@@ -328,6 +336,7 @@ export default function OrderFormModal({
     leadTransitoTouched,
     detailState,
     isEdit,
+    isConfirmedEdit,
     items.length,
     readonly,
     suggestedLeadTimes.lead_time_produccion,
@@ -336,6 +345,7 @@ export default function OrderFormModal({
 
   useEffect(() => {
     if (readonly) return;
+    if (isConfirmedEdit) return;
     if (isEdit && !detailState) return;
     if (items.length === 0) return;
 
@@ -364,6 +374,7 @@ export default function OrderFormModal({
     etdTouched,
     fecha,
     isEdit,
+    isConfirmedEdit,
     items.length,
     leadProduccion,
     leadTransito,
@@ -456,6 +467,7 @@ export default function OrderFormModal({
   async function handleSave() {
     setSaving(true);
     setError(null);
+    setSuccessMessage(null);
     setSaveWarnings([]);
     const headerOpts = {
       tipoEnvio,
@@ -474,12 +486,44 @@ export default function OrderFormModal({
       leadTransito,
     };
     try {
+      if (isConfirmedEdit && initialOrden?.id) {
+        const operationsPatch = {
+          destino: destino || null,
+          tipo_envio: tipoEnvio,
+          etd: etd || null,
+          eta: eta || null,
+          eta_real: etaReal || null,
+          lead_time_produccion:
+            leadProduccion === "" ? null : Number(leadProduccion),
+          lead_time_transito: leadTransito === "" ? null : Number(leadTransito),
+          agente_id: agenteId || null,
+          numero_pedido_agente: numeroPedidoAgente || null,
+          notas: notas || null,
+          ...(tipoCambio !== "" && Number(tipoCambio) > 0
+            ? { tipo_cambio_moneda_eur: Number(tipoCambio) }
+            : {}),
+        };
+        const response = await fetch(
+          `/api/orders/${initialOrden.id}/confirmed-operations`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(operationsPatch),
+          },
+        );
+        const json = await response.json();
+        if (!response.ok || !json.ok) {
+          throw new Error(json.error ?? "Error guardando los cambios operativos");
+        }
+
+        const updatedOrder = json.orden as OrdenRow;
+        setSavedOrder(updatedOrder);
+        setSuccessMessage("Cambios guardados correctamente");
+        return;
+      }
+
       const body1 = buildOrderFormPayload(items, headerOpts);
-      const url1  = isConfirmedEdit
-        ? `/api/orders/${initialOrden!.id}/confirmed-edit`
-        : isEdit
-          ? `/api/orders/${initialOrden!.id}`
-          : "/api/orders";
+      const url1 = isEdit ? `/api/orders/${initialOrden!.id}` : "/api/orders";
       const r1    = await fetch(url1, {
         method:  isEdit ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
@@ -511,15 +555,62 @@ export default function OrderFormModal({
         if (!j2.ok) throw new Error(j2.error ?? "Error guardando la segunda orden");
       }
 
-      if (isConfirmedEdit && initialOrden?.id) {
-        window.open(`/api/orders/${initialOrden.id}/proforma`, "_blank", "noopener,noreferrer");
-      }
-
       onSaved(j1.orden as OrdenRow | undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error desconocido");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function handleViewProforma() {
+    if (!initialOrden?.id) return;
+    const signedUrl = savedOrder?.proforma_firmada_url;
+    window.open(
+      signedUrl || `/api/orders/${initialOrden.id}/proforma`,
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }
+
+  async function handleGenerateProforma() {
+    if (!initialOrden?.id || generatingProforma) return;
+    setGeneratingProforma(true);
+    setError(null);
+
+    try {
+      const generate = async (confirmSigned: boolean) => {
+        const response = await fetch(`/api/orders/${initialOrden.id}/proforma`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm_signed: confirmSigned }),
+        });
+        const json = await response.json();
+        return { response, json };
+      };
+
+      let result = await generate(false);
+      if (result.response.status === 409 && result.json.code === "SIGNED_PROFORMA_EXISTS") {
+        const confirmed = window.confirm(
+          "Existe una proforma firmada. Se conservará intacta. ¿Crear una nueva versión no firmada?",
+        );
+        if (!confirmed) return;
+        result = await generate(true);
+      }
+
+      if (!result.response.ok || !result.json.ok) {
+        throw new Error(result.json.error ?? "No se pudo generar la proforma");
+      }
+
+      window.open(result.json.url, "_blank", "noopener,noreferrer");
+    } catch (generateError) {
+      setError(
+        generateError instanceof Error
+          ? generateError.message
+          : "No se pudo generar la proforma",
+      );
+    } finally {
+      setGeneratingProforma(false);
     }
   }
 
@@ -541,7 +632,7 @@ export default function OrderFormModal({
             <h2 className="text-lg font-bold text-slate-800">{titleText}</h2>
             {isConfirmedEdit && (
               <span className="text-xs text-emerald-600 font-medium">
-                Confirmada - edicion economica/logistica
+                Confirmada - edición operativa
               </span>
             )}
           </div>
@@ -564,7 +655,7 @@ export default function OrderFormModal({
                 FOB Puerto salida
               </label>
               <select
-                disabled={readonly}
+                disabled={readonly || isConfirmedEdit}
                 value={fob}
                 onChange={(e) => setFob(e.target.value)}
                 className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white disabled:bg-slate-50 disabled:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -663,7 +754,7 @@ export default function OrderFormModal({
           </div>
 
           {!readonly ? (
-            <div className="grid grid-cols-2 md:grid-cols-7 gap-4 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3">
+            <div className="grid grid-cols-2 md:grid-cols-8 gap-4 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3">
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">ETD</label>
                 <input
@@ -685,6 +776,15 @@ export default function OrderFormModal({
                     setEtaTouched(true);
                     setEta(e.target.value);
                   }}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">ETA real</label>
+                <input
+                  type="date"
+                  value={etaReal}
+                  onChange={(e) => setEtaReal(e.target.value)}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
@@ -735,7 +835,7 @@ export default function OrderFormModal({
                   type="number"
                   step="0.0001"
                   value={tipoCambio}
-                  disabled={monedaCompra === "EUR" || isConfirmedEdit}
+                  disabled={monedaCompra === "EUR"}
                   onChange={(e) =>
                     setTipoCambio(e.target.value === "" ? "" : Number(e.target.value))
                   }
@@ -756,6 +856,11 @@ export default function OrderFormModal({
           {saveWarnings.length > 0 ? (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               {saveWarnings.join(" ")}
+            </div>
+          ) : null}
+          {successMessage ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              {successMessage}
             </div>
           ) : null}
 
@@ -933,6 +1038,7 @@ export default function OrderFormModal({
                               type="number"
                               min={0}
                               step="0.01"
+                              disabled={isConfirmedEdit}
                               value={item.coste_unitario_moneda ?? item.coste_unitario_usd ?? ""}
                               onChange={(e) => {
                                 const val = e.target.value ? Number(e.target.value) : null;
@@ -951,7 +1057,7 @@ export default function OrderFormModal({
                                 );
                               }}
                               placeholder="—"
-                              className="w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              className="w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-center disabled:bg-slate-50 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
                             />
                             {item.sin_coste_historico ? (
                               <p className="mt-0.5 text-[10px] text-amber-600">Sin coste histórico</p>
@@ -1329,14 +1435,36 @@ export default function OrderFormModal({
 
         {/* ── Footer ── */}
         {!readonly ? (
-          <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition"
-            >
-              Cancelar
-            </button>
+          <div className="px-6 py-4 border-t border-slate-100 flex flex-wrap items-center justify-end gap-3">
+            {isConfirmedEdit ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleViewProforma}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-slate-700 border border-slate-200 hover:bg-slate-50 transition"
+                >
+                  Ver proforma
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateProforma}
+                  disabled={generatingProforma}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-blue-700 border border-blue-200 hover:bg-blue-50 disabled:opacity-60 transition"
+                >
+                  {generatingProforma
+                    ? "Generando…"
+                    : "Actualizar/generar nueva proforma"}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition"
+              >
+                Cancelar
+              </button>
+            )}
             <button
               type="button"
               onClick={handleSave}
@@ -1345,9 +1473,7 @@ export default function OrderFormModal({
             >
               {saving
                 ? "Guardando…"
-                : isConfirmedEdit
-                  ? "Guardar y generar nueva proforma"
-                  : showSplit
+                : showSplit
                   ? "Guardar 2 borradores"
                   : isEdit
                     ? "Guardar cambios"

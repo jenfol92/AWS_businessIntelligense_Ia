@@ -47,6 +47,7 @@ export type OrderFormLoaderState = {
   notas: string;
   etd: string;
   eta: string;
+  etaReal: string;
   monedaCompra: string;
   tipoCambio: number | "";
   numeroPedidoAgente: string;

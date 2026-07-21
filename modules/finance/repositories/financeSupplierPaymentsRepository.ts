@@ -206,54 +206,35 @@ export type UpsertSupplierPaymentInput = {
   amount_eur: number;
   logistics_type: string | null;
   contenedor_id: string | null;
-  status: "pendiente" | "pagado" | "vencido";
+  status: "pendiente" | "vencido";
   notes?: string | null;
 };
 
 export async function upsertSupplierPayment(
   input: UpsertSupplierPaymentInput,
+  supabase: SupabaseClient = createSupabaseRouteClient(),
 ): Promise<SupplierPaymentRow> {
-  const supabase = createSupabaseRouteClient();
-  const existing = await fetchSupplierPaymentByType(input.orden_id, input.payment_type);
-
-  if (existing?.status === "pagado") {
-    return existing;
-  }
-
-  const payload = {
-    orden_id: input.orden_id,
-    payment_type: input.payment_type,
-    due_date: input.due_date,
-    amount_original: input.amount_original,
-    original_currency: input.original_currency,
-    planned_fx_rate: input.planned_fx_rate,
-    amount_eur: input.amount_eur,
-    logistics_type: input.logistics_type,
-    contenedor_id: input.contenedor_id,
-    status: input.status,
-    notes: input.notes ?? null,
-    updated_at: new Date().toISOString(),
-  };
-
-  if (existing) {
-    const { data, error } = await supabase
-      .from("finance_supplier_payments")
-      .update(payload)
-      .eq("id", existing.id)
-      .select("*")
-      .single();
-    if (error) throw new Error(formatSupabaseError(error));
-    return data as SupplierPaymentRow;
-  }
-
-  const { data, error } = await supabase
-    .from("finance_supplier_payments")
-    .insert(payload)
-    .select("*")
-    .single();
+  const { data, error } = await supabase.rpc("sync_supplier_payment_plan", {
+    p_order_id: input.orden_id,
+    p_payment_type: input.payment_type,
+    p_due_date: input.due_date,
+    p_amount_original: input.amount_original,
+    p_original_currency: input.original_currency,
+    p_planned_fx_rate: input.planned_fx_rate,
+    p_amount_eur: input.amount_eur,
+    p_logistics_type: input.logistics_type,
+    p_container_id: input.contenedor_id,
+    p_status: input.status,
+    p_notes: input.notes ?? null,
+    p_update_notes: input.notes !== undefined,
+  });
 
   if (error) throw new Error(formatSupabaseError(error));
-  return data as SupplierPaymentRow;
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) {
+    throw new Error("sync_supplier_payment_plan: respuesta RPC vacía.");
+  }
+  return row as SupplierPaymentRow;
 }
 
 export async function voidPendingSupplierPaymentsForOrder(

@@ -11,7 +11,7 @@ import {
 const root = process.cwd();
 const read = (path) => readFileSync(join(root, path), "utf8");
 
-const rpcSql = read("sql/migrations/20260721_remove_order_fx_from_operational_flow.sql");
+const rpcSql = read("sql/migrations/20260721_z_remove_order_fx_from_operational_flow.sql");
 const versionSql = read("sql/migrations/20260721_safe_order_proforma_versioning.sql");
 const cleanupSql = read("sql/migrations/20260721_remove_confirmed_commercial_edit_rpc.sql");
 const operationsRoute = read("app/api/orders/[id]/confirmed-operations/route.ts");

@@ -11,7 +11,7 @@ const service = read(
 );
 const route = read("app/api/orders/[id]/confirmed-operations/route.ts");
 const rpcSql = read(
-  "sql/migrations/20260721_remove_order_fx_from_operational_flow.sql",
+  "sql/migrations/20260721_z_remove_order_fx_from_operational_flow.sql",
 );
 const proformaSql = read(
   "sql/migrations/20260721_order_proforma_versions.sql",

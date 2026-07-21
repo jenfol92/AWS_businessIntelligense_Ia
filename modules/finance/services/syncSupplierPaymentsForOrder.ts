@@ -22,6 +22,7 @@ import {
   resolveBalanceDueDate,
   resolveDepositDueDate,
 } from "@/modules/finance/utils/resolveSupplierPaymentDates";
+import { buildSupplierPaymentPlanAmounts } from "@/modules/finance/utils/validateSupplierPaymentPlanBase";
 
 export type BackfillSupplierPaymentsResult = {
   found: number;
@@ -82,7 +83,7 @@ function balanceNotes(
 
 /**
  * Crea o actualiza pagos proveedor (DEPOSITO_30, BALANCE_70) para una orden confirmada.
- * Idempotente por (orden_id, payment_type).
+ * No crea duplicados por (orden_id, payment_type).
  */
 export async function syncSupplierPaymentsForOrder(
   ordenId: string,
@@ -103,44 +104,54 @@ export async function syncSupplierPaymentsForOrder(
     containerTipoContenedor: container?.tipo_contenedor,
   });
 
-  const depositPct = asNumber(order.deposito_porcentaje, 30);
-  const balancePct = Math.max(0, 100 - depositPct);
   const originalCurrency = (order.moneda_compra ?? "USD").trim().toUpperCase() || "USD";
   const baseOriginal = originalOrderAmount(order, originalCurrency);
-  // amount_eur es obligatorio por compatibilidad legacy. Para monedas no EUR
-  // no se inventa una estimación; los campos reales permanecen null hasta pagar.
-  const legacyAmountEur = originalCurrency === "EUR" ? baseOriginal : 0;
+  const depositPct =
+    order.deposito_porcentaje === null || order.deposito_porcentaje === undefined
+      ? 30
+      : Number(order.deposito_porcentaje);
+  const planAmounts = buildSupplierPaymentPlanAmounts({
+    orderId: ordenId,
+    originalCurrency,
+    baseOriginal,
+    depositPercent: depositPct,
+  });
+  const balancePct = 100 - depositPct;
 
   const depositDate = resolveDepositDueDate(order);
   const balanceDate = resolveBalanceDueDate({ logisticsType, order, container, amazonInbound });
   const balanceDaysBeforeEta = Math.max(0, Number(order.balance_dias_antes_eta ?? 10));
 
-  await upsertSupplierPayment({
-    orden_id: ordenId,
-    payment_type: "DEPOSITO_30",
-    due_date: depositDate,
-    amount_original: baseOriginal * (depositPct / 100),
-    original_currency: originalCurrency,
-    planned_fx_rate: null,
-    amount_eur: legacyAmountEur * (depositPct / 100),
-    logistics_type: logisticsType,
-    contenedor_id: container?.id ?? null,
-    status: paymentStatus(depositDate),
-  });
+  if (planAmounts.deposit) {
+    await upsertSupplierPayment({
+      orden_id: ordenId,
+      payment_type: "DEPOSITO_30",
+      due_date: depositDate,
+      amount_original: planAmounts.deposit.amountOriginal,
+      original_currency: originalCurrency,
+      planned_fx_rate: null,
+      amount_eur: planAmounts.deposit.amountEur,
+      logistics_type: logisticsType,
+      contenedor_id: container?.id ?? null,
+      status: paymentStatus(depositDate),
+    });
+  }
 
-  await upsertSupplierPayment({
-    orden_id: ordenId,
-    payment_type: "BALANCE_70",
-    due_date: balanceDate,
-    amount_original: baseOriginal * (balancePct / 100),
-    original_currency: originalCurrency,
-    planned_fx_rate: null,
-    amount_eur: legacyAmountEur * (balancePct / 100),
-    logistics_type: logisticsType,
-    contenedor_id: container?.id ?? null,
-    status: paymentStatus(balanceDate),
-    notes: balanceNotes(logisticsType, balanceDate, balanceDaysBeforeEta, balancePct),
-  });
+  if (planAmounts.balance) {
+    await upsertSupplierPayment({
+      orden_id: ordenId,
+      payment_type: "BALANCE_70",
+      due_date: balanceDate,
+      amount_original: planAmounts.balance.amountOriginal,
+      original_currency: originalCurrency,
+      planned_fx_rate: null,
+      amount_eur: planAmounts.balance.amountEur,
+      logistics_type: logisticsType,
+      contenedor_id: container?.id ?? null,
+      status: paymentStatus(balanceDate),
+      notes: balanceNotes(logisticsType, balanceDate, balanceDaysBeforeEta, balancePct),
+    });
+  }
 }
 
 /**

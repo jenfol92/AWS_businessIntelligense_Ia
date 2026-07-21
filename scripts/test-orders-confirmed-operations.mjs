@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildConfirmedOperationsPatch } from "../modules/orders/utils/buildConfirmedOperationsPatch.ts";
 
 const root = process.cwd();
 const read = (path) => readFileSync(join(root, path), "utf8");
@@ -15,6 +16,7 @@ const operationsService = read(
 const proformaRoute = read("app/api/orders/[id]/proforma/route.ts");
 const modal = read("modules/orders/components/OrderFormModal.tsx");
 const ordersPage = read("app/[locale]/(dashboard)/pedidos/page.tsx");
+const diagnosticSql = read("sql/diagnostics/confirmed_order_operations_validation.sql");
 
 assert.doesNotMatch(operationsRoute, /\bitems\b|orden_items|producto_costos/);
 assert.doesNotMatch(operationsService, /\bitems\b|orden_items|producto_costos/);
@@ -169,5 +171,281 @@ assert.match(
 assert.match(cleanupSql, /DO \$\$/);
 assert.match(cleanupSql, /IF EXISTS \(/);
 assert.match(cleanupSql, /FROM pg_proc/);
+
+// ── ISSUE_1: buildConfirmedOperationsPatch envía únicamente lo modificado ──
+
+const BASELINE = {
+  destino: "Puerto A",
+  tipo_envio: "propio",
+  etd: null,
+  eta: "2026-08-01",
+  eta_real: null,
+  lead_time_produccion: 30,
+  lead_time_transito: 15,
+  agente_id: "11111111-1111-1111-1111-111111111111",
+  numero_pedido_agente: "PO-1",
+  notas: "nota base",
+  tipo_cambio_moneda_eur: 1.1,
+};
+
+// Cambiar solo destino envía exactamente { destino: ... }.
+assert.deepEqual(
+  buildConfirmedOperationsPatch({ ...BASELINE, destino: "Puerto B" }, BASELINE),
+  { destino: "Puerto B" },
+);
+
+// Cambiar solo ETA envía exactamente { eta: ... }.
+assert.deepEqual(
+  buildConfirmedOperationsPatch({ ...BASELINE, eta: "2026-09-15" }, BASELINE),
+  { eta: "2026-09-15" },
+);
+
+// Limpiar ETA envía { eta: null }.
+assert.deepEqual(
+  buildConfirmedOperationsPatch({ ...BASELINE, eta: null }, BASELINE),
+  { eta: null },
+);
+assert.deepEqual(
+  buildConfirmedOperationsPatch({ ...BASELINE, eta: "" }, BASELINE),
+  { eta: null },
+);
+
+// Sin cambios: patch vacío (segundo guardado no debe disparar PATCH).
+assert.deepEqual(buildConfirmedOperationsPatch({ ...BASELINE }, BASELINE), {});
+assert.deepEqual(
+  buildConfirmedOperationsPatch(
+    { ...BASELINE, etd: "" , eta_real: "", notas: "", agente_id: "", numero_pedido_agente: "" },
+    { ...BASELINE, etd: null, eta_real: null, notas: null, agente_id: null, numero_pedido_agente: null },
+  ),
+  {},
+  "campos ya nulos en baseline pero vacíos en el formulario no deben generar patch",
+);
+
+// La fecha se compara solo por YYYY-MM-DD, ignorando hora/zona si llegara con ella.
+assert.deepEqual(
+  buildConfirmedOperationsPatch(
+    { ...BASELINE, eta: "2026-08-01T00:00:00.000Z" },
+    BASELINE,
+  ),
+  {},
+  "misma fecha con sufijo horario no debe generar patch",
+);
+
+// Los números se comparan como number o null, no como string.
+assert.deepEqual(
+  buildConfirmedOperationsPatch(
+    { ...BASELINE, lead_time_produccion: 45 },
+    BASELINE,
+  ),
+  { lead_time_produccion: 45 },
+);
+assert.deepEqual(
+  buildConfirmedOperationsPatch(
+    { ...BASELINE, lead_time_transito: null },
+    BASELINE,
+  ),
+  { lead_time_transito: null },
+);
+
+// tipo_cambio_moneda_eur nunca se envía como null explícito aunque se vacíe
+// (la RPC lo rechaza); solo se envía si el nuevo valor es positivo y distinto.
+assert.deepEqual(
+  buildConfirmedOperationsPatch(
+    { ...BASELINE, tipo_cambio_moneda_eur: null },
+    BASELINE,
+  ),
+  {},
+  "vaciar tipo_cambio_moneda_eur no debe enviar null explícito",
+);
+assert.deepEqual(
+  buildConfirmedOperationsPatch(
+    { ...BASELINE, tipo_cambio_moneda_eur: 1.25 },
+    BASELINE,
+  ),
+  { tipo_cambio_moneda_eur: 1.25 },
+);
+
+// Nunca debe incluir items, costes ni campos comerciales: el tipo devuelto solo
+// puede contener claves operativas conocidas.
+const ALLOWED_PATCH_KEYS = new Set([
+  "destino",
+  "tipo_envio",
+  "etd",
+  "eta",
+  "eta_real",
+  "lead_time_produccion",
+  "lead_time_transito",
+  "agente_id",
+  "numero_pedido_agente",
+  "notas",
+  "tipo_cambio_moneda_eur",
+]);
+const fullyChangedPatch = buildConfirmedOperationsPatch(
+  {
+    destino: "Puerto C",
+    tipo_envio: "amazon_agl",
+    etd: "2026-10-01",
+    eta: "2026-10-20",
+    eta_real: "2026-10-22",
+    lead_time_produccion: 40,
+    lead_time_transito: 20,
+    agente_id: "22222222-2222-2222-2222-222222222222",
+    numero_pedido_agente: "PO-2",
+    notas: "otra nota",
+    tipo_cambio_moneda_eur: 1.3,
+  },
+  BASELINE,
+);
+for (const key of Object.keys(fullyChangedPatch)) {
+  assert.ok(ALLOWED_PATCH_KEYS.has(key), `clave no permitida en el patch: ${key}`);
+}
+
+// "Datos no modificados no pueden sobrescribir cambios concurrentes": el patch
+// construido contra la línea base local nunca incluye una clave que el usuario
+// no tocó, así que una actualización concurrente de otro campo en el servidor
+// no puede ser pisada por este guardado.
+const concurrentSafePatch = buildConfirmedOperationsPatch(
+  { ...BASELINE, notas: "nota editada por este usuario" },
+  BASELINE,
+);
+assert.deepEqual(concurrentSafePatch, { notas: "nota editada por este usuario" });
+assert.ok(
+  !("agente_id" in concurrentSafePatch) && !("eta" in concurrentSafePatch),
+  "campos no tocados por el usuario no deben viajar en el patch",
+);
+
+// El modal debe usar el helper y mantener una línea base operativa que se
+// actualiza tras cada guardado con la orden devuelta por el servidor.
+assert.match(
+  modal,
+  /import\s*\{\s*\n?\s*buildConfirmedOperationsPatch,[\s\S]*?\}\s*from\s*"@\/modules\/orders\/utils\/buildConfirmedOperationsPatch"/,
+);
+assert.match(modal, /operationalBaseline/);
+assert.match(modal, /const operationsPatch = buildConfirmedOperationsPatch\(/);
+assert.match(
+  modal,
+  /if \(Object\.keys\(operationsPatch\)\.length === 0\) \{\s*setSuccessMessage\("No hay cambios pendientes"\);\s*return;\s*\}/,
+);
+assert.match(modal, /setOperationalBaseline\(mapOrdenRowToOperationsFields\(updatedOrder\)\)/);
+// El "no hay cambios pendientes" nunca debe marcarse como error.
+const noChangesGuard = modal.slice(
+  modal.indexOf('setSuccessMessage("No hay cambios pendientes")') - 200,
+  modal.indexOf('setSuccessMessage("No hay cambios pendientes")') + 60,
+);
+assert.doesNotMatch(noChangesGuard, /setError\(/);
+
+// ── ISSUE_2: la proforma nunca muestra totales parciales ni 0,00 por falta de coste ──
+
+assert.match(proformaRoute, /hasMissingCommercialCosts:\s*missingSkus\.length > 0/);
+assert.match(
+  proformaRoute,
+  /missingSkus\s*=\s*rows\s*\.filter\(\(row\) => row\.unitMoneda == null \|\| row\.totalMoneda == null\)/,
+);
+
+// GET (previsualización): nunca debe pintar 0,00 cuando falta coste; usa
+// "Coste pendiente" y avisa visiblemente.
+assert.match(
+  proformaRoute,
+  /function fmtAmount\(simbolo: string, amount: number \| null\): string \{\s*return amount != null[\s\S]*?"Coste pendiente"/,
+);
+assert.match(
+  proformaRoute,
+  /const grandTotalMoneda = hasMissingCommercialCosts\s*\?\s*null\s*:\s*rows\.reduce/,
+);
+assert.match(proformaRoute, /class="cost-warning"/);
+assert.match(proformaRoute, /missingCostsWarningHtml/);
+assert.doesNotMatch(
+  proformaRoute,
+  /fmtAmount\(simbolo, grandTotalMoneda\)[\s\S]{0,10}0\.00/,
+);
+
+// POST (generación de versión): rechaza ANTES de llamar a la RPC de versionado,
+// con 422 + código MISSING_COMMERCIAL_COSTS, y nunca inserta una versión.
+const postHandler = proformaRoute.slice(proformaRoute.indexOf("export async function POST"));
+const missingCostsCheckIndex = postHandler.indexOf("MISSING_COMMERCIAL_COSTS");
+const rpcCallIndex = postHandler.indexOf('"create_order_proforma_version"');
+assert.ok(missingCostsCheckIndex >= 0, "debe existir el chequeo de costes faltantes en POST");
+assert.ok(rpcCallIndex >= 0, "debe existir la llamada a create_order_proforma_version en POST");
+assert.ok(
+  missingCostsCheckIndex < rpcCallIndex,
+  "el rechazo por costes faltantes debe ocurrir antes de llamar a create_order_proforma_version",
+);
+assert.match(
+  postHandler,
+  /if \(proformaData\.hasMissingCommercialCosts\) \{[\s\S]*?code: "MISSING_COMMERCIAL_COSTS"[\s\S]*?status: 422/,
+);
+assert.doesNotMatch(
+  postHandler.slice(0, missingCostsCheckIndex),
+  /\.rpc\(\s*"create_order_proforma_version"/,
+  "no debe llamar a la RPC de versionado antes del chequeo de costes faltantes",
+);
+
+// ── ISSUE_3: el script de validación evita falsos positivos en negativos ──
+
+assert.match(
+  diagnosticSql,
+  /CREATE TEMP TABLE _confirmed_order_test_context \(\s*order_id uuid NOT NULL\s*\) ON COMMIT DROP;/,
+);
+assert.match(
+  diagnosticSql,
+  /INSERT INTO _confirmed_order_test_context\(order_id\)\s*VALUES \(:'test_order_id'::uuid\);/,
+);
+// Ningún DO $$ posterior debe volver a interpolar :'test_order_id'.
+const afterContextInsert = diagnosticSql.slice(
+  diagnosticSql.indexOf("INSERT INTO _confirmed_order_test_context"),
+);
+assert.doesNotMatch(afterContextInsert.slice(afterContextInsert.indexOf("DO $$")), /:'test_order_id'/);
+
+// Fixtures explícitos que abortan con mensaje claro si faltan.
+for (const fixtureCheck of [
+  "no existe",
+  "no está confirmada",
+  "BALANCE_70 pendiente o vencido",
+  "no tiene DEPOSITO_30",
+  "ningún pago pagado",
+  "asignación logística activa",
+]) {
+  assert.match(diagnosticSql, new RegExp(`FIXTURE_FALTANTE[\\s\\S]{0,120}${fixtureCheck}`));
+}
+
+// Snapshots reales usados por los asserts (no solo SELECT visuales).
+assert.match(diagnosticSql, /CREATE TEMP TABLE _snapshot_ordenes_compra ON COMMIT DROP AS/);
+assert.match(diagnosticSql, /CREATE TEMP TABLE _snapshot_finance_supplier_payments ON COMMIT DROP AS/);
+assert.match(diagnosticSql, /CREATE TEMP TABLE _snapshot_order_proforma_versions ON COMMIT DROP AS/);
+
+// Los negativos deben capturar SQLSTATE específicos, nunca WHEN OTHERS, y el
+// RAISE de fallo del test debe vivir fuera del bloque que atrapa la excepción
+// de la RPC (si no, un "test_FALLO" propio podría auto-declararse "ok").
+assert.doesNotMatch(diagnosticSql, /EXCEPTION WHEN OTHERS THEN\s*RAISE NOTICE '.*_ok/);
+const negativeTestMarkers = [
+  ["test_9", "-- 9) Lead time negativo rechazado", "22023"],
+  ["test_10", "-- 10) Fecha inválida rechazada", "22007"],
+  ["test_11", "-- 11) Campo no permitido rechazado", "22023"],
+];
+for (let i = 0; i < negativeTestMarkers.length; i += 1) {
+  const [testName, marker, sqlstate] = negativeTestMarkers[i];
+  const start = diagnosticSql.indexOf(marker);
+  assert.ok(start >= 0, `no se encontró el bloque ${testName}`);
+  const nextMarker = negativeTestMarkers[i + 1]?.[1];
+  const end = nextMarker ? diagnosticSql.indexOf(nextMarker) : diagnosticSql.indexOf("-- 12)");
+  const negBlock = diagnosticSql.slice(start, end);
+
+  assert.match(negBlock, /v_rejected boolean := false;/);
+  assert.match(negBlock, new RegExp(`WHEN SQLSTATE '${sqlstate}'\\s*THEN\\s*v_rejected := true;`));
+  assert.doesNotMatch(negBlock, /WHEN OTHERS/);
+
+  // El RAISE de fallo del test debe estar fuera del bloque interno BEGIN/EXCEPTION/END
+  // que atrapa la excepción de la RPC (si no, se auto-declararía "ok" al atraparse él mismo).
+  const innerExceptionIndex = negBlock.indexOf("EXCEPTION");
+  const innerEndIndex = negBlock.indexOf("END;", innerExceptionIndex);
+  const failRaiseIndex = negBlock.indexOf(`${testName}_FALLO`);
+  assert.ok(
+    innerExceptionIndex >= 0 && innerEndIndex >= 0 && failRaiseIndex > innerEndIndex,
+    `${testName}: el RAISE EXCEPTION de fallo debe estar fuera del BEGIN/EXCEPTION que captura la RPC`,
+  );
+}
+
+assert.match(diagnosticSql, /^ROLLBACK;\s*$/m);
+assert.doesNotMatch(diagnosticSql, /^\s*COMMIT;\s*$/m);
 
 console.log("confirmed operations and proforma assertions: ok");

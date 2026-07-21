@@ -25,6 +25,10 @@ import { useOrderLeadTimeSuggestions } from "@/modules/orders/hooks/useOrderLead
 import { buildOrderFormPayload } from "@/modules/orders/utils/buildOrderFormPayload";
 import { productSearchToOrderItem } from "@/modules/orders/utils/productSearchToOrderItem";
 import type { ProductoSearch } from "@/modules/orders/types/orderProductSearch.types";
+import {
+  buildConfirmedOperationsPatch,
+  type ConfirmedOperationsFields,
+} from "@/modules/orders/utils/buildConfirmedOperationsPatch";
 
 export type { PreloadedItem };
 
@@ -111,6 +115,23 @@ function toNonNegativeInteger(value: number | "" | string | null | undefined): n
 function formatMoney(value: number, currency: string): string {
   const code = currency.trim().toUpperCase() || "USD";
   return `${CURRENCY_SYMBOLS[code] ?? `${code} `}${value.toFixed(2)}`;
+}
+
+/** Línea base operativa a partir de una orden tal como la devuelve la API. */
+function mapOrdenRowToOperationsFields(orden: OrdenRow): ConfirmedOperationsFields {
+  return {
+    destino: orden.destino,
+    tipo_envio: orden.tipo_envio === "amazon_agl" ? "amazon_agl" : "propio",
+    etd: orden.etd ?? null,
+    eta: orden.eta,
+    eta_real: orden.eta_real ?? null,
+    lead_time_produccion: orden.lead_time_produccion,
+    lead_time_transito: orden.lead_time_transito,
+    agente_id: orden.agente_id,
+    numero_pedido_agente: orden.numero_pedido_agente,
+    notas: orden.notas,
+    tipo_cambio_moneda_eur: orden.tipo_cambio_moneda_eur ?? null,
+  };
 }
 
 // ─── Sub-componente: chip de cobertura de días ─────────────────────────────────
@@ -200,6 +221,11 @@ export default function OrderFormModal({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [generatingProforma, setGeneratingProforma] = useState(false);
   const [savedOrder, setSavedOrder] = useState<OrdenRow | null>(initialOrden);
+  // Línea base para el patch operativo: último estado confirmado cargado,
+  // o la orden devuelta por el último guardado (ver buildConfirmedOperationsPatch).
+  const [operationalBaseline, setOperationalBaseline] = useState<ConfirmedOperationsFields | null>(
+    () => (isConfirmedEdit && initialOrden ? mapOrdenRowToOperationsFields(initialOrden) : null),
+  );
 
   // ─── Estado ítems ─────────────────────────────────────────────────────────
 
@@ -300,7 +326,25 @@ export default function OrderFormModal({
     setLeadProduccion(detailState.leadProduccion);
     setLeadTransito(detailState.leadTransito);
     setItems(detailState.items);
-  }, [detailState]);
+    if (isConfirmedEdit) {
+      setOperationalBaseline({
+        destino: detailState.destino,
+        tipo_envio: detailState.tipoEnvio,
+        etd: detailState.etd || null,
+        eta: detailState.eta || null,
+        eta_real: detailState.etaReal || null,
+        lead_time_produccion:
+          detailState.leadProduccion === "" ? null : Number(detailState.leadProduccion),
+        lead_time_transito:
+          detailState.leadTransito === "" ? null : Number(detailState.leadTransito),
+        agente_id: detailState.agenteId || null,
+        numero_pedido_agente: detailState.numeroPedidoAgente || null,
+        notas: detailState.notas || null,
+        tipo_cambio_moneda_eur:
+          detailState.tipoCambio === "" ? null : Number(detailState.tipoCambio),
+      });
+    }
+  }, [detailState, isConfirmedEdit]);
 
   useEffect(() => {
     if (readonly) return;
@@ -490,22 +534,27 @@ export default function OrderFormModal({
     };
     try {
       if (isConfirmedEdit && initialOrden?.id) {
-        const operationsPatch = {
-          destino: destino || null,
+        const currentOperationalFields: ConfirmedOperationsFields = {
+          destino,
           tipo_envio: tipoEnvio,
-          etd: etd || null,
-          eta: eta || null,
-          eta_real: etaReal || null,
-          lead_time_produccion:
-            leadProduccion === "" ? null : Number(leadProduccion),
+          etd,
+          eta,
+          eta_real: etaReal,
+          lead_time_produccion: leadProduccion === "" ? null : Number(leadProduccion),
           lead_time_transito: leadTransito === "" ? null : Number(leadTransito),
-          agente_id: agenteId || null,
-          numero_pedido_agente: numeroPedidoAgente || null,
-          notas: notas || null,
-          ...(tipoCambio !== "" && Number(tipoCambio) > 0
-            ? { tipo_cambio_moneda_eur: Number(tipoCambio) }
-            : {}),
+          agente_id: agenteId,
+          numero_pedido_agente: numeroPedidoAgente,
+          notas,
+          tipo_cambio_moneda_eur: tipoCambio === "" ? null : Number(tipoCambio),
         };
+        const baseline = operationalBaseline ?? currentOperationalFields;
+        const operationsPatch = buildConfirmedOperationsPatch(currentOperationalFields, baseline);
+
+        if (Object.keys(operationsPatch).length === 0) {
+          setSuccessMessage("No hay cambios pendientes");
+          return;
+        }
+
         const response = await fetch(
           `/api/orders/${initialOrden.id}/confirmed-operations`,
           {
@@ -521,6 +570,7 @@ export default function OrderFormModal({
 
         const updatedOrder = json.orden as OrdenRow;
         setSavedOrder(updatedOrder);
+        setOperationalBaseline(mapOrdenRowToOperationsFields(updatedOrder));
         setSuccessMessage("Cambios guardados correctamente");
         onOperationalSaved?.(updatedOrder);
         return;

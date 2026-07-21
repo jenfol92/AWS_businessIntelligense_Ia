@@ -86,6 +86,8 @@ export interface OrderFormModalProps {
   onClose: () => void;
   /** Callback al guardar con éxito (refresca el listado). */
   onSaved: (orden?: OrdenRow) => void;
+  /** Actualiza la fila sin cerrar el modal tras un guardado operativo. */
+  onOperationalSaved?: (orden: OrdenRow) => void;
 }
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
@@ -133,6 +135,7 @@ export default function OrderFormModal({
   initialItems,
   onClose,
   onSaved,
+  onOperationalSaved,
 }: OrderFormModalProps) {
   const isEdit   = !!initialOrden;
   const isConfirmedEdit = initialOrden?.estado === "confirmado";
@@ -519,6 +522,7 @@ export default function OrderFormModal({
         const updatedOrder = json.orden as OrdenRow;
         setSavedOrder(updatedOrder);
         setSuccessMessage("Cambios guardados correctamente");
+        onOperationalSaved?.(updatedOrder);
         return;
       }
 

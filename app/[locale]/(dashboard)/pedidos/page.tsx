@@ -1250,6 +1250,11 @@ export default function PedidosPage() {
             showToast("Orden guardada correctamente.");
             ordersList.refresh();
           }}
+          onOperationalSaved={(orden) => {
+            ordersList.patchOrder(
+              orden as Partial<OrderListRow> & { id: string },
+            );
+          }}
         />
       )}
 

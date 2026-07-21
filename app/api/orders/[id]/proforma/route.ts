@@ -6,13 +6,7 @@
 
  * Qué hace : GET — Genera el HTML de la Proforma Invoice para una orden.
 
- *            Usa moneda_compra y tipo_cambio_moneda_eur guardados en la orden.
-
- *            Query params opcionales (vista previa antes de confirmar):
-
- *              moneda  — override temporal de moneda
-
- *              cambio  — override temporal del tipo de cambio a EUR
+ *            Usa exclusivamente la moneda comercial guardada en la orden.
 
  */
 
@@ -45,10 +39,6 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
 
 
-  const url = new URL(req.url);
-
-
-
   const { data: orden } = await supabase
 
     .from("ordenes_compra")
@@ -73,15 +63,11 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
 
 
-  // Moneda: BD > query > USD (compatibilidad)
+  // Moneda comercial congelada en la orden.
 
   const monedaRaw = (
 
-    ordenRec["moneda_compra"] as string | null
-
-    ?? url.searchParams.get("moneda")
-
-    ?? "USD"
+    ordenRec["moneda_compra"] as string | null ?? "USD"
 
   ).toUpperCase();
   const moneda = MONEDAS_VALIDAS.has(monedaRaw) ? monedaRaw : "USD";
@@ -89,42 +75,6 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
 
   const simbolo = MONEDA_SIMBOLO[moneda] ?? moneda;
-
-
-
-  // Tipo de cambio moneda → EUR: BD > compat USD > query
-
-  let tipoCambio: number | null =
-
-    ordenRec["tipo_cambio_moneda_eur"] != null
-
-      ? Number(ordenRec["tipo_cambio_moneda_eur"])
-
-      : null;
-
-
-
-  if (tipoCambio == null && moneda === "USD" && ordenRec["tipo_cambio_usd_eur"] != null) {
-
-    tipoCambio = Number(ordenRec["tipo_cambio_usd_eur"]);
-
-  }
-
-  if (tipoCambio == null && moneda === "EUR") {
-
-    tipoCambio = 1;
-
-  }
-
-  if (tipoCambio == null && url.searchParams.get("cambio")) {
-
-    tipoCambio = Number(url.searchParams.get("cambio"));
-
-  }
-
-
-
-  const sinTipoCambio = moneda !== "EUR" && (tipoCambio == null || tipoCambio <= 0);
 
 
 
@@ -164,15 +114,9 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
 
 
-  /** Resuelve precio unitario en moneda de compra y en EUR para una línea. */
+  /** Resuelve el precio unitario únicamente en la moneda comercial. */
 
-  function resolveCosts(it: Record<string, unknown>): {
-
-    unitMoneda: number | null;
-
-    unitEur: number | null;
-
-  } {
+  function resolveUnitCost(it: Record<string, unknown>): number | null {
 
     const unitMonedaStored = it["coste_unitario_moneda"] != null
 
@@ -182,41 +126,14 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
     const unitUsd = it["coste_unitario_usd"] != null ? Number(it["coste_unitario_usd"]) : null;
 
-    const unitEurStored = it["coste_unitario_eur"] != null
-
-      ? Number(it["coste_unitario_eur"])
-
-      : null;
-
-
-
     let unitMoneda = unitMonedaStored;
 
     if (unitMoneda == null) {
 
       if (moneda === "USD") unitMoneda = unitUsd;
-
-      else if (moneda === "EUR") unitMoneda = unitEurStored ?? unitUsd;
-
-      else unitMoneda = unitMonedaStored ?? unitEurStored ?? unitUsd;
-
     }
 
-
-
-    let unitEur = unitEurStored;
-
-    if (unitEur == null && unitMoneda != null) {
-
-      if (moneda === "EUR") unitEur = unitMoneda;
-
-      else if (tipoCambio != null && tipoCambio > 0) unitEur = unitMoneda * tipoCambio;
-
-    }
-
-
-
-    return { unitMoneda, unitEur };
+    return unitMoneda;
 
   }
 
@@ -228,15 +145,11 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
     const prov = it["proveedores"] as Record<string, unknown> | null;
 
-    const { unitMoneda, unitEur } = resolveCosts(it);
+    const unitMoneda = resolveUnitCost(it);
 
     const cantidad = Number(it["cantidad"] ?? 0);
 
     const totalMoneda = unitMoneda != null ? unitMoneda * cantidad : null;
-
-    const totalEur    = unitEur != null ? unitEur * cantidad : null;
-
-
 
     return {
 
@@ -254,10 +167,6 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
       totalMoneda,
 
-      unitEur,
-
-      totalEur,
-
       cbmTotal: Number(it["cbm_total"] ?? 0),
 
       lote: it["lote_producto"] ? String(it["lote_producto"]) : null,
@@ -269,8 +178,6 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
 
   const grandTotalMoneda = rows.reduce((s, r) => s + (r.totalMoneda ?? 0), 0);
-
-  const grandTotalEur    = rows.reduce((s, r) => s + (r.totalEur ?? 0), 0);
 
   const grandTotalUnits  = rows.reduce((s, r) => s + r.qty, 0);
 
@@ -292,12 +199,6 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
   const balanceAmount  = grandTotalMoneda - depositAmount;
 
-  const depositEur     = sinTipoCambio ? null : grandTotalEur * (depositoPct / 100);
-
-  const balanceEur     = sinTipoCambio ? null : grandTotalEur - (depositEur ?? 0);
-
-
-
   const today         = new Date().toLocaleDateString("en-GB");
 
   const etdDate       = String(ordenRec["etd"] ?? "—");
@@ -318,44 +219,7 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
 
 
-  const showEurCols = moneda !== "EUR";
-
-  const cambioLabel = tipoCambio != null ? fmt(tipoCambio) : "—";
-
-
-
-  const avisoCambio = sinTipoCambio
-
-    ? `<p style="color:#b91c1c;font-size:12px;margin-bottom:16px;">
-
-        Exchange rate pending. EUR equivalent not available.
-
-      </p>`
-
-    : "";
-
-
-
-  const eurHeaderCols = showEurCols
-
-    ? `<th class="right">Unit Price (EUR)</th>
-
-       <th class="right">Line Total (EUR)</th>`
-
-    : "";
-
-
-
   const rowsHtml = rows.map((r) => {
-
-    const eurCols = showEurCols
-
-      ? `<td class="right">${r.unitEur != null ? `€${fmt(r.unitEur)}` : "—"}</td>
-
-         <td class="right">${r.totalEur != null ? `<strong>€${fmt(r.totalEur)}</strong>` : "—"}</td>`
-
-      : "";
-
     return `
 
     <tr>
@@ -390,45 +254,11 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
       <td class="right"><strong>${r.totalMoneda != null ? `${simbolo}${fmt(r.totalMoneda)}` : "—"}</strong></td>
 
-      ${eurCols}
-
       <td class="right">${fmt(r.cbmTotal)}</td>
 
     </tr>`;
 
   }).join("");
-
-
-
-  const eurFootCols = showEurCols
-
-    ? `<td></td><td class="right">${sinTipoCambio ? "—" : `€${fmt(grandTotalEur)}`}</td>`
-
-    : "";
-
-
-
-  const eurTotalBlock = showEurCols && !sinTipoCambio
-
-    ? `<div class="total-item">
-
-        <label>Equivalent Total EUR</label>
-
-        <span>€${fmt(grandTotalEur)}</span>
-
-      </div>`
-
-    : "";
-
-
-
-  const eurPaymentBlock = showEurCols && !sinTipoCambio
-
-    ? `<p><strong>Deposit (EUR):</strong> €${fmt(depositEur ?? 0)}</p>
-
-       <p><strong>Balance (EUR):</strong> €${fmt(balanceEur ?? 0)}</p>`
-
-    : "";
 
 
 
@@ -652,14 +482,6 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
   <div class="info-block">
 
-    <label>Exchange Rate to EUR</label>
-
-    <span>${moneda === "EUR" ? "1.00" : cambioLabel}</span>
-
-  </div>
-
-  <div class="info-block">
-
     <label>ETD</label>
 
     <span>${esc(etdDate)}</span>
@@ -678,10 +500,6 @@ async function renderCurrentProforma(req: Request, { params }: Params) {
 
 
 
-${avisoCambio}
-
-
-
 <div class="payment-terms">
 
   <h3>Payment Terms</h3>
@@ -689,8 +507,6 @@ ${avisoCambio}
   <p><strong>Deposit (${esc(moneda)}):</strong> ${depositoPct}% — ${simbolo}${fmt(depositAmount)}</p>
 
   <p><strong>Balance (${esc(moneda)}):</strong> ${100 - depositoPct}% — ${simbolo}${fmt(balanceAmount)}</p>
-
-  ${eurPaymentBlock}
 
   <p style="margin-top:8px">${esc(balanceCondiciones)}</p>
 
@@ -712,8 +528,6 @@ ${avisoCambio}
 
       <th class="right">Line Total (${esc(moneda)})</th>
 
-      ${eurHeaderCols}
-
       <th class="right">CBM</th>
 
     </tr>
@@ -733,8 +547,6 @@ ${avisoCambio}
       <td></td>
 
       <td class="right">${simbolo}${fmt(grandTotalMoneda)}</td>
-
-      ${eurFootCols}
 
       <td class="right">${fmt(grandTotalCbm)}</td>
 
@@ -771,8 +583,6 @@ ${avisoCambio}
     <span>${simbolo}${fmt(grandTotalMoneda)}</span>
 
   </div>
-
-  ${eurTotalBlock}
 
   <div class="total-item">
 
@@ -937,30 +747,29 @@ export async function POST(req: Request, { params }: Params) {
   if (!rendered.ok) return rendered;
   const htmlContent = await rendered.text();
 
-  const { data: latest, error: latestError } = await supabase
-    .from("order_proforma_versions")
-    .select("version")
-    .eq("orden_id", params.id)
-    .order("version", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const { data: createdVersion, error: versionError } = await supabase.rpc(
+    "create_order_proforma_version",
+    {
+      p_order_id: params.id,
+      p_html_content: htmlContent,
+    },
+  );
 
-  if (latestError) {
-    return NextResponse.json({ ok: false, error: latestError.message }, { status: 400 });
+  if (versionError) {
+    return NextResponse.json({ ok: false, error: versionError.message }, { status: 400 });
   }
 
-  const version = Number(latest?.version ?? 0) + 1;
-  const { error: insertError } = await supabase
-    .from("order_proforma_versions")
-    .insert({
-      orden_id: params.id,
-      version,
-      html_content: htmlContent,
-      created_by: user.id,
-    });
-
-  if (insertError) {
-    return NextResponse.json({ ok: false, error: insertError.message }, { status: 400 });
+  const versionRow = Array.isArray(createdVersion)
+    ? createdVersion[0]
+    : createdVersion;
+  const version = Number(
+    (versionRow as { version?: number } | null)?.version ?? 0,
+  );
+  if (!Number.isInteger(version) || version <= 0) {
+    return NextResponse.json(
+      { ok: false, error: "La RPC no devolvió una versión válida" },
+      { status: 500 },
+    );
   }
 
   return NextResponse.json({

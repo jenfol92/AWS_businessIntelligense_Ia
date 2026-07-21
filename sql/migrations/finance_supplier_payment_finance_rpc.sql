@@ -70,8 +70,15 @@ begin
     raise exception 'SUPPLIER_PAYMENT_NOT_PAID: supplier payment must be paid before financing';
   end if;
 
+  if v_payment.actual_amount_eur is null
+    or v_payment.actual_amount_eur <= 0
+    or v_payment.actual_amount_eur::text in ('NaN', 'Infinity', '-Infinity')
+  then
+    raise exception 'UNVERIFIED_ACTUAL_AMOUNT: valid real EUR amount is required before financing';
+  end if;
+
   v_payment_amount_eur :=
-    coalesce(v_payment.actual_amount_eur, v_payment.amount_eur)
+    v_payment.actual_amount_eur
     + coalesce(v_payment.bank_fee_eur, 0)
     + coalesce(v_payment.ff_fee_eur, 0);
 

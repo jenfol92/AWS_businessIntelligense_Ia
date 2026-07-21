@@ -13,6 +13,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname = 'finance_supplier_payments_actual_fx_rate_positive'
+      AND conrelid = 'public.finance_supplier_payments'::regclass
   ) THEN
     ALTER TABLE public.finance_supplier_payments
       ADD CONSTRAINT finance_supplier_payments_actual_fx_rate_positive
@@ -28,6 +29,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname = 'finance_supplier_payments_actual_amount_eur_positive'
+      AND conrelid = 'public.finance_supplier_payments'::regclass
   ) THEN
     ALTER TABLE public.finance_supplier_payments
       ADD CONSTRAINT finance_supplier_payments_actual_amount_eur_positive
@@ -43,6 +45,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname = 'finance_supplier_payments_bank_fee_eur_nonnegative'
+      AND conrelid = 'public.finance_supplier_payments'::regclass
   ) THEN
     ALTER TABLE public.finance_supplier_payments
       ADD CONSTRAINT finance_supplier_payments_bank_fee_eur_nonnegative

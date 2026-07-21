@@ -128,7 +128,8 @@ BEGIN
     v_rejected := true;
   END;
   IF NOT v_rejected THEN
-    RAISE EXCEPTION 'La repetición sobre un pago pagado no fue rechazada.';
+    RAISE EXCEPTION
+      'La repetición sobre un pago pagado no fue rechazada (conflicto de sobrescritura).';
   END IF;
 END;
 $$;
@@ -162,6 +163,43 @@ BEGIN
     WHERE id = v_context.balance_payment_id;
   IF to_jsonb(v_non_target) IS DISTINCT FROM to_jsonb(v_non_target_before) THEN
     RAISE EXCEPTION 'El rechazo de FX modificó el pago no objetivo.';
+  END IF;
+END;
+$$;
+
+DO $$
+DECLARE
+  v_context _payment_fx_context%ROWTYPE;
+  v_rejected_unpaid boolean := false;
+  v_rejected_unverified boolean := false;
+BEGIN
+  SELECT * INTO v_context FROM _payment_fx_context;
+
+  BEGIN
+    UPDATE public.finance_supplier_payments
+    SET payment_source_type = 'manual'
+    WHERE id = v_context.deposit_payment_id;
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    v_rejected_unpaid := true;
+  END;
+
+  IF NOT v_rejected_unpaid THEN
+    RAISE EXCEPTION 'El trigger permitió financiar un pago no pagado.';
+  END IF;
+
+  BEGIN
+    UPDATE public.finance_supplier_payments
+    SET
+      status = 'pagado',
+      paid_at = now(),
+      payment_source_type = 'manual'
+    WHERE id = v_context.deposit_payment_id;
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    v_rejected_unverified := true;
+  END;
+
+  IF NOT v_rejected_unverified THEN
+    RAISE EXCEPTION 'El trigger permitió financiar sin importe EUR real.';
   END IF;
 END;
 $$;

@@ -1,4 +1,4 @@
--- Ejecucion atomica e idempotente del pago proveedor.
+-- Ejecucion atomica con protección frente a repetición y sobrescritura.
 -- amount_eur permanece legacy; los valores bancarios reales viven en cada pago.
 
 BEGIN;
@@ -147,10 +147,10 @@ BEGIN
     paid_at = p_paid_at,
     actual_fx_rate = v_actual_fx_rate,
     actual_amount_eur = v_actual_amount_eur,
-    bank_reference = nullif(trim(p_bank_reference), ''),
+    bank_reference = coalesce(nullif(trim(p_bank_reference), ''), bank_reference),
     payment_source = coalesce(p_payment_source, payment_source),
-    bank_fee_eur = p_bank_fee_eur,
-    ff_fee_eur = p_ff_fee_eur,
+    bank_fee_eur = coalesce(p_bank_fee_eur, bank_fee_eur),
+    ff_fee_eur = coalesce(p_ff_fee_eur, ff_fee_eur),
     notes = coalesce(nullif(trim(p_notes), ''), notes),
     updated_at = now()
   WHERE id = v_payment.id
@@ -166,10 +166,24 @@ LANGUAGE plpgsql
 SECURITY INVOKER
 AS $$
 BEGIN
-  IF NEW.payment_source_type IS NOT NULL
-     AND OLD.payment_source_type IS NULL
-     AND (NEW.actual_amount_eur IS NULL OR NEW.actual_amount_eur <= 0) THEN
-    RAISE EXCEPTION 'UNVERIFIED_ACTUAL_AMOUNT: real EUR amount is required before financing'
+  IF NEW.payment_source_type IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF TG_OP = 'UPDATE'
+     AND NEW.payment_source_type IS NOT DISTINCT FROM OLD.payment_source_type THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.status <> 'pagado' THEN
+    RAISE EXCEPTION 'SUPPLIER_PAYMENT_NOT_PAID: payment must be paid before financing'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF NEW.actual_amount_eur IS NULL
+     OR NEW.actual_amount_eur <= 0
+     OR NEW.actual_amount_eur::text IN ('NaN', 'Infinity', '-Infinity') THEN
+    RAISE EXCEPTION 'UNVERIFIED_ACTUAL_AMOUNT: valid real EUR amount is required before financing'
       USING ERRCODE = '22023';
   END IF;
   RETURN NEW;
@@ -179,7 +193,7 @@ $$;
 DROP TRIGGER IF EXISTS trg_require_actual_supplier_payment_before_financing
   ON public.finance_supplier_payments;
 CREATE TRIGGER trg_require_actual_supplier_payment_before_financing
-BEFORE UPDATE OF payment_source_type
+BEFORE INSERT OR UPDATE OF payment_source_type
 ON public.finance_supplier_payments
 FOR EACH ROW
 EXECUTE FUNCTION public.require_actual_supplier_payment_before_financing();

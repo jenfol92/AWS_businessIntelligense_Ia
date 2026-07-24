@@ -45,7 +45,12 @@ export type MarkAndFinanceSupplierPaymentResult = {
   cash_movement_id: string | null;
   credit_line_movement_id: string | null;
   repayment_group_id: string | null;
-  amount_eur: number;
+  supplier_amount_eur: number;
+  bank_fee_eur: number;
+  ff_fee_eur: number;
+  funded_total_eur: number;
+  batch_id: string;
+  idempotent: boolean;
 };
 
 export type SupplierPaymentExecutionErrorCode =
@@ -70,7 +75,13 @@ export type SupplierPaymentExecutionErrorCode =
   | "CREDIT_LINE_INACTIVE"
   | "INVALID_CASH_ACCOUNT_CURRENCY"
   | "LEGACY_MANUAL_PAYMENT"
-  | "MISSING_FUNDING_SOURCE";
+  | "MISSING_FUNDING_SOURCE"
+  | "OBLIGATION_ALREADY_PAID"
+  | "OVERALLOCATION"
+  | "ORDER_NOT_CONFIRMED"
+  | "AGENT_MISMATCH"
+  | "CURRENCY_MISMATCH"
+  | "UNAUTHORIZED";
 
 export class SupplierPaymentExecutionError extends Error {
   constructor(

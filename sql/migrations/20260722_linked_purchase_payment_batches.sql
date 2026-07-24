@@ -68,6 +68,9 @@ CREATE TABLE public.finance_purchase_payment_allocations (
   supplier_payment_id uuid NOT NULL REFERENCES public.finance_supplier_payments(id) ON DELETE RESTRICT,
   allocated_amount_original numeric(14, 4) NOT NULL CHECK (allocated_amount_original > 0),
   allocated_amount_eur numeric(14, 2) NOT NULL CHECK (allocated_amount_eur > 0),
+  pending_before_original numeric(14, 4) NOT NULL CHECK (pending_before_original >= 0),
+  pending_after_original numeric(14, 4) NOT NULL CHECK (pending_after_original >= 0),
+  resulting_status text NOT NULL CHECK (resulting_status IN ('parcial', 'pagado')),
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (batch_id, supplier_payment_id)
 );
@@ -194,7 +197,8 @@ AS $$
         'numero_pedido_agente', oc.numero_pedido_agente,
         'payment_type', sp.payment_type,
         'supplier_names', suppliers.names,
-        'resulting_status', sp.status
+        'resulting_status', a.resulting_status,
+        'current_obligation_status', sp.status
       ) ORDER BY oc.numero_orden, sp.payment_type)
       FROM public.finance_purchase_payment_allocations a
       JOIN public.finance_supplier_payments sp ON sp.id = a.supplier_payment_id
@@ -253,6 +257,7 @@ DECLARE
   v_alloc_sum numeric := 0;
   v_previous numeric;
   v_pending numeric;
+  v_pending_after numeric;
   v_alloc_original numeric;
   v_alloc_eur numeric;
   v_eur_assigned numeric := 0;
@@ -264,7 +269,7 @@ DECLARE
   v_supplier_payment_id uuid;
 BEGIN
   IF auth.uid() IS NULL
-     AND coalesce(current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
+     AND coalesce(auth.role(), current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
     RAISE EXCEPTION 'UNAUTHORIZED: authenticated user or service_role required'
       USING ERRCODE = '42501';
   END IF;
@@ -411,15 +416,27 @@ BEGIN
     v_supplier_payment_id := (v_alloc->>'supplier_payment_id')::uuid;
     v_index := v_index + 1;
     v_alloc_original := (v_alloc->>'allocated_amount_original')::numeric;
+    SELECT * INTO v_payment
+    FROM public.finance_supplier_payments
+    WHERE id = v_supplier_payment_id;
+    SELECT coalesce(sum(a.allocated_amount_original), 0) INTO v_previous
+    FROM public.finance_purchase_payment_allocations a
+    JOIN public.finance_purchase_payment_batches b ON b.id = a.batch_id
+    WHERE a.supplier_payment_id = v_supplier_payment_id AND b.status <> 'reversed';
+    v_pending := v_payment.amount_original - v_previous;
+    v_pending_after := greatest(v_pending - v_alloc_original, 0);
+    v_next_status := CASE WHEN v_pending_after <= 0.0001 THEN 'pagado' ELSE 'parcial' END;
     v_alloc_eur := CASE WHEN v_index = v_count
       THEN v_actual_eur - v_eur_assigned
       ELSE round(v_alloc_original * v_actual_fx, 2)
     END;
     v_eur_assigned := v_eur_assigned + v_alloc_eur;
     INSERT INTO public.finance_purchase_payment_allocations (
-      batch_id, supplier_payment_id, allocated_amount_original, allocated_amount_eur
+      batch_id, supplier_payment_id, allocated_amount_original, allocated_amount_eur,
+      pending_before_original, pending_after_original, resulting_status
     ) VALUES (
-      v_batch.id, v_supplier_payment_id, v_alloc_original, v_alloc_eur
+      v_batch.id, v_supplier_payment_id, v_alloc_original, v_alloc_eur,
+      v_pending, v_pending_after, v_next_status
     ) RETURNING to_jsonb(finance_purchase_payment_allocations.*) INTO v_alloc;
     v_allocations := v_allocations || jsonb_build_array(v_alloc);
 
@@ -429,10 +446,6 @@ BEGIN
     FROM public.finance_purchase_payment_allocations a
     JOIN public.finance_purchase_payment_batches b ON b.id = a.batch_id
     WHERE a.supplier_payment_id = v_payment.id AND b.status <> 'reversed';
-    v_next_status := CASE
-      WHEN v_payment.amount_original - v_previous <= 0.0001 THEN 'pagado'
-      ELSE 'parcial'
-    END;
     UPDATE public.finance_supplier_payments SET
       status = v_next_status,
       paid_at = CASE WHEN v_next_status = 'pagado' THEN v_paid_at ELSE NULL END,
@@ -499,6 +512,100 @@ BEGIN
 END;
 $$;
 
+-- El refresco de planificación nunca puede degradar ni reescribir settlement real.
+CREATE OR REPLACE FUNCTION public.sync_supplier_payment_plan(
+  p_order_id uuid,
+  p_payment_type text,
+  p_due_date date,
+  p_amount_original numeric,
+  p_original_currency text,
+  p_planned_fx_rate numeric,
+  p_amount_eur numeric,
+  p_logistics_type text,
+  p_container_id uuid,
+  p_status text,
+  p_notes text DEFAULT NULL,
+  p_update_notes boolean DEFAULT false
+)
+RETURNS public.finance_supplier_payments
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+  v_payment public.finance_supplier_payments;
+  v_currency text := upper(trim(coalesce(p_original_currency, '')));
+BEGIN
+  IF p_order_id IS NULL THEN RAISE EXCEPTION 'INVALID_ORDER_ID: order_id is required'; END IF;
+  IF p_payment_type NOT IN ('DEPOSITO_30', 'BALANCE_70') THEN
+    RAISE EXCEPTION 'INVALID_PAYMENT_TYPE: unsupported payment type';
+  END IF;
+  IF p_status NOT IN ('pendiente', 'vencido') THEN
+    RAISE EXCEPTION 'INVALID_PLAN_STATUS: status must be pendiente or vencido';
+  END IF;
+  IF p_amount_original IS NULL OR p_amount_original <= 0 OR v_currency = '' THEN
+    RAISE EXCEPTION 'INVALID_PLAN_AMOUNT: positive amount and currency are required';
+  END IF;
+
+  INSERT INTO public.finance_supplier_payments (
+    orden_id, payment_type, due_date, amount_original, original_currency,
+    planned_fx_rate, amount_eur, logistics_type, contenedor_id, status, notes
+  ) VALUES (
+    p_order_id, p_payment_type, p_due_date, p_amount_original, v_currency,
+    p_planned_fx_rate, p_amount_eur, p_logistics_type, p_container_id, p_status, p_notes
+  )
+  ON CONFLICT (orden_id, payment_type) DO NOTHING;
+
+  SELECT * INTO v_payment
+  FROM public.finance_supplier_payments
+  WHERE orden_id = p_order_id AND payment_type = p_payment_type
+  FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'SUPPLIER_PAYMENT_NOT_FOUND: payment row missing'; END IF;
+
+  IF v_payment.status = 'pagado' THEN
+    RETURN v_payment;
+  END IF;
+
+  IF v_payment.status = 'parcial' THEN
+    IF abs(v_payment.amount_original - p_amount_original) > 0.0001
+       OR upper(trim(v_payment.original_currency)) <> v_currency THEN
+      RAISE EXCEPTION
+        'PARTIAL_PAYMENT_PLAN_MISMATCH: planned amount/currency differs from partially settled obligation';
+    END IF;
+    UPDATE public.finance_supplier_payments
+    SET
+      due_date = p_due_date,
+      logistics_type = p_logistics_type,
+      contenedor_id = p_container_id,
+      notes = CASE WHEN p_update_notes THEN p_notes ELSE notes END,
+      updated_at = now()
+    WHERE id = v_payment.id
+    RETURNING * INTO v_payment;
+    RETURN v_payment;
+  END IF;
+
+  IF v_payment.status NOT IN ('pendiente', 'vencido') THEN
+    RAISE EXCEPTION 'INVALID_EXISTING_PLAN_STATUS: payment status cannot be synchronized';
+  END IF;
+
+  UPDATE public.finance_supplier_payments
+  SET
+    due_date = p_due_date,
+    amount_original = p_amount_original,
+    original_currency = v_currency,
+    planned_fx_rate = p_planned_fx_rate,
+    amount_eur = p_amount_eur,
+    logistics_type = p_logistics_type,
+    contenedor_id = p_container_id,
+    status = p_status,
+    notes = CASE WHEN p_update_notes THEN p_notes ELSE notes END,
+    updated_at = now()
+  WHERE id = v_payment.id
+  RETURNING * INTO v_payment;
+  RETURN v_payment;
+END;
+$$;
+
 -- Compatibilidad: la API individual conserva su firma, pero ejecuta el modelo batch.
 CREATE OR REPLACE FUNCTION public.mark_and_finance_supplier_payment(
   p_supplier_payment_id uuid,
@@ -529,7 +636,7 @@ DECLARE
   v_existing_batch public.finance_purchase_payment_batches;
 BEGIN
   IF auth.uid() IS NULL
-     AND coalesce(current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
+     AND coalesce(auth.role(), current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
     RAISE EXCEPTION 'UNAUTHORIZED: authenticated user or service_role required'
       USING ERRCODE = '42501';
   END IF;
@@ -633,5 +740,7 @@ COMMENT ON TABLE public.finance_purchase_payment_batches IS
   'Transferencia real e inmutable a agente o, en una futura version, proveedor.';
 COMMENT ON TABLE public.finance_purchase_payment_allocations IS
   'Aplicacion many-to-many de transferencias reales a obligaciones de orden.';
+
+NOTIFY pgrst, 'reload schema';
 
 COMMIT;

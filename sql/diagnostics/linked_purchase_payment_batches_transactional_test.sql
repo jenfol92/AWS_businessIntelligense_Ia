@@ -4,6 +4,57 @@
 
 BEGIN;
 
+DO $preflight$
+DECLARE
+  v_invalid_statuses text;
+  v_status_checks text;
+  v_triggers text;
+BEGIN
+  SELECT string_agg(DISTINCT status, ', ') INTO v_invalid_statuses
+  FROM public.finance_supplier_payments
+  WHERE status NOT IN ('pendiente', 'parcial', 'pagado', 'vencido');
+  IF v_invalid_statuses IS NOT NULL THEN
+    RAISE EXCEPTION 'PREFLIGHT_INVALID_STATUSES: %', v_invalid_statuses;
+  END IF;
+
+  SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), E'\n')
+  INTO v_status_checks
+  FROM pg_constraint
+  WHERE conrelid = 'public.finance_supplier_payments'::regclass
+    AND contype = 'c'
+    AND pg_get_constraintdef(oid) ILIKE '%status%';
+  RAISE NOTICE 'Status checks:%', E'\n' || coalesce(v_status_checks, '(none)');
+
+  IF to_regclass('public.finance_purchase_payment_batches') IS NULL
+     OR to_regclass('public.finance_purchase_payment_allocations') IS NULL
+     OR to_regclass('public.finance_supplier_payments') IS NULL
+     OR to_regclass('public.finance_cash_accounts') IS NULL
+     OR to_regclass('public.finance_credit_lines') IS NULL THEN
+    RAISE EXCEPTION 'PREFLIGHT_MISSING_TABLE: required finance table missing';
+  END IF;
+  IF to_regprocedure(
+    'public.finance_create_credit_line_drawdown(uuid,numeric,date,text,uuid,text,text)'
+  ) IS NULL THEN
+    RAISE EXCEPTION 'PREFLIGHT_MISSING_DRAWDOWN: canonical drawdown signature missing';
+  END IF;
+  IF (
+    SELECT count(*)
+    FROM pg_constraint
+    WHERE conrelid = 'public.finance_purchase_payment_allocations'::regclass
+      AND contype = 'f'
+  ) < 2 THEN
+    RAISE EXCEPTION 'PREFLIGHT_MISSING_FK: allocation batch/payment FKs missing';
+  END IF;
+
+  SELECT string_agg(tgname || ' -> ' || pg_get_triggerdef(oid), E'\n')
+  INTO v_triggers
+  FROM pg_trigger
+  WHERE tgrelid = 'public.finance_supplier_payments'::regclass
+    AND NOT tgisinternal;
+  RAISE NOTICE 'Active supplier payment triggers:%', E'\n' || coalesce(v_triggers, '(none)');
+END;
+$preflight$;
+
 DO $test$
 DECLARE
   v_user_id uuid;
@@ -115,6 +166,25 @@ BEGIN
     RAISE EXCEPTION 'ASSERT_FAILED: first allocation must leave partial status';
   END IF;
 
+  -- El sync puede mover due_date pero conserva todo el settlement parcial.
+  PERFORM public.sync_supplier_payment_plan(
+    v_order_a, 'DEPOSITO_30', current_date + 30, 10000, 'USD',
+    NULL, 9000, 'propio', NULL, 'pendiente', 'updated plan note', true
+  );
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.finance_supplier_payments
+    WHERE id = v_payment_a
+      AND status = 'parcial'
+      AND actual_amount_original = 4000
+      AND actual_amount_eur = 3600
+      AND due_date = current_date + 30
+      AND payment_source_type = 'cash_account'
+      AND cash_account_id = v_cash_id
+  ) THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: plan sync changed partial settlement';
+  END IF;
+
   -- Pago individual usa el pendiente 6.000, no el original 10.000.
   v_result := public.mark_and_finance_supplier_payment(
     v_payment_a, v_order_a, now(), 0.9, NULL, 'TEST-INDIVIDUAL',
@@ -122,6 +192,15 @@ BEGIN
   );
   IF (v_result->>'batch_id') IS NULL THEN
     RAISE EXCEPTION 'ASSERT_FAILED: individual payment must create canonical batch';
+  END IF;
+  IF NOT (
+    v_result ? 'payment'
+    AND v_result ? 'source_type'
+    AND v_result ? 'cash_account_id'
+    AND v_result ? 'credit_line_id'
+    AND v_result ? 'funded_total_eur'
+  ) THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: individual response contract incomplete';
   END IF;
   IF (
     SELECT allocated_amount_original
@@ -132,6 +211,20 @@ BEGIN
   END IF;
   IF (SELECT status FROM public.finance_supplier_payments WHERE id = v_payment_a) <> 'pagado' THEN
     RAISE EXCEPTION 'ASSERT_FAILED: second payment must complete obligation';
+  END IF;
+  IF (
+    SELECT resulting_status
+    FROM public.finance_purchase_payment_allocations a
+    JOIN public.finance_purchase_payment_batches b ON b.id = a.batch_id
+    WHERE a.supplier_payment_id = v_payment_a AND b.idempotency_key = 'test-partial-a'
+  ) <> 'parcial' OR (
+    SELECT resulting_status
+    FROM public.finance_purchase_payment_allocations a
+    JOIN public.finance_purchase_payment_batches b ON b.id = a.batch_id
+    WHERE a.supplier_payment_id = v_payment_a
+      AND b.idempotency_key = 'individual-supplier-payment:' || v_payment_a::text
+  ) <> 'pagado' THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: historical allocation status was not preserved';
   END IF;
 
   -- Mismo agente y obligaciones de ordenes distintas es valido.
@@ -279,6 +372,28 @@ BEGIN
     RAISE EXCEPTION 'ASSERT_FAILED: insufficient credit did not roll back';
   END IF;
 
+  RESET ROLE;
+  PERFORM set_config('request.jwt.claim.sub', '', true);
+  PERFORM set_config('request.jwt.claim.role', 'service_role', true);
+  SET LOCAL ROLE service_role;
+  v_result := public.create_and_apply_purchase_payment_batch(jsonb_build_object(
+    'payee_type', 'agent',
+    'idempotency_key', 'test-eur'
+  ));
+  IF coalesce((v_result->>'idempotent')::boolean, false) IS NOT TRUE THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: service_role could not execute idempotent RPC';
+  END IF;
+
+  RESET ROLE;
+  PERFORM set_config('request.jwt.claim.role', 'anon', true);
+  SET LOCAL ROLE anon;
+  v_failed := false;
+  BEGIN
+    PERFORM public.create_and_apply_purchase_payment_batch('{}'::jsonb);
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_failed := true;
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: anon executed mutating RPC'; END IF;
   RESET ROLE;
 END;
 $test$;

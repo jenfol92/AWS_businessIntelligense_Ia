@@ -6,6 +6,9 @@ import {
 import {
   togglePurchasePaymentCandidate,
 } from "../modules/finance/utils/purchasePaymentSelection.ts";
+import {
+  partitionFinanceEventsByDate,
+} from "../modules/finance/utils/partitionFinanceEventsByDate.ts";
 
 const migration = readFileSync(
   new URL("../sql/migrations/20260722_linked_purchase_payment_batches.sql", import.meta.url),
@@ -25,6 +28,22 @@ const detailModal = readFileSync(
 );
 const planning = readFileSync(
   new URL("../modules/finance/services/buildFinancialPlanning.ts", import.meta.url),
+  "utf8",
+);
+const planningTypes = readFileSync(
+  new URL("../modules/finance/types/planning.types.ts", import.meta.url),
+  "utf8",
+);
+const executionTypes = readFileSync(
+  new URL("../modules/finance/types/supplierPaymentExecution.types.ts", import.meta.url),
+  "utf8",
+);
+const executionService = readFileSync(
+  new URL("../modules/finance/services/supplierPaymentExecutionService.ts", import.meta.url),
+  "utf8",
+);
+const individualRoute = readFileSync(
+  new URL("../app/api/finance/supplier-payments/[id]/mark-paid/route.ts", import.meta.url),
   "utf8",
 );
 
@@ -50,6 +69,10 @@ const requiredSql = [
   "pg_advisory_xact_lock",
   "unique_violation",
   "ORDER_NOT_CONFIRMED",
+  "PARTIAL_PAYMENT_PLAN_MISMATCH",
+  "pending_before_original",
+  "pending_after_original",
+  "resulting_status",
   "status = v_next_status",
   "'parcial'",
 ];
@@ -73,6 +96,41 @@ assert.match(detailModal, /allocated_amount_original/);
 assert.match(planning, /status === "parcial"/);
 assert.match(planning, /mixedSources/);
 assert.match(planning, /weightedFxRate/);
+assert.match(planning, /partitionFinanceEventsByDate\(events\)/);
+assert.match(planningTypes, /pendingDateEvents: FinancePlanningEvent\[\]/);
+assert.match(migration, /a\.resulting_status/);
+assert.doesNotMatch(migration, /'resulting_status', sp\.status/);
+const partialSyncBlock = migration.match(
+  /IF v_payment\.status = 'parcial' THEN([\s\S]*?)RETURN v_payment;\s+END IF;/,
+)?.[1] ?? "";
+assert.match(partialSyncBlock, /PARTIAL_PAYMENT_PLAN_MISMATCH/);
+assert.match(partialSyncBlock, /due_date = p_due_date/);
+assert.doesNotMatch(partialSyncBlock, /amount_original = p_amount_original/);
+assert.doesNotMatch(partialSyncBlock, /status = p_status/);
+assert.match(migration, /coalesce\(auth\.role\(\)/);
+assert.match(migration, /NOTIFY pgrst, 'reload schema'/);
+assert.match(individualRoute, /payment: result\.payment, financing: result/);
+for (const field of [
+  "batch_id",
+  "source_type",
+  "cash_account_id",
+  "credit_line_id",
+  "funded_total_eur",
+]) {
+  assert.match(executionTypes, new RegExp(`${field}:`), `missing individual response field ${field}`);
+}
+for (const code of [
+  "OBLIGATION_ALREADY_PAID",
+  "OVERALLOCATION",
+  "ORDER_NOT_CONFIRMED",
+  "AGENT_MISMATCH",
+  "CURRENCY_MISMATCH",
+  "INSUFFICIENT_CASH",
+  "INSUFFICIENT_CREDIT",
+  "UNAUTHORIZED",
+]) {
+  assert.match(executionService, new RegExp(`${code}:`), `missing error mapping ${code}`);
+}
 
 const baseCandidate = {
   supplierPaymentId: "payment-a",
@@ -125,5 +183,31 @@ assert.throws(
   () => normalizePurchasePaymentBatchPayload({ ...eurPayload, sourceType: "manual" }),
   /fuente manual no está permitida/i,
 );
+
+const eventBase = {
+  id: "event",
+  type: "supplier_deposit",
+  title: "Deposit",
+  date: null,
+  month: null,
+  isPendingDate: true,
+  status: "pendiente",
+};
+const partitioned = partitionFinanceEventsByDate([
+  { ...eventBase, id: "deposit-undated" },
+  { ...eventBase, id: "balance-undated", type: "supplier_balance" },
+  {
+    ...eventBase,
+    id: "deposit-dated",
+    date: "2026-08-12",
+    month: "2026-08",
+    isPendingDate: false,
+  },
+]);
+assert.deepEqual(
+  partitioned.pendingDateEvents.map((event) => event.id),
+  ["deposit-undated", "balance-undated"],
+);
+assert.deepEqual(partitioned.datedEvents.map((event) => event.id), ["deposit-dated"]);
 
 console.log("OK purchase payment batches: behavior, persistent selection, EUR, authorization, partials, idempotency and detail contracts");

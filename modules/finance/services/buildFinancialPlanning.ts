@@ -33,6 +33,7 @@ const MONTH_LABELS = [
 ];
 
 import { LOGISTICS_LABELS } from "../utils/logisticsLabels";
+import { partitionFinanceEventsByDate } from "../utils/partitionFinanceEventsByDate";
 
 function asNumber(value: unknown, fallback = 0): number {
   if (value === null || value === undefined || value === "") return fallback;
@@ -302,9 +303,18 @@ function buildSupplierPaymentEvents(
 
     const notes = asString(payment["notes"]);
     const reason = notes ?? recommendation.reason;
+    const canonicalStatus = allocationStats.count > 0
+      ? allocatedOriginal >= plannedOriginalAmount - 0.0001
+        ? "pagado"
+        : allocatedOriginal > 0.0001
+          ? "parcial"
+          : null
+      : null;
     const status = statusFromRow(
-      rawStatus,
-      rawStatus === "pagado" ? paidAt : null,
+      canonicalStatus ?? rawStatus,
+      canonicalStatus === "pagado" || (!canonicalStatus && rawStatus === "pagado")
+        ? paidAt
+        : null,
       dueDate,
     );
     const displayStatus = status;
@@ -627,16 +637,19 @@ export async function buildFinancialPlanning(
 
   const fromMonth = query.fromMonth ?? new Date().toISOString().slice(0, 7);
   const monthsCount = query.months ?? 6;
+  const {
+    pendingDateEvents,
+    datedEvents: datedPlanningEvents,
+  } = partitionFinanceEventsByDate(events);
   let projectedCash = cashBalance;
   let projectedCredit = totalCreditAvailable;
   const months = Array.from({ length: monthsCount }, (_, index) => {
     const d = addMonths(new Date(`${fromMonth}-01T00:00:00`), index);
     const month = d.toISOString().slice(0, 7);
-    const monthEvents = events
+    const monthEvents = datedPlanningEvents
       .filter((event) => event.month === month)
       .sort((a, b) => (a.date ?? "9999-12-31").localeCompare(b.date ?? "9999-12-31"));
     const datedEvents = monthEvents.filter((event) => !event.isPendingDate);
-    const pendingDateEvents = monthEvents.filter((event) => event.isPendingDate);
 
     for (const event of datedEvents) {
       if (event.isInformational) continue;
@@ -672,7 +685,7 @@ export async function buildFinancialPlanning(
       projectedCashBalance: projectedCash,
       projectedCreditAvailable: projectedCredit,
       events: datedEvents,
-      pendingDateEvents,
+      pendingDateEvents: [],
     };
   });
 
@@ -698,5 +711,6 @@ export async function buildFinancialPlanning(
     creditLines,
     cashAccounts,
     months,
+    pendingDateEvents,
   };
 }

@@ -24,7 +24,7 @@ export async function PATCH(req: Request, { params }: Params) {
   } catch {
     return NextResponse.json(
       { ok: false, code: "INVALID_REQUEST", error: "JSON inválido" },
-      { status: 400 },
+      { status: 422 },
     );
   }
 

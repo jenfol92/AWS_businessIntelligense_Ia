@@ -381,7 +381,7 @@ function PaymentModal({
         <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
           <div>
             <h2 className="text-base font-semibold text-slate-900">
-              Marcar pago
+              Pagar obligación al agente
             </h2>
             <p className="text-xs text-slate-500">
               {event.title} - {event.containerCode ?? event.orderCode ?? "Sin referencia"}
@@ -397,7 +397,7 @@ function PaymentModal({
           </button>
         </div>
         <div className="p-5 space-y-4">
-          <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
             <div className="rounded-lg border border-slate-200 p-3">
               <div className="text-xs text-slate-500">Importe original</div>
               <div className="font-semibold text-slate-900">
@@ -408,6 +408,22 @@ function PaymentModal({
               </div>
             </div>
             <div className="rounded-lg border border-slate-200 p-3">
+              <div className="text-xs text-slate-500">Pagado anteriormente</div>
+              <div className="font-semibold text-slate-900">
+                {(event.allocatedAmountOriginal ?? 0).toLocaleString("es-ES", {
+                  maximumFractionDigits: 2,
+                })}{" "}
+                {event.originalCurrency}
+              </div>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3">
+              <div className="text-xs text-slate-500">Pendiente que se pagará ahora</div>
+              <div className="font-semibold text-slate-900">
+                {originalAmount.toLocaleString("es-ES", { maximumFractionDigits: 2 })}{" "}
+                {event.originalCurrency}
+              </div>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3 sm:col-span-3">
               <div className="text-xs text-slate-500">EUR real</div>
               <div className="font-semibold text-slate-900">
                 Pendiente de pago
@@ -984,7 +1000,7 @@ function EventCard({
               className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
             >
               <CheckCircle2 className="h-3.5 w-3.5" />
-              Pago proveedor
+              Pagar obligación
             </button>
           ) : null}
           {canRepayCreditLine ? (
@@ -1120,7 +1136,7 @@ export function FinancialPlanningPage() {
   }, [filters, urlFiltersReady]);
 
   const allPendingDateEvents = useMemo(
-    () => data?.months.flatMap((month) => month.pendingDateEvents) ?? [],
+    () => data?.pendingDateEvents ?? [],
     [data],
   );
 

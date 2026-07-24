@@ -81,7 +81,7 @@ export function PurchasePaymentBatchDetailModal({
               <div className="overflow-auto border border-slate-200">
                 <table className="w-full min-w-[720px] text-left text-xs">
                   <thead className="bg-slate-100 text-slate-600">
-                    <tr><th className="p-2">Orden</th><th className="p-2">Pedido agente</th><th className="p-2">Fábrica</th><th className="p-2">Obligación</th><th className="p-2 text-right">Aplicado</th><th className="p-2 text-right">EUR</th><th className="p-2">Estado</th></tr>
+                    <tr><th className="p-2">Orden</th><th className="p-2">Pedido agente</th><th className="p-2">Fábrica</th><th className="p-2">Obligación</th><th className="p-2 text-right">Aplicado</th><th className="p-2 text-right">EUR</th><th className="p-2">Resultado histórico</th><th className="p-2">Estado actual</th></tr>
                   </thead>
                   <tbody>
                     {detail.allocations.map((allocation) => (
@@ -93,6 +93,7 @@ export function PurchasePaymentBatchDetailModal({
                         <td className="p-2 text-right">{amount(allocation.allocated_amount_original, currency)}</td>
                         <td className="p-2 text-right">{amount(allocation.allocated_amount_eur, "EUR")}</td>
                         <td className="p-2">{String(allocation.resulting_status ?? "-")}</td>
+                        <td className="p-2">{String(allocation.current_obligation_status ?? "-")}</td>
                       </tr>
                     ))}
                   </tbody>

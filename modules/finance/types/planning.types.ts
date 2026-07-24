@@ -133,6 +133,7 @@ export type FinancePlanningResponse = {
   creditLines: FinanceCreditLine[];
   cashAccounts: FinanceCashAccount[];
   months: FinanceMonthBucket[];
+  pendingDateEvents: FinancePlanningEvent[];
 };
 
 export type FinancePlanningQuery = {

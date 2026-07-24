@@ -8,6 +8,10 @@ import type {
   PurchasePaymentEntryMode,
   PurchasePaymentSourceType,
 } from "../types/purchasePaymentBatch.types";
+import {
+  selectedPurchasePaymentRows,
+  togglePurchasePaymentCandidate,
+} from "../utils/purchasePaymentSelection";
 
 const money = (value: number, currency: string) =>
   `${value.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
@@ -23,6 +27,10 @@ export function LinkedPurchasePaymentModal({
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<PurchasePaymentEntryMode>("selected_payments");
   const [selected, setSelected] = useState<Record<string, number>>({});
+  const [selectedCandidates, setSelectedCandidates] = useState(
+    () => new Map<string, PurchasePaymentCandidate>(),
+  );
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
   const [freeAmount, setFreeAmount] = useState("");
   const [sourceType, setSourceType] = useState<PurchasePaymentSourceType | "">("");
   const [cashAccountId, setCashAccountId] = useState("");
@@ -59,26 +67,37 @@ export function LinkedPurchasePaymentModal({
   }, [query]);
 
   const selectedRows = useMemo(
-    () => (data?.candidates ?? []).filter((row) => selected[row.supplierPaymentId] !== undefined),
-    [data, selected],
+    () => selectedPurchasePaymentRows(selectedCandidates),
+    [selectedCandidates],
   );
   const lockedAgent = selectedRows[0]?.agentId ?? null;
   const lockedCurrency = selectedRows[0]?.originalCurrency ?? null;
   const totalApplied = selectedRows.reduce((sum, row) => sum + (selected[row.supplierPaymentId] ?? 0), 0);
   const principal = mode === "free_amount" ? Number(freeAmount || 0) : totalApplied;
-  const eurReal = actualAmountEur ? Number(actualAmountEur) : principal * Number(actualFxRate || 0);
+  const eurReal = lockedCurrency === "EUR"
+    ? principal
+    : actualAmountEur
+      ? Number(actualAmountEur)
+      : principal * Number(actualFxRate || 0);
   const totalCharged = eurReal + Number(bankFeeEur || 0) + Number(ffFeeEur || 0);
   const orderCount = new Set(selectedRows.map((row) => row.orderId)).size;
   const supplierCount = new Set(selectedRows.map((row) => row.supplierId ?? row.supplierName)).size;
 
   const toggle = (row: PurchasePaymentCandidate) => {
     setError(null);
+    const alreadySelected = selectedCandidates.has(row.supplierPaymentId);
+    if (!alreadySelected && (
+      (lockedAgent && row.agentId !== lockedAgent)
+      || (lockedCurrency && row.originalCurrency !== lockedCurrency)
+    )) return;
+    setSelectedCandidates((current) => {
+      return togglePurchasePaymentCandidate(current, row);
+    });
     setSelected((current) => {
-      if (current[row.supplierPaymentId] !== undefined) {
-        const next = { ...current }; delete next[row.supplierPaymentId]; return next;
-      }
-      if ((lockedAgent && row.agentId !== lockedAgent) || (lockedCurrency && row.originalCurrency !== lockedCurrency)) return current;
-      return { ...current, [row.supplierPaymentId]: row.pendingAmountOriginal };
+      const next = { ...current };
+      if (alreadySelected) delete next[row.supplierPaymentId];
+      else next[row.supplierPaymentId] = row.pendingAmountOriginal;
+      return next;
     });
   };
 
@@ -96,6 +115,14 @@ export function LinkedPurchasePaymentModal({
       });
       return next;
     });
+    setSelectedCandidates((current) => {
+      const next = new Map(current);
+      rows.forEach((candidate) => {
+        if (allSelected) next.delete(candidate.supplierPaymentId);
+        else next.set(candidate.supplierPaymentId, candidate);
+      });
+      return next;
+    });
   };
 
   const submit = async () => {
@@ -106,10 +133,11 @@ export function LinkedPurchasePaymentModal({
     if (!sourceType) return setError("Selecciona explícitamente la fuente financiera.");
     if (sourceType === "cash_account" && !cashAccountId) return setError("Selecciona una cuenta propia.");
     if (sourceType === "credit_line" && !creditLineId) return setError("Selecciona una línea de crédito.");
-    if (!actualFxRate && !actualAmountEur) return setError("Introduce tipo de cambio real o EUR real.");
+    if (lockedCurrency !== "EUR" && !actualFxRate && !actualAmountEur) {
+      return setError("Introduce tipo de cambio real o EUR real.");
+    }
 
     setSaving(true);
-    const idempotencyKey = crypto.randomUUID();
     try {
       const response = await fetch("/api/finance/purchase-payment-batches", {
         method: "POST",
@@ -174,6 +202,26 @@ export function LinkedPurchasePaymentModal({
               <input value={query} onChange={(e) => setQuery(e.target.value)} className="min-w-0 flex-1 text-sm outline-none"
                 placeholder="Orden, pedido agente, agente, fábrica o referencia" />
             </div>
+            {selectedRows.length ? (
+              <div className="border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 text-xs font-semibold text-slate-700">
+                  Seleccionados ({selectedRows.length})
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedRows.map((row) => (
+                    <button
+                      key={row.supplierPaymentId}
+                      type="button"
+                      onClick={() => toggle(row)}
+                      className="inline-flex items-center gap-1 border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                    >
+                      {row.orderNumber} · {row.paymentType}
+                      <X className="h-3 w-3" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="max-h-[520px] overflow-auto border border-slate-200">
               <table className="w-full min-w-[920px] text-left text-xs">
                 <thead className="sticky top-0 bg-slate-100 text-slate-600"><tr>
@@ -185,7 +233,7 @@ export function LinkedPurchasePaymentModal({
                   {loading ? <tr><td colSpan={8} className="p-6 text-center text-slate-500">Cargando...</td></tr> :
                     (data?.candidates ?? []).map((row) => {
                       const incompatible = Boolean((lockedAgent && row.agentId !== lockedAgent) || (lockedCurrency && row.originalCurrency !== lockedCurrency));
-                      const checked = selected[row.supplierPaymentId] !== undefined;
+                      const checked = selectedCandidates.has(row.supplierPaymentId);
                       return <tr key={row.supplierPaymentId} className={`border-t border-slate-100 ${incompatible ? "opacity-40" : ""}`}>
                         <td className="p-2"><input type="checkbox" checked={checked} disabled={incompatible} onChange={() => toggle(row)} /></td>
                         <td className="p-2"><button type="button" onClick={() => toggleOrder(row)} className="font-semibold text-sky-700">{row.orderNumber}</button><div className="text-slate-400">{row.agentOrderNumber ?? "-"}</div></td>

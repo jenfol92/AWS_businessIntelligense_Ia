@@ -153,6 +153,12 @@ AS $$
     JOIN public.finance_purchase_payment_batches b ON b.id = a.batch_id
     WHERE a.supplier_payment_id = sp.id AND b.status <> 'reversed'
   ) alloc ON true
+  LEFT JOIN LATERAL (
+    SELECT string_agg(DISTINCT b.bank_reference, ' ') AS references
+    FROM public.finance_purchase_payment_allocations a
+    JOIN public.finance_purchase_payment_batches b ON b.id = a.batch_id
+    WHERE a.supplier_payment_id = sp.id AND b.status <> 'reversed'
+  ) batch_refs ON true
   WHERE oc.estado = 'confirmado'
     AND oc.agente_id IS NOT NULL
     AND sp.status NOT IN ('pagado')
@@ -160,7 +166,8 @@ AS $$
     AND (
       nullif(trim(p_query), '') IS NULL
       OR concat_ws(' ', oc.numero_orden, oc.numero_pedido_agente, ag.contacto,
-        suppliers.supplier_name, sp.payment_type)::text ILIKE '%' || trim(p_query) || '%'
+        suppliers.supplier_name, sp.payment_type, batch_refs.references)::text
+        ILIKE '%' || trim(p_query) || '%'
     )
   ORDER BY sp.due_date NULLS LAST, oc.numero_orden, sp.payment_type;
 $$;
@@ -173,7 +180,13 @@ SET search_path = public
 STABLE
 AS $$
   SELECT jsonb_build_object(
-    'batch', to_jsonb(b),
+    'batch', to_jsonb(b) || jsonb_build_object(
+      'agent_name', ag.contacto,
+      'source_name', CASE
+        WHEN b.source_type = 'cash_account' THEN cash.name
+        ELSE concat_ws(' / ', line.bank_name, line.line_name)
+      END
+    ),
     'allocations', coalesce((
       SELECT jsonb_agg(to_jsonb(a) || jsonb_build_object(
         'order_id', oc.id,
@@ -202,13 +215,16 @@ AS $$
     END
   )
   FROM public.finance_purchase_payment_batches b
+  LEFT JOIN public.agentes_compra ag ON ag.id = b.agent_id
+  LEFT JOIN public.finance_cash_accounts cash ON cash.id = b.cash_account_id
+  LEFT JOIN public.finance_credit_lines line ON line.id = b.credit_line_id
   WHERE b.id = p_batch_id;
 $$;
 
 CREATE OR REPLACE FUNCTION public.create_and_apply_purchase_payment_batch(p_payload jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
@@ -247,11 +263,18 @@ DECLARE
   v_key text;
   v_supplier_payment_id uuid;
 BEGIN
+  IF auth.uid() IS NULL
+     AND coalesce(current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED: authenticated user or service_role required'
+      USING ERRCODE = '42501';
+  END IF;
   IF coalesce(p_payload->>'payee_type', '') <> 'agent' THEN
     RAISE EXCEPTION 'INVALID_PAYEE_TYPE: this version only supports agent';
   END IF;
   v_key := nullif(trim(p_payload->>'idempotency_key'), '');
   IF v_key IS NULL THEN RAISE EXCEPTION 'INVALID_IDEMPOTENCY_KEY: idempotency_key is required'; END IF;
+  -- Serializa reintentos concurrentes sin conceder INSERT directo a authenticated.
+  PERFORM pg_advisory_xact_lock(hashtextextended(v_key, 0));
   SELECT * INTO v_existing FROM public.finance_purchase_payment_batches WHERE idempotency_key = v_key;
   IF FOUND THEN
     RETURN public.get_purchase_payment_batch_detail(v_existing.id) || jsonb_build_object('idempotent', true);
@@ -317,6 +340,10 @@ BEGIN
       WHERE id = (v_alloc->>'supplier_payment_id')::uuid;
     IF NOT FOUND THEN RAISE EXCEPTION 'OBLIGATION_NOT_FOUND: supplier payment not found'; END IF;
     SELECT * INTO v_order FROM public.ordenes_compra WHERE id = v_payment.orden_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'ORDER_NOT_FOUND: obligation order not found'; END IF;
+    IF v_order.estado <> 'confirmado' THEN
+      RAISE EXCEPTION 'ORDER_NOT_CONFIRMED: obligation order must be confirmed';
+    END IF;
     IF v_order.agente_id IS NULL THEN RAISE EXCEPTION 'MISSING_AGENT: obligation order has no agent'; END IF;
     IF v_order.agente_id <> v_agent_id THEN RAISE EXCEPTION 'AGENT_MISMATCH: all obligations must use the same agent'; END IF;
     IF upper(trim(v_payment.original_currency)) <> v_currency THEN
@@ -356,17 +383,28 @@ BEGIN
     RAISE EXCEPTION 'INVALID_SOURCE_TYPE: source must be cash_account or credit_line';
   END IF;
 
-  INSERT INTO public.finance_purchase_payment_batches (
-    payee_type, agent_id, paid_at, original_currency, amount_original,
-    actual_fx_rate, actual_amount_eur, bank_fee_eur, ff_fee_eur, funded_total_eur,
-    source_type, cash_account_id, credit_line_id, bank_reference, notes,
-    entry_mode, idempotency_key, created_by
-  ) VALUES (
-    'agent', v_agent_id, v_paid_at, v_currency, v_amount,
-    v_actual_fx, v_actual_eur, v_bank_fee, v_ff_fee, v_funded_total,
-    v_source_type, v_cash_id, v_line_id, nullif(trim(p_payload->>'bank_reference'), ''),
-    nullif(trim(p_payload->>'notes'), ''), p_payload->>'entry_mode', v_key, auth.uid()
-  ) RETURNING * INTO v_batch;
+  BEGIN
+    INSERT INTO public.finance_purchase_payment_batches (
+      payee_type, agent_id, paid_at, original_currency, amount_original,
+      actual_fx_rate, actual_amount_eur, bank_fee_eur, ff_fee_eur, funded_total_eur,
+      source_type, cash_account_id, credit_line_id, bank_reference, notes,
+      entry_mode, idempotency_key, created_by
+    ) VALUES (
+      'agent', v_agent_id, v_paid_at, v_currency, v_amount,
+      v_actual_fx, v_actual_eur, v_bank_fee, v_ff_fee, v_funded_total,
+      v_source_type, v_cash_id, v_line_id, nullif(trim(p_payload->>'bank_reference'), ''),
+      nullif(trim(p_payload->>'notes'), ''), p_payload->>'entry_mode', v_key, auth.uid()
+    ) RETURNING * INTO v_batch;
+  EXCEPTION WHEN unique_violation THEN
+    SELECT * INTO v_existing
+    FROM public.finance_purchase_payment_batches
+    WHERE idempotency_key = v_key;
+    IF FOUND THEN
+      RETURN public.get_purchase_payment_batch_detail(v_existing.id)
+        || jsonb_build_object('idempotent', true);
+    END IF;
+    RAISE;
+  END;
 
   FOR v_alloc IN SELECT * FROM jsonb_array_elements(p_payload->'allocations')
   LOOP
@@ -478,7 +516,7 @@ CREATE OR REPLACE FUNCTION public.mark_and_finance_supplier_payment(
 )
 RETURNS jsonb
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
@@ -486,22 +524,49 @@ DECLARE
   v_order public.ordenes_compra;
   v_result jsonb;
   v_updated jsonb;
+  v_previous numeric;
+  v_pending numeric;
+  v_existing_batch public.finance_purchase_payment_batches;
 BEGIN
+  IF auth.uid() IS NULL
+     AND coalesce(current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED: authenticated user or service_role required'
+      USING ERRCODE = '42501';
+  END IF;
   SELECT * INTO v_payment
   FROM public.finance_supplier_payments
-  WHERE id = p_supplier_payment_id;
+  WHERE id = p_supplier_payment_id
+  FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'SUPPLIER_PAYMENT_NOT_FOUND: supplier payment not found'; END IF;
   IF p_order_id IS NOT NULL AND p_order_id <> v_payment.orden_id THEN
     RAISE EXCEPTION 'PAYMENT_ORDER_MISMATCH: payment does not belong to order';
   END IF;
   SELECT * INTO v_order FROM public.ordenes_compra WHERE id = v_payment.orden_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'ORDER_NOT_FOUND: order not found'; END IF;
+  IF v_order.estado <> 'confirmado' THEN
+    RAISE EXCEPTION 'ORDER_NOT_CONFIRMED: order must be confirmed';
+  END IF;
   IF v_order.agente_id IS NULL THEN RAISE EXCEPTION 'MISSING_AGENT: order has no purchase agent'; END IF;
+  SELECT coalesce(sum(a.allocated_amount_original), 0) INTO v_previous
+  FROM public.finance_purchase_payment_allocations a
+  JOIN public.finance_purchase_payment_batches b ON b.id = a.batch_id
+  WHERE a.supplier_payment_id = v_payment.id AND b.status <> 'reversed';
+  v_pending := v_payment.amount_original - v_previous;
+  IF v_pending <= 0.0001 THEN
+    SELECT * INTO v_existing_batch
+    FROM public.finance_purchase_payment_batches
+    WHERE idempotency_key = 'individual-supplier-payment:' || p_supplier_payment_id::text;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'OBLIGATION_ALREADY_PAID: obligation has no pending balance';
+    END IF;
+    v_pending := v_existing_batch.amount_original;
+  END IF;
 
   v_result := public.create_and_apply_purchase_payment_batch(jsonb_build_object(
     'payee_type', 'agent',
     'agent_id', v_order.agente_id,
     'entry_mode', 'selected_payments',
-    'amount_original', v_payment.amount_original,
+    'amount_original', v_pending,
     'original_currency', v_payment.original_currency,
     'actual_fx_rate', p_actual_fx_rate,
     'actual_amount_eur', p_actual_amount_eur,
@@ -516,7 +581,7 @@ BEGIN
     'idempotency_key', 'individual-supplier-payment:' || p_supplier_payment_id::text,
     'allocations', jsonb_build_array(jsonb_build_object(
       'supplier_payment_id', p_supplier_payment_id,
-      'allocated_amount_original', v_payment.amount_original
+      'allocated_amount_original', v_pending
     ))
   ));
 
@@ -549,9 +614,20 @@ GRANT SELECT ON public.finance_purchase_payment_allocations TO authenticated, se
 REVOKE EXECUTE ON FUNCTION public.get_purchase_payment_candidates(text) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.get_purchase_payment_batch_detail(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.create_and_apply_purchase_payment_batch(jsonb) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.mark_and_finance_supplier_payment(
+  uuid, uuid, timestamptz, numeric, numeric, text, numeric, numeric, text, text, uuid, uuid
+) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_purchase_payment_candidates(text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.get_purchase_payment_batch_detail(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.create_and_apply_purchase_payment_batch(jsonb) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.mark_and_finance_supplier_payment(
+  uuid, uuid, timestamptz, numeric, numeric, text, numeric, numeric, text, text, uuid, uuid
+) TO authenticated, service_role;
+
+ALTER FUNCTION public.create_and_apply_purchase_payment_batch(jsonb) OWNER TO postgres;
+ALTER FUNCTION public.mark_and_finance_supplier_payment(
+  uuid, uuid, timestamptz, numeric, numeric, text, numeric, numeric, text, text, uuid, uuid
+) OWNER TO postgres;
 
 COMMENT ON TABLE public.finance_purchase_payment_batches IS
   'Transferencia real e inmutable a agente o, en una futura version, proveedor.';

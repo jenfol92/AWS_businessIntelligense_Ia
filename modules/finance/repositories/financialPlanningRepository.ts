@@ -79,7 +79,15 @@ export async function findFinancialPlanningData(
            deposito_porcentaje,
            agentes_compra(contacto)
          ),
-         contenedores(id, identificador_embarque, tipo_contenedor)`,
+         contenedores(id, identificador_embarque, tipo_contenedor),
+         finance_purchase_payment_allocations(
+           allocated_amount_original,
+           allocated_amount_eur,
+           finance_purchase_payment_batches(
+             id, status, paid_at, bank_reference, source_type,
+             actual_fx_rate, actual_amount_eur, bank_fee_eur, ff_fee_eur
+           )
+         )`,
       )
       .or(`due_date.gte.${fromDate},due_date.lte.${toDate},due_date.is.null`),
     supabase

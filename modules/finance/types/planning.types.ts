@@ -8,7 +8,7 @@ export type FinanceEventType =
   | "credit_line_release"
   | "amazon_income";
 
-export type FinanceEventStatus = "pendiente" | "pagado" | "vencido" | "previsto";
+export type FinanceEventStatus = "pendiente" | "parcial" | "pagado" | "vencido" | "previsto";
 
 export type FinancePaymentSource = "cash" | "caja_rural" | "la_caixa" | "bbva";
 
@@ -57,6 +57,13 @@ export type FinancePlanningEvent = {
   agentContact: string | null;
   logisticsType: "AGL" | "PROPIO" | "SIN_DEFINIR";
   originalAmount: number | null;
+  allocatedAmountOriginal?: number | null;
+  pendingAmountOriginal?: number | null;
+  allocatedAmountEur?: number | null;
+  linkedBatchCount?: number;
+  latestBatchId?: string | null;
+  latestBatchReference?: string | null;
+  hasMixedPaymentSources?: boolean;
   originalCurrency: string;
   depositPercent?: number | null;
   balancePercent?: number | null;
@@ -67,6 +74,7 @@ export type FinancePlanningEvent = {
   actualAmountOriginal?: number | null;
   actualAmountEur?: number | null;
   actualFxRate?: number | null;
+  actualFxRateIsWeighted?: boolean;
   paidAt?: string | null;
   paymentSource?: FinancePaymentSource | null;
   bankReference?: string | null;

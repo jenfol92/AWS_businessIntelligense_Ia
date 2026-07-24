@@ -58,6 +58,40 @@ function paidRealAmountOriginal(payment: Record<string, unknown>): number {
   return isLegacyPaid ? asNumber(payment["amount_original"]) : 0;
 }
 
+function purchasePaymentAllocationStats(payment: Record<string, unknown>) {
+  const rows = (payment["finance_purchase_payment_allocations"] as Record<string, unknown>[] | null) ?? [];
+  const active = rows
+    .map((allocation) => {
+      const batch = firstRelation(
+        allocation["finance_purchase_payment_batches"] as Record<string, unknown> | Record<string, unknown>[] | null,
+      );
+      return batch && asString(batch["status"]) !== "reversed" ? { allocation, batch } : null;
+    })
+    .filter((row): row is { allocation: Record<string, unknown>; batch: Record<string, unknown> } => Boolean(row))
+    .sort((a, b) => (asString(b.batch["paid_at"]) ?? "").localeCompare(asString(a.batch["paid_at"]) ?? ""));
+  const sources = new Set(active.map((row) => asString(row.batch["source_type"])).filter(Boolean));
+  const allocatedOriginal = active.reduce(
+    (sum, row) => sum + asNumber(row.allocation["allocated_amount_original"]),
+    0,
+  );
+  const allocatedEur = active.reduce(
+    (sum, row) => sum + asNumber(row.allocation["allocated_amount_eur"]),
+    0,
+  );
+  const latest = active[0]?.batch ?? null;
+  return {
+    allocatedOriginal,
+    allocatedEur,
+    count: active.length,
+    latest,
+    sourceType: sources.size === 1
+      ? supplierPaymentSourceType(Array.from(sources)[0])
+      : null,
+    mixedSources: sources.size > 1,
+    weightedFxRate: allocatedOriginal > 0 ? allocatedEur / allocatedOriginal : null,
+  };
+}
+
 function buildOrderPaymentStats(payments: Record<string, unknown>[]) {
   const stats = new Map<string, {
     totalOriginal: number;
@@ -146,6 +180,7 @@ function statusFromRow(
   date: string | null,
 ): FinanceEventStatus {
   if (paidAt || status === "pagado") return "pagado";
+  if (status === "parcial") return "parcial";
   if (status === "vencido") return "vencido";
   if (date && date < new Date().toISOString().slice(0, 10)) return "vencido";
   return "pendiente";
@@ -215,16 +250,29 @@ function buildSupplierPaymentEvents(
     const dueDate = asString(payment["due_date"]);
     const plannedAmountEur = asNumber(payment["amount_eur"]);
     const plannedOriginalAmount = asNumber(payment["amount_original"]);
+    const allocationStats = purchasePaymentAllocationStats(payment);
+    const allocatedOriginal = allocationStats.count > 0
+      ? allocationStats.allocatedOriginal
+      : paidRealAmountOriginal(payment);
+    const pendingOriginal = Math.max(0, plannedOriginalAmount - allocatedOriginal);
     const originalCurrency = (asString(payment["original_currency"]) ?? "USD").toUpperCase();
     const plannedFxRate = asNumber(payment["planned_fx_rate"], 0) || (originalCurrency === "EUR" ? 1 : null);
-    const actualAmountEur = paidRealAmountEur(payment) || null;
-    const actualAmountOriginal = paidRealAmountOriginal(payment) || null;
-    const actualFxRate = asNumber(payment["actual_fx_rate"], 0) || null;
-    const paidAt = asString(payment["paid_at"]);
+    const actualAmountEur = (allocationStats.count > 0
+      ? allocationStats.allocatedEur
+      : paidRealAmountEur(payment)) || null;
+    const actualAmountOriginal = allocatedOriginal || null;
+    const actualFxRate = allocationStats.weightedFxRate
+      ?? (asNumber(payment["actual_fx_rate"], 0) || null);
+    const paidAt = asString(allocationStats.latest?.["paid_at"]) ?? asString(payment["paid_at"]);
     const paymentSource = supplierPaymentSource(payment["payment_source"]);
-    const bankReference = asString(payment["bank_reference"]);
-    const bankFeeEur = asNumber(payment["bank_fee_eur"], 0) || null;
-    const ffFeeEur = asNumber(payment["ff_fee_eur"], 0) || null;
+    const bankReference = asString(allocationStats.latest?.["bank_reference"])
+      ?? asString(payment["bank_reference"]);
+    const bankFeeEur = asNumber(allocationStats.latest?.["bank_fee_eur"], 0)
+      || asNumber(payment["bank_fee_eur"], 0)
+      || null;
+    const ffFeeEur = asNumber(allocationStats.latest?.["ff_fee_eur"], 0)
+      || asNumber(payment["ff_fee_eur"], 0)
+      || null;
     const orderId = asString(order?.["id"]) ?? asString(payment["orden_id"]);
     const orderStats = orderId ? orderPaymentStats.get(orderId) : null;
     const orderTotalEur = null;
@@ -238,7 +286,11 @@ function buildSupplierPaymentEvents(
     const orderPaidRealEur = orderStats?.paidRealEur ?? 0;
     const orderPendingRealEur = null;
     const displayOriginalAmount = plannedOriginalAmount;
-    const displayAmountEur = plannedAmountEur;
+    const displayAmountEur = originalCurrency === "EUR"
+      ? pendingOriginal
+      : plannedOriginalAmount > 0
+        ? plannedAmountEur * (pendingOriginal / plannedOriginalAmount)
+        : 0;
     const recommendation = recommendCreditLineForAmount(displayAmountEur, creditLines, cashBalance);
     const logisticsType = logisticsLabel(asString(payment["logistics_type"]));
     const depositPercent = asNumber(order?.["deposito_porcentaje"], 30);
@@ -252,7 +304,7 @@ function buildSupplierPaymentEvents(
     const reason = notes ?? recommendation.reason;
     const status = statusFromRow(
       rawStatus,
-      asString(payment["paid_at"]),
+      rawStatus === "pagado" ? paidAt : null,
       dueDate,
     );
     const displayStatus = status;
@@ -273,6 +325,13 @@ function buildSupplierPaymentEvents(
       agentContact: agentContact(order),
       logisticsType,
       originalAmount: displayOriginalAmount,
+      allocatedAmountOriginal: allocatedOriginal,
+      pendingAmountOriginal: pendingOriginal,
+      allocatedAmountEur: allocationStats.allocatedEur,
+      linkedBatchCount: allocationStats.count,
+      latestBatchId: asString(allocationStats.latest?.["id"]),
+      latestBatchReference: bankReference,
+      hasMixedPaymentSources: allocationStats.mixedSources,
       originalCurrency,
       depositPercent,
       balancePercent,
@@ -283,6 +342,7 @@ function buildSupplierPaymentEvents(
       actualAmountOriginal,
       actualAmountEur,
       actualFxRate,
+      actualFxRateIsWeighted: allocationStats.count > 1,
       paidAt,
       paymentSource,
       bankReference,
@@ -296,7 +356,9 @@ function buildSupplierPaymentEvents(
       recommendedSource: recommendation.source,
       recommendationReason: reason,
       canMarkPaid: true,
-      paymentSourceType: supplierPaymentSourceType(payment["payment_source_type"]),
+      paymentSourceType: allocationStats.count > 0
+        ? allocationStats.sourceType
+        : supplierPaymentSourceType(payment["payment_source_type"]),
       paymentCashAccountId: asString(payment["cash_account_id"]),
       paymentCreditLineId: asString(payment["credit_line_id"]),
     });
@@ -479,6 +541,13 @@ function effectiveEventAmountEur(event: FinancePlanningEvent): number {
   return event.plannedAmountEur;
 }
 
+function paidEventAmountEur(event: FinancePlanningEvent): number {
+  if (event.type === "supplier_deposit" || event.type === "supplier_balance") {
+    return event.allocatedAmountEur ?? event.actualAmountEur ?? 0;
+  }
+  return event.status === "pagado" ? effectiveEventAmountEur(event) : 0;
+}
+
 /**
  * Construye la planificacion visual mensual sin decidir por coste de linea.
  */
@@ -589,11 +658,11 @@ export async function buildFinancialPlanning(
       month,
       label: monthLabel(month),
       totalPendingPayments: datedEvents
-        .filter((event) => !event.isInformational && (event.status === "pendiente" || event.status === "vencido"))
+        .filter((event) => !event.isInformational && ["pendiente", "parcial", "vencido"].includes(event.status))
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       totalPaidPayments: datedEvents
-        .filter((event) => !event.isInformational && event.status === "pagado")
-        .reduce((sum, event) => sum + effectiveEventAmountEur(event), 0),
+        .filter((event) => !event.isInformational)
+        .reduce((sum, event) => sum + paidEventAmountEur(event), 0),
       totalIncome: datedEvents
         .filter((event) => !event.isInformational && event.type === "amazon_income")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
@@ -615,11 +684,11 @@ export async function buildFinancialPlanning(
       totalCreditAvailable,
       cashBalance,
       pendingPayments: events
-        .filter((event) => !event.isInformational && (event.status === "pendiente" || event.status === "vencido"))
+        .filter((event) => !event.isInformational && ["pendiente", "parcial", "vencido"].includes(event.status))
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       paidPayments: events
-        .filter((event) => !event.isInformational && event.status === "pagado")
-        .reduce((sum, event) => sum + effectiveEventAmountEur(event), 0),
+        .filter((event) => !event.isInformational)
+        .reduce((sum, event) => sum + paidEventAmountEur(event), 0),
       plannedIncome: events
         .filter((event) => !event.isInformational && event.type === "amazon_income")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),

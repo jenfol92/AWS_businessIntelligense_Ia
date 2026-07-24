@@ -7,13 +7,18 @@ import type {
 } from "../types/purchasePaymentBatch.types";
 
 export class PurchasePaymentBatchError extends Error {
+  readonly code: string;
+  readonly status: number;
+
   constructor(
     message: string,
-    public readonly code: string,
-    public readonly status: number,
+    code: string,
+    status: number,
   ) {
     super(message);
     this.name = "PurchasePaymentBatchError";
+    this.code = code;
+    this.status = status;
   }
 }
 
@@ -86,7 +91,8 @@ export function normalizePurchasePaymentBatchPayload(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(paidAt)) fail("INVALID_PAID_AT", "paidAt debe tener formato YYYY-MM-DD.");
   const actualFxRate = optionalPositive(payload.actualFxRate, "actualFxRate");
   const actualAmountEur = optionalPositive(payload.actualAmountEur, "actualAmountEur");
-  if (actualFxRate === null && actualAmountEur === null) {
+  const originalCurrency = text(payload.originalCurrency, "originalCurrency").toUpperCase();
+  if (originalCurrency !== "EUR" && actualFxRate === null && actualAmountEur === null) {
     fail("MISSING_ACTUAL_VALUE", "Introduce el tipo de cambio real o el importe EUR real.");
   }
   return {
@@ -94,7 +100,7 @@ export function normalizePurchasePaymentBatchPayload(
     agentId: text(payload.agentId, "agentId"),
     entryMode: entryMode as PurchasePaymentEntryMode,
     amountOriginal: positive(payload.amountOriginal, "amountOriginal"),
-    originalCurrency: text(payload.originalCurrency, "originalCurrency").toUpperCase(),
+    originalCurrency,
     actualFxRate,
     actualAmountEur,
     bankFeeEur: nonNegative(payload.bankFeeEur, "bankFeeEur"),

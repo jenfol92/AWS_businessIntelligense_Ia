@@ -22,11 +22,11 @@ import type {
   FinancePlanningEvent,
   FinancePlanningResponse,
 } from "../types/planning.types";
-import type { MarkSupplierPaymentPaidResult } from "../types/supplierPaymentExecution.types";
 import type { SupplierPaymentFundingSourceType } from "../types/supplierPaymentExecution.types";
 import { LOGISTICS_LABELS } from "../utils/logisticsLabels";
 import { resolveSupplierPaymentActuals } from "../utils/resolveSupplierPaymentActuals";
 import { LinkedPurchasePaymentModal } from "./LinkedPurchasePaymentModal";
+import { PurchasePaymentBatchDetailModal } from "./PurchasePaymentBatchDetailModal";
 
 const FUNDING_SOURCE_OPTIONS: Array<{
   value: SupplierPaymentFundingSourceType;
@@ -39,6 +39,7 @@ const FUNDING_SOURCE_OPTIONS: Array<{
 const STATUS_FILTER_OPTIONS = [
   { value: "ALL", label: "Todos" },
   { value: "pendiente", label: "Pendiente" },
+  { value: "parcial", label: "Parcial" },
   { value: "pagado", label: "Pagado" },
   { value: "vencido", label: "Vencido" },
   { value: "previsto", label: "Previsto" },
@@ -167,6 +168,7 @@ function sourceLabel(source: FinancePlanningEvent["recommendedSource"]): string 
 
 function statusClass(status: FinancePlanningEvent["status"]): string {
   if (status === "pagado") return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (status === "parcial") return "bg-violet-50 text-violet-700 border-violet-200";
   if (status === "vencido") return "bg-rose-50 text-rose-700 border-rose-200";
   if (status === "previsto") return "bg-sky-50 text-sky-700 border-sky-200";
   return "bg-amber-50 text-amber-700 border-amber-200";
@@ -190,6 +192,7 @@ function isSupplierPaymentEvent(event: FinancePlanningEvent): boolean {
 }
 
 function supplierPaymentFinanceLabel(event: FinancePlanningEvent): string | null {
+  if (event.hasMixedPaymentSources) return "Varias fuentes";
   if (event.paymentSourceType === "cash_account") return "Financiado con caja";
   if (event.paymentSourceType === "credit_line") return "Financiado con linea";
   return null;
@@ -214,22 +217,18 @@ function PaymentModal({
   cashAccounts: FinanceCashAccount[];
   creditLines: FinanceCreditLine[];
   onClose: () => void;
-  onSaved: (payment: MarkSupplierPaymentPaidResult) => void;
+  onSaved: (batchId: string | null, reference: string | null) => Promise<void>;
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const isEurPayment = event.originalCurrency.trim().toUpperCase() === "EUR";
-  const originalAmount = event.originalAmount ?? 0;
+  const originalAmount = event.pendingAmountOriginal ?? event.originalAmount ?? 0;
   const activeCreditLines = creditLines.filter(
-    (line) => line.status.trim().toLowerCase() === "activa",
+    (line) => ["activa", "activo", "active"].includes(line.status.trim().toLowerCase()),
   );
-  const defaultSourceType: SupplierPaymentFundingSourceType =
-    event.recommendedSource === "cash" || cashAccounts.length > 0
-      ? "cash_account"
-      : "credit_line";
   const [sourceType, setSourceType] =
-    useState<SupplierPaymentFundingSourceType>(defaultSourceType);
-  const [cashAccountId, setCashAccountId] = useState(cashAccounts[0]?.id ?? "");
-  const [creditLineId, setCreditLineId] = useState(activeCreditLines[0]?.id ?? "");
+    useState<SupplierPaymentFundingSourceType | "">("");
+  const [cashAccountId, setCashAccountId] = useState("");
+  const [creditLineId, setCreditLineId] = useState("");
   const [actualFxRate, setActualFxRate] = useState(isEurPayment ? "1" : "");
   const [actualAmountEur, setActualAmountEur] = useState(
     isEurPayment && originalAmount > 0 ? String(originalAmount) : "",
@@ -269,6 +268,10 @@ function PaymentModal({
       return;
     }
 
+    if (!sourceType) {
+      setError("Selecciona explícitamente una fuente financiera.");
+      return;
+    }
     if (sourceType === "cash_account" && !cashAccountId) {
       setError("Selecciona una caja o cuenta propia.");
       return;
@@ -357,7 +360,10 @@ function PaymentModal({
       if (!res.ok || !json.ok) {
         throw new Error(json.error ?? "No se pudo marcar el pago");
       }
-      onSaved(json.payment as MarkSupplierPaymentPaidResult);
+      await onSaved(
+        json.financing?.batch_id ? String(json.financing.batch_id) : null,
+        bankReference.trim() || null,
+      );
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error desconocido");
@@ -475,11 +481,15 @@ function PaymentModal({
               <select
                 required
                 value={sourceType}
-                onChange={(e) =>
-                  setSourceType(e.target.value as SupplierPaymentFundingSourceType)
-                }
+                onChange={(e) => {
+                  const next = e.target.value as SupplierPaymentFundingSourceType | "";
+                  setSourceType(next);
+                  setCashAccountId("");
+                  setCreditLineId("");
+                }}
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
               >
+                <option value="">Selecciona una fuente</option>
                 {FUNDING_SOURCE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
@@ -504,7 +514,7 @@ function PaymentModal({
                   ))}
                 </select>
               </label>
-            ) : (
+            ) : sourceType === "credit_line" ? (
               <label className="text-xs font-medium text-slate-600">
                 Línea de crédito
                 <select
@@ -521,7 +531,7 @@ function PaymentModal({
                   ))}
                 </select>
               </label>
-            )}
+            ) : null}
             <label className="text-xs font-medium text-slate-600">
               Fecha de pago
               <input
@@ -581,7 +591,7 @@ function PaymentModal({
           ) : null}
 
           <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-xs text-sky-800">
-            Guarda el pago real en pagos proveedor. No crea movimientos de caja ni linea de credito en esta fase.
+            El pago, su aplicación a la obligación y el movimiento de caja o disposición de crédito se registrarán atómicamente.
           </div>
 
           <div className="flex justify-end gap-2">
@@ -825,10 +835,12 @@ function EventCard({
   event,
   onMarkPaid,
   onRepayCreditLine,
+  onViewBatch,
 }: {
   event: FinancePlanningEvent;
   onMarkPaid: (event: FinancePlanningEvent) => void;
   onRepayCreditLine: (event: FinancePlanningEvent) => void;
+  onViewBatch: (batchId: string) => void;
 }) {
   const canMarkSupplierPayment =
     event.canMarkPaid && event.status !== "pagado" && isSupplierPaymentEvent(event);
@@ -867,6 +879,12 @@ function EventCard({
                 ? `Saldo a pagar: ${eur(event.plannedAmountEur)}`
                 : eur(event.plannedAmountEur)}
           </div>
+          {showSupplierPaymentTrace ? (
+            <div className="mt-1 text-[11px] text-slate-500">
+              Pagado: {signedOriginalCurrency(event.allocatedAmountOriginal ?? 0, event.originalCurrency).replace("+", "")}
+              {" · "}Pendiente: {signedOriginalCurrency(event.pendingAmountOriginal ?? event.originalAmount ?? 0, event.originalCurrency).replace("+", "")}
+            </div>
+          ) : null}
         </div>
         <div>
           <div className="text-slate-400">
@@ -915,7 +933,7 @@ function EventCard({
         <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-2 text-[11px] text-slate-600">
           <div>
             <span className="block text-slate-400">Tipo de cambio real</span>
-            <b>{event.actualFxRate ?? "-"}</b>
+            <b>{event.actualFxRate ?? "-"}{event.actualFxRateIsWeighted ? " (medio ponderado)" : ""}</b>
           </div>
           <div>
             <span className="block text-slate-400">Fecha efectiva</span>
@@ -937,6 +955,10 @@ function EventCard({
             <span className="block text-slate-400">Gastos FF</span>
             <b>{event.ffFeeEur != null ? eur(event.ffFeeEur) : "-"}</b>
           </div>
+          <div>
+            <span className="block text-slate-400">Pagos vinculados</span>
+            <b>{event.linkedBatchCount ?? 0}</b>
+          </div>
         </div>
       ) : null}
       <div className="mt-3 flex items-center justify-between gap-2">
@@ -946,6 +968,15 @@ function EventCard({
             <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700">
               {financeLabel}
             </span>
+          ) : null}
+          {event.latestBatchId ? (
+            <button
+              type="button"
+              onClick={() => onViewBatch(event.latestBatchId!)}
+              className="inline-flex items-center gap-1 border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Ver pagos vinculados
+            </button>
           ) : null}
           {canMarkSupplierPayment ? (
             <button
@@ -979,6 +1010,7 @@ export function FinancialPlanningPage() {
     useState<FinancePlanningEvent | null>(null);
   const [selectedRepaymentEvent, setSelectedRepaymentEvent] = useState<FinancePlanningEvent | null>(null);
   const [linkedPaymentOpen, setLinkedPaymentOpen] = useState(false);
+  const [detailBatchId, setDetailBatchId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [filters, setFilters] = useState<FinanceFiltersState>(EMPTY_FILTERS);
   const [urlFiltersReady, setUrlFiltersReady] = useState(false);
@@ -1009,83 +1041,6 @@ export function FinancialPlanningPage() {
     setData(json);
   }, []);
 
-  const patchAfterSupplierPayment = useCallback(
-    (payment: MarkSupplierPaymentPaidResult) => {
-      setData((current) => {
-        if (!current) return current;
-        const allEvents = current.months.flatMap((month) => [
-          ...month.events,
-          ...month.pendingDateEvents,
-        ]);
-        const previous = allEvents.find((event) => event.id === payment.id);
-        if (!previous) return current;
-
-        const actualAmountEur = Number(payment.actual_amount_eur);
-        const actualFxRate = Number(payment.actual_fx_rate);
-        const patchEvent = (event: FinancePlanningEvent): FinancePlanningEvent => {
-          if (event.id === payment.id) {
-            return {
-              ...event,
-              status: "pagado",
-              actualAmountEur,
-              paidAmountEur: actualAmountEur,
-              actualFxRate,
-              paidAt: payment.paid_at,
-              paymentSource: payment.payment_source as FinancePlanningEvent["paymentSource"],
-              paymentSourceType:
-                payment.payment_source_type === "cash_account" ||
-                payment.payment_source_type === "credit_line"
-                  ? payment.payment_source_type
-                  : null,
-              paymentCashAccountId: payment.cash_account_id ?? null,
-              paymentCreditLineId: payment.credit_line_id ?? null,
-              bankReference: payment.bank_reference,
-              bankFeeEur: payment.bank_fee_eur,
-              ffFeeEur: payment.ff_fee_eur,
-              orderPaidRealEur: (event.orderPaidRealEur ?? 0) + actualAmountEur,
-            };
-          }
-          if (event.orderId === payment.orden_id && isSupplierPaymentEvent(event)) {
-            return {
-              ...event,
-              orderPaidRealEur: (event.orderPaidRealEur ?? 0) + actualAmountEur,
-            };
-          }
-          return event;
-        };
-
-        return {
-          ...current,
-          summary: {
-            ...current.summary,
-            pendingPayments: Math.max(
-              0,
-              current.summary.pendingPayments - previous.plannedAmountEur,
-            ),
-            paidPayments: current.summary.paidPayments + actualAmountEur,
-          },
-          months: current.months.map((month) => {
-            const containsTarget = [...month.events, ...month.pendingDateEvents]
-              .some((event) => event.id === payment.id);
-            return {
-              ...month,
-              totalPendingPayments: containsTarget
-                ? Math.max(0, month.totalPendingPayments - previous.plannedAmountEur)
-                : month.totalPendingPayments,
-              totalPaidPayments: containsTarget
-                ? month.totalPaidPayments + actualAmountEur
-                : month.totalPaidPayments,
-              events: month.events.map(patchEvent),
-              pendingDateEvents: month.pendingDateEvents.map(patchEvent),
-            };
-          }),
-        };
-      });
-      setSuccessMessage("Pago proveedor registrado correctamente.");
-    },
-    [],
-  );
-
   const openSupplierPaymentModal = useCallback((event: FinancePlanningEvent) => {
     if (!isSupplierPaymentEvent(event)) return;
     if (event.status === "pagado") return;
@@ -1100,6 +1055,16 @@ export function FinancialPlanningPage() {
   const refreshAfterCreditLineRepayment = useCallback(async (message: string) => {
     await reloadPlanning();
     setSuccessMessage(message);
+  }, [reloadPlanning]);
+
+  const refreshAfterIndividualPayment = useCallback(async (
+    batchId: string | null,
+    reference: string | null,
+  ) => {
+    await reloadPlanning();
+    setSuccessMessage(
+      `Pago proveedor registrado (${reference || batchId || "sin referencia"}). Planificación y saldos actualizados.`,
+    );
   }, [reloadPlanning]);
 
   const refreshAfterLinkedPayment = useCallback(async (batchId: string, reference: string | null) => {
@@ -1399,6 +1364,7 @@ export function FinancialPlanningPage() {
                       event={event}
                       onMarkPaid={openSupplierPaymentModal}
                       onRepayCreditLine={openCreditLineRepaymentModal}
+                      onViewBatch={setDetailBatchId}
                     />
                   ))
                 )}
@@ -1420,6 +1386,7 @@ export function FinancialPlanningPage() {
                   event={event}
                   onMarkPaid={openSupplierPaymentModal}
                   onRepayCreditLine={openCreditLineRepaymentModal}
+                  onViewBatch={setDetailBatchId}
                 />
               ))}
             </div>
@@ -1445,7 +1412,7 @@ export function FinancialPlanningPage() {
           cashAccounts={data.cashAccounts}
           creditLines={data.creditLines}
           onClose={() => setSelectedPaymentEvent(null)}
-          onSaved={patchAfterSupplierPayment}
+          onSaved={refreshAfterIndividualPayment}
         />
       ) : null}
       {selectedRepaymentEvent && canRepayCreditLineEvent(selectedRepaymentEvent) ? (
@@ -1460,6 +1427,12 @@ export function FinancialPlanningPage() {
         <LinkedPurchasePaymentModal
           onClose={() => setLinkedPaymentOpen(false)}
           onSaved={refreshAfterLinkedPayment}
+        />
+      ) : null}
+      {detailBatchId ? (
+        <PurchasePaymentBatchDetailModal
+          batchId={detailBatchId}
+          onClose={() => setDetailBatchId(null)}
         />
       ) : null}
     </main>

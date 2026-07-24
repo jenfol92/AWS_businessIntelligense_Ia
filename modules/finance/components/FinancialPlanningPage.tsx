@@ -12,6 +12,7 @@ import {
   Landmark,
   Package,
   Search,
+  Link2,
   TrendingUp,
   X,
 } from "lucide-react";
@@ -25,6 +26,7 @@ import type { MarkSupplierPaymentPaidResult } from "../types/supplierPaymentExec
 import type { SupplierPaymentFundingSourceType } from "../types/supplierPaymentExecution.types";
 import { LOGISTICS_LABELS } from "../utils/logisticsLabels";
 import { resolveSupplierPaymentActuals } from "../utils/resolveSupplierPaymentActuals";
+import { LinkedPurchasePaymentModal } from "./LinkedPurchasePaymentModal";
 
 const FUNDING_SOURCE_OPTIONS: Array<{
   value: SupplierPaymentFundingSourceType;
@@ -976,6 +978,7 @@ export function FinancialPlanningPage() {
   const [selectedPaymentEvent, setSelectedPaymentEvent] =
     useState<FinancePlanningEvent | null>(null);
   const [selectedRepaymentEvent, setSelectedRepaymentEvent] = useState<FinancePlanningEvent | null>(null);
+  const [linkedPaymentOpen, setLinkedPaymentOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [filters, setFilters] = useState<FinanceFiltersState>(EMPTY_FILTERS);
   const [urlFiltersReady, setUrlFiltersReady] = useState(false);
@@ -1099,6 +1102,19 @@ export function FinancialPlanningPage() {
     setSuccessMessage(message);
   }, [reloadPlanning]);
 
+  const refreshAfterLinkedPayment = useCallback(async (batchId: string, reference: string | null) => {
+    try {
+      await reloadPlanning();
+      setSuccessMessage(
+        `Pago vinculado registrado (${reference || batchId}). Planificación y saldos actualizados.`,
+      );
+    } catch {
+      setSuccessMessage(
+        `Pago vinculado registrado (${reference || batchId}), pero la pantalla no pudo actualizarse. Recarga los datos; no repitas el pago.`,
+      );
+    }
+  }, [reloadPlanning]);
+
   useEffect(() => {
     loadPlanning();
   }, [loadPlanning]);
@@ -1212,6 +1228,14 @@ export function FinancialPlanningPage() {
             <p className="mt-1 text-sm text-slate-500">
               Pagos de contenedores, liberaciones de lineas e ingresos previstos. No se recomienda por coste hasta configurar comisiones/intereses.
             </p>
+            <button
+              type="button"
+              onClick={() => setLinkedPaymentOpen(true)}
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+            >
+              <Link2 className="h-4 w-4" />
+              Crear pago vinculado
+            </button>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1430,6 +1454,12 @@ export function FinancialPlanningPage() {
           cashAccounts={data.cashAccounts}
           onClose={() => setSelectedRepaymentEvent(null)}
           onSaved={refreshAfterCreditLineRepayment}
+        />
+      ) : null}
+      {linkedPaymentOpen ? (
+        <LinkedPurchasePaymentModal
+          onClose={() => setLinkedPaymentOpen(false)}
+          onSaved={refreshAfterLinkedPayment}
         />
       ) : null}
     </main>

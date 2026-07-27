@@ -1,4 +1,5 @@
 import type { FinanceCreditLine, FinancePaymentSource } from "@/modules/finance/types/planning.types";
+import { isActiveCreditLineStatus } from "@/modules/finance/utils/creditLineStatus";
 
 export function mapBankToPaymentSource(bankName: string): FinancePaymentSource {
   const lower = bankName.toLowerCase();
@@ -13,11 +14,9 @@ export function recommendCreditLineForAmount(
   creditLines: FinanceCreditLine[],
   cashBalance: number,
 ): { line: FinanceCreditLine | null; source: FinancePaymentSource | null; reason: string } {
-  const availableLines = creditLines.filter((line) => {
-    const status = line.status.trim().toLowerCase();
-    const isActive = status === "activa" || status === "activo" || status === "active";
-    return isActive && line.availableAmount >= amount;
-  });
+  const availableLines = creditLines.filter(
+    (line) => isActiveCreditLineStatus(line.status) && line.availableAmount >= amount,
+  );
   if (availableLines.length > 0) {
     const selected = availableLines[0];
     return {

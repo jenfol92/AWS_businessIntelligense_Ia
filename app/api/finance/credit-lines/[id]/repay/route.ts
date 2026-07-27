@@ -44,6 +44,8 @@ function ledgerErrorResponse(error: CreditLineLedgerError) {
           || error.code === "MISSING_CASH_ACCOUNT"
           || error.code === "DIRECT_DML_FORBIDDEN"
           ? 422
+          : error.code === "IDEMPOTENCY_PAYLOAD_MISMATCH"
+            ? 409
           : 409;
   return NextResponse.json({ ok: false, error: error.message, code: error.code }, { status });
 }

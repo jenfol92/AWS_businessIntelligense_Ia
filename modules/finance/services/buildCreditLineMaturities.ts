@@ -8,6 +8,10 @@ import type {
   CreditLineMaturitySummary,
   CreditLineMaturityVisualStatus,
 } from "../types/creditLineMaturities.types";
+import {
+  creditLineDrawdownAllowed,
+  isDeletedCreditLineStatus,
+} from "@/modules/finance/utils/creditLineStatus";
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -35,21 +39,6 @@ function monthEnd(iso: string): string {
   d.setUTCMonth(d.getUTCMonth() + 1);
   d.setUTCDate(0);
   return d.toISOString().slice(0, 10);
-}
-
-function isActiveLineStatus(status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  return normalized === "activa" || normalized === "activo" || normalized === "active";
-}
-
-function isDeletedLineStatus(status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  return (
-    normalized === "eliminada"
-    || normalized === "deleted"
-    || normalized === "cancelled"
-    || normalized === "cancelada"
-  );
 }
 
 function mapDisplayStatus(
@@ -150,11 +139,11 @@ export async function buildCreditLineMaturities(
   const { groups, legacyGaps } = await findOpenCreditLineMaturities(query);
 
   const allMaturities: CreditLineMaturity[] = groups
-    .filter((group) => !isDeletedLineStatus(group.line_status))
+    .filter((group) => !isDeletedCreditLineStatus(group.line_status))
     .filter((group) => group.status === "open" || group.status === "partially_paid")
     .map((group) => {
       const groupStatus = group.status as "open" | "partially_paid";
-      const lineAllowsDrawdown = isActiveLineStatus(group.line_status);
+      const lineAllowsDrawdown = creditLineDrawdownAllowed(group.line_status);
       return {
         id: group.id,
         creditLineId: group.credit_line_id,

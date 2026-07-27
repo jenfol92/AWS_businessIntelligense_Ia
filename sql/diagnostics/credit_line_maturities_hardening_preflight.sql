@@ -1,4 +1,4 @@
--- READ-ONLY preflight before applying credit-line maturity hardening.
+-- READ-ONLY preflight before applying credit-line maturity hardening / runtime invariants.
 -- Do not mutate data. Run in test DB before migrations.
 
 -- 1) Duplicate idempotency keys (must be 0 before unique index)
@@ -34,8 +34,12 @@ FROM (
 CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE')) AS p(privilege_type)
 ORDER BY 1, 2;
 
--- 4) Function signatures present
-SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args
+-- 4) Function signatures + EXECUTE grants
+SELECT
+  p.proname,
+  pg_get_function_identity_arguments(p.oid) AS args,
+  has_function_privilege('authenticated', p.oid, 'EXECUTE') AS authenticated_execute,
+  has_function_privilege('service_role', p.oid, 'EXECUTE') AS service_role_execute
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = 'public'
@@ -43,6 +47,60 @@ WHERE n.nspname = 'public'
     'finance_create_credit_line_drawdown',
     'finance_create_credit_line_repayment',
     'create_and_apply_purchase_payment_batch',
-    'mark_and_finance_supplier_payment'
+    'mark_and_finance_supplier_payment',
+    'finance_register_legacy_opening_balance'
   )
 ORDER BY 1, 2;
+
+-- 5) Numeric precision/scale for money columns (unbounded numeric => null precision)
+-- Compatible ceiling used by finance_assert_finite_money: 9999999999.9999 (round 4),
+-- aligned with create_and_apply_purchase_payment_batch abs >= 1e10 reject.
+SELECT
+  c.table_name,
+  c.column_name,
+  c.data_type,
+  c.numeric_precision,
+  c.numeric_scale,
+  CASE
+    WHEN c.numeric_precision IS NULL THEN 'unbounded_numeric'
+    ELSE format('numeric(%s,%s)', c.numeric_precision, coalesce(c.numeric_scale, 0))
+  END AS storage_shape,
+  CASE
+    WHEN c.numeric_precision IS NULL THEN 9999999999.9999
+    ELSE power(10::numeric, c.numeric_precision - coalesce(c.numeric_scale, 0))
+         - power(10::numeric, -coalesce(c.numeric_scale, 0))
+  END AS derived_max_inclusive
+FROM information_schema.columns c
+WHERE c.table_schema = 'public'
+  AND (
+    (c.table_name = 'finance_credit_line_movements' AND c.column_name = 'amount')
+    OR (c.table_name = 'finance_credit_line_repayment_groups'
+        AND c.column_name IN ('amount', 'paid_amount', 'remaining_amount'))
+    OR (c.table_name = 'finance_credit_lines'
+        AND c.column_name IN ('credit_limit', 'used_amount', 'available_amount'))
+    OR (c.table_name = 'finance_cash_accounts' AND c.column_name = 'balance')
+    OR (c.table_name = 'finance_cash_movements' AND c.column_name = 'amount')
+  )
+ORDER BY c.table_name, c.column_name;
+
+-- 6) Most restrictive derived max among columns above
+SELECT min(derived_max_inclusive) AS most_restrictive_max
+FROM (
+  SELECT
+    CASE
+      WHEN c.numeric_precision IS NULL THEN 9999999999.9999
+      ELSE power(10::numeric, c.numeric_precision - coalesce(c.numeric_scale, 0))
+           - power(10::numeric, -coalesce(c.numeric_scale, 0))
+    END AS derived_max_inclusive
+  FROM information_schema.columns c
+  WHERE c.table_schema = 'public'
+    AND (
+      (c.table_name = 'finance_credit_line_movements' AND c.column_name = 'amount')
+      OR (c.table_name = 'finance_credit_line_repayment_groups'
+          AND c.column_name IN ('amount', 'paid_amount', 'remaining_amount'))
+      OR (c.table_name = 'finance_credit_lines'
+          AND c.column_name IN ('credit_limit', 'used_amount', 'available_amount'))
+      OR (c.table_name = 'finance_cash_accounts' AND c.column_name = 'balance')
+      OR (c.table_name = 'finance_cash_movements' AND c.column_name = 'amount')
+    )
+) s;

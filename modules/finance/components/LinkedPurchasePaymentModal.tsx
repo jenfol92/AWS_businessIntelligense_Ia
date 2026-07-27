@@ -84,7 +84,9 @@ export function LinkedPurchasePaymentModal({
   const orderCount = new Set(selectedRows.map((row) => row.orderId)).size;
   const supplierCount = new Set(selectedRows.map((row) => row.supplierId ?? row.supplierName)).size;
   const selectedCreditLine =
-    data?.creditLines.find((line) => line.id === creditLineId) ?? null;
+    (data?.creditLines ?? [])
+      .filter((line) => ["activa", "activo", "active"].includes(line.status.trim().toLowerCase()))
+      .find((line) => line.id === creditLineId) ?? null;
   const needsManualDueDate =
     sourceType === "credit_line"
     && selectedCreditLine != null
@@ -293,7 +295,7 @@ export function LinkedPurchasePaymentModal({
               <label className="flex items-center gap-2"><input type="radio" checked={sourceType === "cash_account"} onChange={() => { setSourceType("cash_account"); setCreditLineId(""); }} /> Cuenta propia</label>
               {sourceType === "cash_account" ? <select value={cashAccountId} onChange={(e) => setCashAccountId(e.target.value)} className="w-full border px-2 py-2"><option value="">Seleccionar cuenta</option>{data?.cashAccounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {money(account.balance, account.currency)}</option>)}</select> : null}
               <label className="flex items-center gap-2"><input type="radio" checked={sourceType === "credit_line"} onChange={() => { setSourceType("credit_line"); setCashAccountId(""); setManualDueDate(""); }} /> Línea de crédito</label>
-              {sourceType === "credit_line" ? <select value={creditLineId} onChange={(e) => { setCreditLineId(e.target.value); setManualDueDate(""); }} className="w-full border px-2 py-2"><option value="">Seleccionar línea</option>{data?.creditLines.map((line) => <option key={line.id} value={line.id}>{line.bankName} · {line.lineName} · {money(line.availableAmount, "EUR")}{line.cycleDays == null ? " · vencimiento manual" : ""}</option>)}</select> : null}
+              {sourceType === "credit_line" ? <select value={creditLineId} onChange={(e) => { setCreditLineId(e.target.value); setManualDueDate(""); }} className="w-full border px-2 py-2"><option value="">Seleccionar línea</option>{(data?.creditLines ?? []).filter((line) => ["activa", "activo", "active"].includes(line.status.trim().toLowerCase())).map((line) => <option key={line.id} value={line.id}>{line.bankName} · {line.lineName} · {money(line.availableAmount, "EUR")}{line.cycleDays == null ? " · vencimiento manual" : ""}</option>)}</select> : null}
               {needsManualDueDate ? (
                 <label className="block text-xs">
                   Fecha de vencimiento de la disposición

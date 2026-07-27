@@ -1,9 +1,20 @@
 /**
- * Shared finance input validators (UUID + real calendar dates).
+ * Shared finance input validators (UUID + real calendar dates + money bounds).
+ *
+ * Money ceiling is aligned with finance SQL RPCs and unbounded `numeric` columns
+ * (see sql/diagnostics/credit_line_maturities_hardening_preflight.sql):
+ * create_and_apply_purchase_payment_batch rejects abs(amount) >= 1e10.
+ * Amounts are rounded to 4 decimal places before compare/store.
  */
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Exclusive absolute bound (same as purchase payment batch RPCs). */
+export const FINANCE_MONEY_ABS_EXCLUSIVE_LIMIT = 1e10;
+
+/** Max finite value accepted after round(..., 4). */
+export const FINANCE_MONEY_MAX_AFTER_ROUND = 9999999999.9999;
 
 export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value.trim());
@@ -45,11 +56,13 @@ export function assertDateRange(from: string | null, to: string | null): void {
   }
 }
 
-export function isFinitePositiveMoney(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 && Math.abs(value) <= 1e12;
-}
-
 export function roundMoney(value: number, decimals = 4): number {
   const factor = 10 ** decimals;
   return Math.round(value * factor) / factor;
+}
+
+export function isFinitePositiveMoney(value: unknown): value is number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return false;
+  const rounded = roundMoney(value);
+  return rounded > 0 && rounded <= FINANCE_MONEY_MAX_AFTER_ROUND;
 }

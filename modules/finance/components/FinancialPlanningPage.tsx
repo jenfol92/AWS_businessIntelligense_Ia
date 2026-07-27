@@ -25,6 +25,10 @@ import type {
 import type { SupplierPaymentFundingSourceType } from "../types/supplierPaymentExecution.types";
 import { LOGISTICS_LABELS } from "../utils/logisticsLabels";
 import { resolveSupplierPaymentActuals } from "../utils/resolveSupplierPaymentActuals";
+import {
+  creditLineNonDrawdownDebtLabel,
+  isActiveCreditLineStatus,
+} from "../utils/creditLineStatus";
 import { LinkedPurchasePaymentModal } from "./LinkedPurchasePaymentModal";
 import { PurchasePaymentBatchDetailModal } from "./PurchasePaymentBatchDetailModal";
 import { CreditLineMaturitiesSection } from "./CreditLineMaturitiesSection";
@@ -216,8 +220,8 @@ function PaymentModal({
   const today = new Date().toISOString().slice(0, 10);
   const isEurPayment = event.originalCurrency.trim().toUpperCase() === "EUR";
   const originalAmount = event.pendingAmountOriginal ?? event.originalAmount ?? 0;
-  const activeCreditLines = creditLines.filter(
-    (line) => ["activa", "activo", "active"].includes(line.status.trim().toLowerCase()),
+  const activeCreditLines = creditLines.filter((line) =>
+    isActiveCreditLineStatus(line.status),
   );
   const [sourceType, setSourceType] =
     useState<SupplierPaymentFundingSourceType | "">("");
@@ -1033,16 +1037,20 @@ export function FinancialPlanningPage() {
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-[11px] text-slate-500">Limite credito</div>
-              <div className="text-sm font-bold text-slate-900">{eur(data.summary.totalCreditLimit)}</div>
+              <div className="text-[11px] text-slate-500">Limite activo</div>
+              <div className="text-sm font-bold text-slate-900">
+                {eur(data.summary.totalActiveCreditLimit ?? data.summary.totalCreditLimit)}
+              </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-[11px] text-slate-500">Dispuesto</div>
+              <div className="text-[11px] text-slate-500">Dispuesto (todas)</div>
               <div className="text-sm font-bold text-slate-900">{eur(data.summary.totalCreditUsed)}</div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-[11px] text-slate-500">Disponible</div>
-              <div className="text-sm font-bold text-emerald-700">{eur(data.summary.totalCreditAvailable)}</div>
+              <div className="text-[11px] text-slate-500">Disponible activo</div>
+              <div className="text-sm font-bold text-emerald-700">
+                {eur(data.summary.totalActiveCreditAvailable ?? data.summary.totalCreditAvailable)}
+              </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-3">
               <div className="text-[11px] text-slate-500">Caja propia</div>
@@ -1058,25 +1066,40 @@ export function FinancialPlanningPage() {
         />
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-          {data.creditLines.map((line) => (
+          {data.creditLines.map((line) => {
+            const allowsDrawdown = isActiveCreditLineStatus(line.status);
+            const debtNote = creditLineNonDrawdownDebtLabel(line.status);
+            return (
             <div key={line.id} className="rounded-lg border border-slate-200 bg-white p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-sm font-semibold text-slate-900">{line.bankName}</h2>
                   <p className="text-xs text-slate-500">{line.lineName}</p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Estado: {line.status}</p>
                 </div>
                 <Landmark className="h-5 w-5 text-slate-400" />
               </div>
               <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                 <div><span className="block text-slate-400">Limite</span><b>{eur(line.creditLimit)}</b></div>
                 <div><span className="block text-slate-400">Usado</span><b>{eur(line.usedAmount)}</b></div>
-                <div><span className="block text-slate-400">Libre</span><b>{eur(line.availableAmount)}</b></div>
+                <div>
+                  <span className="block text-slate-400">
+                    {allowsDrawdown ? "Libre" : "Libre (no usable)"}
+                  </span>
+                  <b className={allowsDrawdown ? undefined : "text-slate-400"}>
+                    {eur(line.availableAmount)}
+                  </b>
+                </div>
               </div>
               <p className="mt-3 text-[11px] text-slate-500">
                 {line.cycleDays ? `Ciclo aprox. ${line.cycleDays} dias.` : "Fechas configuradas"} Coste pendiente de configurar.
               </p>
+              {debtNote ? (
+                <p className="mt-2 text-[11px] text-amber-800">{debtNote}</p>
+              ) : null}
             </div>
-          ))}
+            );
+          })}
         </section>
 
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">

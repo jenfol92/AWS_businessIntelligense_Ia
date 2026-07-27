@@ -126,8 +126,21 @@ export type FinanceMonthBucket = {
 };
 
 export type FinancePlanningSummary = {
-  totalCreditLimit: number;
+  /** Limite contractual de lineas activas (admiten disposicion). */
+  totalActiveCreditLimit: number;
+  /** Deuda dispuesta de todas las lineas no eliminadas (incluye canceladas/inactivas). */
   totalCreditUsed: number;
+  /** Disponible usable solo de lineas activas. */
+  totalActiveCreditAvailable: number;
+  /**
+   * Alias de totalActiveCreditLimit (compat UI).
+   * No incluye limite de lineas canceladas/inactivas.
+   */
+  totalCreditLimit: number;
+  /**
+   * Alias de totalActiveCreditAvailable (compat UI).
+   * Nunca incluye disponible matematico de lineas no activas.
+   */
   totalCreditAvailable: number;
   cashBalance: number;
   pendingPayments: number;

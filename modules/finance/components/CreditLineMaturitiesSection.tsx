@@ -10,6 +10,7 @@ import type {
   CreditLineMaturityFilter,
   CreditLineMaturityVisualStatus,
 } from "../types/creditLineMaturities.types";
+import { creditLineNonDrawdownDebtLabel } from "../utils/creditLineStatus";
 
 const MATURITY_FILTERS: Array<{ value: CreditLineMaturityFilter; label: string }> = [
   { value: "all", label: "Todos" },
@@ -186,10 +187,12 @@ export function CreditLineRepaymentModal({
             <h2 className="text-base font-semibold text-slate-900">Pagar linea de credito</h2>
             <p className="text-xs text-slate-500">
               {maturity.bankName} / {maturity.lineName}
-              {!maturity.lineAllowsDrawdown
-                ? ` · Linea ${maturity.lineStatus || "inactiva"} (deuda pagable)`
-                : null}
             </p>
+            {!maturity.lineAllowsDrawdown ? (
+              <p className="text-[11px] text-amber-800 mt-1">
+                {creditLineNonDrawdownDebtLabel(maturity.lineStatus)}
+              </p>
+            ) : null}
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700">
             Cerrar
@@ -434,8 +437,8 @@ export function CreditLineMaturitiesSection({
                   {maturity.bankName} / {maturity.lineName}
                 </h3>
                 {!maturity.lineAllowsDrawdown ? (
-                  <p className="text-[11px] text-slate-600">
-                    Linea {maturity.lineStatus || "inactiva"} · sin nuevas disposiciones · deuda pagable
+                  <p className="text-[11px] text-amber-800">
+                    {creditLineNonDrawdownDebtLabel(maturity.lineStatus)}
                   </p>
                 ) : null}
                 {maturity.isLegacyOpeningBalance ? (

@@ -1,8 +1,10 @@
 import { findFinancialPlanningData } from "../repositories/financialPlanningRepository";
 import { backfillMissingSupplierPayments } from "./syncSupplierPaymentsForOrder";
 import {
-  recommendCreditLineForAmount,
-} from "./syncCreditLineDueFromSupplierPayment";
+  isActiveCreditLineStatus,
+  isDeletedCreditLineStatus,
+} from "@/modules/finance/utils/creditLineStatus";
+import { recommendCreditLineForAmount } from "./syncCreditLineDueFromSupplierPayment";
 import { getSupplierPaymentPercentLabel } from "../types/supplierPayments.types";
 import type { SupplierPaymentType } from "../types/supplierPayments.types";
 import type {
@@ -155,21 +157,6 @@ function supplierPaymentSource(value: unknown): FinancePaymentSource | null {
     return value;
   }
   return null;
-}
-
-function isActiveCreditLineStatus(value: unknown): boolean {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  return normalized === "activa" || normalized === "activo" || normalized === "active";
-}
-
-function isDeletedCreditLineStatus(value: unknown): boolean {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  return (
-    normalized === "eliminada"
-    || normalized === "deleted"
-    || normalized === "cancelled"
-    || normalized === "cancelada"
-  );
 }
 
 function dateToMonth(date: string | null): string | null {
@@ -706,7 +693,7 @@ export async function buildFinancialPlanning(
   console.log("[finance/planning] backfill completed", backfillResult);
   const raw = await findFinancialPlanningData(query);
   const allCreditLines: FinanceCreditLine[] = raw.creditLines
-    .filter((row) => !isDeletedCreditLineStatus(row["status"]))
+    .filter((row) => !isDeletedCreditLineStatus(String(row["status"] ?? "")))
     .map((row) => ({
       id: String(row["id"]),
       bankName: String(row["bank_name"] ?? ""),
@@ -722,7 +709,9 @@ export async function buildFinancialPlanning(
       notes: asString(row["notes"]),
     }));
   /** Solo lineas activas: disponibilidad usable para nuevas disposiciones. */
-  const creditLines = allCreditLines.filter((line) => isActiveCreditLineStatus(line.status));
+  const activeCreditLines = allCreditLines.filter((line) =>
+    isActiveCreditLineStatus(line.status),
+  );
   const cashAccounts: FinanceCashAccount[] = raw.cashAccounts.map((row) => ({
     id: String(row["id"]),
     name: String(row["name"] ?? ""),
@@ -732,15 +721,26 @@ export async function buildFinancialPlanning(
   const cashBalance = cashAccounts.reduce((sum, account) => sum + account.balance, 0);
   const globalFxRaw = raw.settings.find((row) => row["key"] === "planned_usd_eur_rate")?.["value"];
   const globalFxRate = globalFxRaw ? asNumber(globalFxRaw, 0) || null : null;
-  const totalCreditAvailable = creditLines.reduce((sum, line) => sum + line.availableAmount, 0);
+  const totalActiveCreditLimit = activeCreditLines.reduce(
+    (sum, line) => sum + line.creditLimit,
+    0,
+  );
+  const totalCreditUsed = allCreditLines.reduce((sum, line) => sum + line.usedAmount, 0);
+  const totalActiveCreditAvailable = activeCreditLines.reduce(
+    (sum, line) => sum + line.availableAmount,
+    0,
+  );
 
-  // Maturities include inactive lines with open debt; drawdown recommendations stay active-only.
+  // Maturities include inactive/cancelled lines with open debt; drawdown recommendations stay active-only.
   const repaymentGroupEvents = buildCreditLineRepaymentGroupEvents(raw, allCreditLines);
-  const creditLineInfoEvents = buildCreditLineInformationalEvents(creditLines, repaymentGroupEvents);
+  const creditLineInfoEvents = buildCreditLineInformationalEvents(
+    activeCreditLines,
+    repaymentGroupEvents,
+  );
 
   const events = [
-    ...buildSupplierPaymentEvents(raw, creditLines, cashBalance),
-    ...buildContainerLogisticsEvents(raw, creditLines, cashBalance),
+    ...buildSupplierPaymentEvents(raw, activeCreditLines, cashBalance),
+    ...buildContainerLogisticsEvents(raw, activeCreditLines, cashBalance),
     ...repaymentGroupEvents,
     ...creditLineInfoEvents,
   ];
@@ -782,7 +782,7 @@ export async function buildFinancialPlanning(
     datedEvents: datedPlanningEvents,
   } = partitionFinanceEventsByDate(events);
   let projectedCash = cashBalance;
-  let projectedCredit = totalCreditAvailable;
+  let projectedCredit = totalActiveCreditAvailable;
   const months = Array.from({ length: monthsCount }, (_, index) => {
     const d = addMonths(new Date(`${fromMonth}-01T00:00:00`), index);
     const month = d.toISOString().slice(0, 7);
@@ -840,9 +840,11 @@ export async function buildFinancialPlanning(
   return {
     ok: true,
     summary: {
-      totalCreditLimit: creditLines.reduce((sum, line) => sum + line.creditLimit, 0),
-      totalCreditUsed: creditLines.reduce((sum, line) => sum + line.usedAmount, 0),
-      totalCreditAvailable,
+      totalActiveCreditLimit,
+      totalCreditUsed,
+      totalActiveCreditAvailable,
+      totalCreditLimit: totalActiveCreditLimit,
+      totalCreditAvailable: totalActiveCreditAvailable,
       cashBalance,
       pendingPayments: horizonEvents
         .filter((event) => !event.isInformational && ["pendiente", "parcial", "vencido"].includes(event.status))
@@ -856,7 +858,7 @@ export async function buildFinancialPlanning(
       plannedUsdEurRate: globalFxRate,
       plannedUsdEurRateSource: globalFxRate ? "global_setting" : "not_configured",
     },
-    creditLines,
+    creditLines: allCreditLines,
     cashAccounts,
     months,
     pendingDateEvents,

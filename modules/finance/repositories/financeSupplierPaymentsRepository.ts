@@ -241,11 +241,9 @@ export async function voidPendingSupplierPaymentsForOrder(
   ordenId: string,
 ): Promise<void> {
   const supabase = createSupabaseRouteClient();
-  const { error } = await supabase
-    .from("finance_supplier_payments")
-    .delete()
-    .eq("orden_id", ordenId)
-    .in("status", ["pendiente", "vencido"]);
+  const { error } = await supabase.rpc("void_pending_supplier_payment_plan", {
+    p_order_id: ordenId,
+  });
 
   if (error) throw new Error(formatSupabaseError(error));
 }

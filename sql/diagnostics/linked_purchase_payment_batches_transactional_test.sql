@@ -68,6 +68,8 @@ DECLARE
   v_order_currency_mismatch uuid := gen_random_uuid();
   v_order_low_cash uuid := gen_random_uuid();
   v_order_low_credit uuid := gen_random_uuid();
+  v_order_multi_a uuid := gen_random_uuid();
+  v_order_multi_b uuid := gen_random_uuid();
   v_payment_a uuid := gen_random_uuid();
   v_payment_b uuid := gen_random_uuid();
   v_payment_other_agent uuid := gen_random_uuid();
@@ -76,6 +78,11 @@ DECLARE
   v_payment_currency_mismatch uuid := gen_random_uuid();
   v_payment_low_cash uuid := gen_random_uuid();
   v_payment_low_credit uuid := gen_random_uuid();
+  v_payment_multi_a uuid := gen_random_uuid();
+  v_payment_multi_b uuid := gen_random_uuid();
+  v_factory_a uuid := gen_random_uuid();
+  v_factory_b uuid := gen_random_uuid();
+  v_product_id uuid;
   v_cash_id uuid := gen_random_uuid();
   v_low_cash_id uuid := gen_random_uuid();
   v_credit_id uuid := gen_random_uuid();
@@ -89,10 +96,19 @@ BEGIN
   IF v_user_id IS NULL THEN
     RAISE EXCEPTION 'TEST_FIXTURE_REQUIRED: auth.users needs one test user';
   END IF;
+  SELECT id INTO v_product_id FROM public.productos ORDER BY created_at LIMIT 1;
+  IF v_product_id IS NULL THEN
+    RAISE EXCEPTION 'TEST_FIXTURE_REQUIRED: productos needs one test product for factory detail';
+  END IF;
 
   IF has_table_privilege('authenticated', 'public.finance_purchase_payment_batches', 'INSERT')
      OR has_table_privilege('authenticated', 'public.finance_purchase_payment_allocations', 'INSERT') THEN
     RAISE EXCEPTION 'ASSERT_FAILED: authenticated must not insert directly into batch tables';
+  END IF;
+  IF has_table_privilege('authenticated', 'public.finance_supplier_payments', 'INSERT')
+     OR has_table_privilege('authenticated', 'public.finance_supplier_payments', 'UPDATE')
+     OR has_table_privilege('authenticated', 'public.finance_supplier_payments', 'DELETE') THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: authenticated has direct supplier settlement writes';
   END IF;
   IF NOT has_function_privilege(
     'authenticated',
@@ -107,6 +123,8 @@ BEGIN
 
   INSERT INTO public.agentes_compra(id, contacto)
   VALUES (v_agent_a, 'TEST Batch Agent A'), (v_agent_b, 'TEST Batch Agent B');
+  INSERT INTO public.proveedores(id, nombre)
+  VALUES (v_factory_a, 'TEST Factory A'), (v_factory_b, 'TEST Factory B');
 
   INSERT INTO public.ordenes_compra(
     id, numero_orden, estado, agente_id, moneda_compra, fecha_orden
@@ -118,7 +136,14 @@ BEGIN
     (v_order_draft, 'TEST-BATCH-E', 'borrador', v_agent_a, 'USD', current_date),
     (v_order_currency_mismatch, 'TEST-BATCH-F', 'confirmado', v_agent_a, 'CNY', current_date),
     (v_order_low_cash, 'TEST-BATCH-G', 'confirmado', v_agent_a, 'USD', current_date),
-    (v_order_low_credit, 'TEST-BATCH-H', 'confirmado', v_agent_a, 'USD', current_date);
+    (v_order_low_credit, 'TEST-BATCH-H', 'confirmado', v_agent_a, 'USD', current_date),
+    (v_order_multi_a, 'TEST-BATCH-MULTI-A', 'confirmado', v_agent_a, 'USD', current_date),
+    (v_order_multi_b, 'TEST-BATCH-MULTI-B', 'confirmado', v_agent_a, 'USD', current_date);
+
+  INSERT INTO public.orden_items(orden_id, producto_id, proveedor_id, cantidad)
+  VALUES
+    (v_order_multi_a, v_product_id, v_factory_a, 1),
+    (v_order_multi_b, v_product_id, v_factory_b, 1);
 
   INSERT INTO public.finance_supplier_payments(
     id, orden_id, payment_type, amount_original, original_currency, amount_eur, status
@@ -130,7 +155,9 @@ BEGIN
     (v_payment_draft, v_order_draft, 'DEPOSITO_30', 1000, 'USD', 900, 'pendiente'),
     (v_payment_currency_mismatch, v_order_currency_mismatch, 'DEPOSITO_30', 1000, 'CNY', 120, 'pendiente'),
     (v_payment_low_cash, v_order_low_cash, 'DEPOSITO_30', 1000, 'USD', 900, 'pendiente'),
-    (v_payment_low_credit, v_order_low_credit, 'DEPOSITO_30', 1000, 'USD', 900, 'pendiente');
+    (v_payment_low_credit, v_order_low_credit, 'DEPOSITO_30', 1000, 'USD', 900, 'pendiente'),
+    (v_payment_multi_a, v_order_multi_a, 'DEPOSITO_30', 600, 'USD', 540, 'pendiente'),
+    (v_payment_multi_b, v_order_multi_b, 'DEPOSITO_30', 400, 'USD', 360, 'pendiente');
 
   INSERT INTO public.finance_cash_accounts(id, name, balance, currency)
   VALUES
@@ -147,6 +174,152 @@ BEGIN
   PERFORM set_config('request.jwt.claim.role', 'authenticated', true);
   PERFORM set_config('request.jwt.claim.sub', v_user_id::text, true);
   SET LOCAL ROLE authenticated;
+
+  -- La RPC publica debe rechazar numeric especiales antes de cualquier escritura.
+  -- Cada subtransaccion comprueba rollback de batch, allocation, movimiento y saldo.
+  FOREACH v_result IN ARRAY ARRAY[
+    jsonb_build_object(
+      'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+      'amount_original', 'NaN', 'original_currency', 'USD', 'actual_fx_rate', 0.9,
+      'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+      'idempotency_key', 'test-nan-amount',
+      'allocations', jsonb_build_array(jsonb_build_object(
+        'supplier_payment_id', v_payment_a, 'allocated_amount_original', 10000))
+    ),
+    jsonb_build_object(
+      'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+      'amount_original', 10000, 'original_currency', 'USD', 'actual_fx_rate', 'NaN',
+      'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+      'idempotency_key', 'test-nan-fx',
+      'allocations', jsonb_build_array(jsonb_build_object(
+        'supplier_payment_id', v_payment_a, 'allocated_amount_original', 10000))
+    ),
+    jsonb_build_object(
+      'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+      'amount_original', 10000, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
+      'bank_fee_eur', 'NaN', 'paid_at', now(), 'source_type', 'cash_account',
+      'cash_account_id', v_cash_id, 'idempotency_key', 'test-nan-fee',
+      'allocations', jsonb_build_array(jsonb_build_object(
+        'supplier_payment_id', v_payment_a, 'allocated_amount_original', 10000))
+    ),
+    jsonb_build_object(
+      'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+      'amount_original', 10000, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
+      'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+      'idempotency_key', 'test-nan-allocation',
+      'allocations', jsonb_build_array(jsonb_build_object(
+        'supplier_payment_id', v_payment_a, 'allocated_amount_original', 'NaN'))
+    )
+  ]
+  LOOP
+    v_failed := false;
+    BEGIN
+      PERFORM public.create_and_apply_purchase_payment_batch(v_result);
+    EXCEPTION WHEN OTHERS THEN
+      v_failed := SQLERRM LIKE 'INVALID_AMOUNT:%'
+        OR SQLERRM LIKE 'INVALID_ACTUAL_VALUES:%'
+        OR SQLERRM LIKE 'INVALID_FEE:%'
+        OR SQLERRM LIKE 'INVALID_ALLOCATION_AMOUNT:%';
+    END;
+    IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: non-finite numeric was accepted'; END IF;
+  END LOOP;
+  IF EXISTS (
+    SELECT 1 FROM public.finance_purchase_payment_batches
+    WHERE idempotency_key LIKE 'test-nan-%'
+  ) OR EXISTS (
+    SELECT 1 FROM public.finance_purchase_payment_allocations
+    WHERE supplier_payment_id = v_payment_a
+  ) OR EXISTS (
+    SELECT 1 FROM public.finance_cash_movements
+    WHERE source_type = 'purchase_payment_batch'
+      AND notes LIKE '%test-nan-%'
+  ) OR (SELECT balance FROM public.finance_cash_accounts WHERE id = v_cash_id) <> 100000 THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: rejected non-finite payload changed settlement state';
+  END IF;
+
+  -- Legacy manual: visible en planificacion general, nunca candidato ni liquidable.
+  UPDATE public.finance_supplier_payments
+  SET payment_source_type = 'manual'
+  WHERE id = v_payment_other_agent;
+  IF EXISTS (
+    SELECT 1 FROM public.get_purchase_payment_candidates(NULL)
+    WHERE supplier_payment_id = v_payment_other_agent
+  ) THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: legacy manual obligation appears as candidate';
+  END IF;
+  v_failed := false;
+  BEGIN
+    PERFORM public.create_and_apply_purchase_payment_batch(jsonb_build_object(
+      'payee_type', 'agent', 'agent_id', v_agent_b, 'entry_mode', 'selected_payments',
+      'amount_original', 1000, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
+      'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+      'idempotency_key', 'test-legacy-manual',
+      'allocations', jsonb_build_array(jsonb_build_object(
+        'supplier_payment_id', v_payment_other_agent, 'allocated_amount_original', 1000))
+    ));
+  EXCEPTION WHEN OTHERS THEN v_failed := SQLERRM LIKE 'LEGACY_MANUAL_PAYMENT:%';
+  END;
+  IF NOT v_failed OR EXISTS (
+    SELECT 1 FROM public.finance_purchase_payment_batches
+    WHERE idempotency_key = 'test-legacy-manual'
+  ) THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: legacy manual obligation was settled';
+  END IF;
+  UPDATE public.finance_supplier_payments SET payment_source_type = NULL
+  WHERE id = v_payment_other_agent;
+
+  -- Batch real multiorden/multifabrica: una transferencia, dos aplicaciones.
+  v_result := public.create_and_apply_purchase_payment_batch(jsonb_build_object(
+    'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+    'amount_original', 1000, 'original_currency', 'USD', 'actual_amount_eur', 900,
+    'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+    'idempotency_key', 'test-real-multi-order',
+    'allocations', jsonb_build_array(
+      jsonb_build_object('supplier_payment_id', v_payment_multi_a, 'allocated_amount_original', 600),
+      jsonb_build_object('supplier_payment_id', v_payment_multi_b, 'allocated_amount_original', 400)
+    )
+  ));
+  IF jsonb_array_length(v_result->'allocations') <> 2
+     OR (SELECT count(*) FROM public.finance_cash_movements
+         WHERE source_type = 'purchase_payment_batch'
+           AND source_id = (v_result->'batch'->>'id')::uuid) <> 1
+     OR (SELECT sum(allocated_amount_original) FROM public.finance_purchase_payment_allocations
+         WHERE batch_id = (v_result->'batch'->>'id')::uuid) <> 1000
+     OR (SELECT sum(allocated_amount_eur) FROM public.finance_purchase_payment_allocations
+         WHERE batch_id = (v_result->'batch'->>'id')::uuid) <> 900
+     OR (SELECT count(*) FROM public.finance_supplier_payments
+         WHERE id IN (v_payment_multi_a, v_payment_multi_b) AND status = 'pagado') <> 2
+     OR (v_result->'batch'->>'funded_total_eur')::numeric <> 900 THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: real multi-order batch integrity';
+  END IF;
+  v_result := public.get_purchase_payment_batch_detail((v_result->'batch'->>'id')::uuid);
+  IF v_result::text NOT LIKE '%TEST Factory A%'
+     OR v_result::text NOT LIKE '%TEST Factory B%' THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: both factories missing from batch detail';
+  END IF;
+
+  -- El mismo payload no puede mezclar Intracap/Yubei (agentes distintos).
+  v_failed := false;
+  BEGIN
+    PERFORM public.create_and_apply_purchase_payment_batch(jsonb_build_object(
+      'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+      'amount_original', 1400, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
+      'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+      'idempotency_key', 'test-multi-agent-rollback',
+      'allocations', jsonb_build_array(
+        jsonb_build_object('supplier_payment_id', v_payment_other_agent, 'allocated_amount_original', 1000),
+        jsonb_build_object('supplier_payment_id', v_payment_multi_b, 'allocated_amount_original', 400)
+      )
+    ));
+  EXCEPTION WHEN OTHERS THEN v_failed := SQLERRM LIKE 'AGENT_MISMATCH:%'
+    OR SQLERRM LIKE 'OBLIGATION_ALREADY_PAID:%';
+  END;
+  IF NOT v_failed OR EXISTS (
+    SELECT 1 FROM public.finance_purchase_payment_batches
+    WHERE idempotency_key = 'test-multi-agent-rollback'
+  ) THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: mixed-agent payload did not roll back';
+  END IF;
 
   -- Parcial: 4.000 de 10.000; comisiones no reducen principal.
   v_result := public.create_and_apply_purchase_payment_batch(jsonb_build_object(

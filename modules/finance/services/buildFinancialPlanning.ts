@@ -318,14 +318,17 @@ function buildSupplierPaymentEvents(
       dueDate,
     );
     const displayStatus = status;
+    // El flujo de caja historico agrupa pagos ejecutados por paid_at. dueDate se
+    // conserva aparte para el seguimiento de la obligacion.
+    const cashFlowDate = status === "pagado" ? paidAt ?? dueDate : dueDate;
 
     events.push({
       id: String(payment["id"]),
       type: mappedPaymentType.eventType,
       title,
-      date: dueDate,
-      month: dateToMonth(dueDate),
-      isPendingDate: !dueDate,
+      date: cashFlowDate,
+      month: dateToMonth(cashFlowDate),
+      isPendingDate: !cashFlowDate,
       status: displayStatus,
       containerId: asString(container?.["id"]) ?? asString(payment["contenedor_id"]),
       containerCode: asString(container?.["identificador_embarque"]),
@@ -541,13 +544,6 @@ function isSupplierOrContainerPayment(type: string): boolean {
 }
 
 function effectiveEventAmountEur(event: FinancePlanningEvent): number {
-  if (
-    (event.type === "supplier_deposit" || event.type === "supplier_balance") &&
-    event.status === "pagado"
-  ) {
-    return event.actualAmountEur ?? 0;
-  }
-
   return event.plannedAmountEur;
 }
 
@@ -659,6 +655,9 @@ export async function buildFinancialPlanning(
         projectedCash -= event.plannedAmountEur;
         projectedCredit += event.plannedAmountEur;
       }
+      // Los saldos iniciales ya incluyen settlements ejecutados. Solo se proyectan salidas futuras;
+      // los pagados se agrupan por paid_at para histórico y el due_date permanece en el detalle.
+      if (event.status === "pagado") continue;
       if (isSupplierOrContainerPayment(event.type) && event.recommendedSource === "cash") {
         projectedCash -= effectiveAmountEur;
       }

@@ -46,6 +46,18 @@ const individualRoute = readFileSync(
   new URL("../app/api/finance/supplier-payments/[id]/mark-paid/route.ts", import.meta.url),
   "utf8",
 );
+const integrityPreflight = readFileSync(
+  new URL("../sql/diagnostics/linked_purchase_payment_integrity_preflight.sql", import.meta.url),
+  "utf8",
+);
+const transactionalDiagnostic = readFileSync(
+  new URL("../sql/diagnostics/linked_purchase_payment_batches_transactional_test.sql", import.meta.url),
+  "utf8",
+);
+const supplierPaymentsRepository = readFileSync(
+  new URL("../modules/finance/repositories/financeSupplierPaymentsRepository.ts", import.meta.url),
+  "utf8",
+);
 
 const requiredSql = [
   "finance_purchase_payment_batches",
@@ -75,6 +87,13 @@ const requiredSql = [
   "resulting_status",
   "status = v_next_status",
   "'parcial'",
+  "finance_is_finite_numeric",
+  "INVALID_FEE",
+  "INVALID_ALLOCATION_AMOUNT",
+  "LEGACY_MANUAL_PAYMENT",
+  "PREFLIGHT_CONFLICTING_STATUS_CHECK",
+  "REVOKE INSERT, UPDATE, DELETE ON public.finance_supplier_payments FROM PUBLIC, anon, authenticated",
+  "void_pending_supplier_payment_plan",
 ];
 requiredSql.forEach((token) => assert.ok(migration.includes(token), `missing SQL contract: ${token}`));
 
@@ -84,6 +103,25 @@ assert.match(migration, /payee_type = 'agent'.*agent_id IS NOT NULL.*supplier_id
 assert.match(migration, /status <> 'reversed'/);
 assert.match(migration, /funded_total_eur = actual_amount_eur \+ bank_fee_eur \+ ff_fee_eur/);
 assert.match(migration, /GRANT EXECUTE.*authenticated, service_role/s);
+assert.match(migration, /coalesce\(sp\.payment_source_type, ''\) <> 'manual'/);
+assert.match(migration, /v_payment\.payment_source_type = 'manual'/);
+assert.match(supplierPaymentsRepository, /\.rpc\("void_pending_supplier_payment_plan"/);
+assert.doesNotMatch(
+  supplierPaymentsRepository,
+  /\.from\("finance_supplier_payments"\)[\s\S]{0,160}\.delete\(/,
+);
+for (const privilege of ["INSERT", "UPDATE", "DELETE"]) {
+  assert.match(integrityPreflight, new RegExp(`has_table_privilege\\('authenticated',[\\s\\S]*?'${privilege}'\\)`));
+}
+for (const rpc of [
+  "sync_supplier_payment_plan",
+  "mark_and_finance_supplier_payment",
+  "create_and_apply_purchase_payment_batch",
+  "get_purchase_payment_candidates",
+  "get_purchase_payment_batch_detail",
+]) {
+  assert.match(integrityPreflight, new RegExp(`'${rpc}'`));
+}
 assert.match(service, /payload\.payeeType !== "agent"/);
 assert.match(service, /sourceType === "manual"/);
 assert.match(modal, /useState<PurchasePaymentSourceType \| "">\(""\)/);
@@ -97,6 +135,12 @@ assert.match(planning, /status === "parcial"/);
 assert.match(planning, /mixedSources/);
 assert.match(planning, /weightedFxRate/);
 assert.match(planning, /partitionFinanceEventsByDate\(events\)/);
+assert.match(planning, /if \(event\.status === "pagado"\) continue;/);
+assert.match(planning, /status === "pagado" \? paidAt \?\? dueDate : dueDate/);
+assert.match(
+  planning,
+  /if \(event\.status === "pagado"\) continue;[\s\S]*?event\.recommendedSource === "cash"/,
+);
 assert.match(planningTypes, /pendingDateEvents: FinancePlanningEvent\[\]/);
 assert.match(migration, /a\.resulting_status/);
 assert.doesNotMatch(migration, /'resulting_status', sp\.status/);
@@ -110,6 +154,19 @@ assert.doesNotMatch(partialSyncBlock, /status = p_status/);
 assert.match(migration, /coalesce\(auth\.role\(\)/);
 assert.match(migration, /NOTIFY pgrst, 'reload schema'/);
 assert.match(individualRoute, /payment: result\.payment, financing: result/);
+for (const nanCase of [
+  "test-nan-amount",
+  "test-nan-fx",
+  "test-nan-fee",
+  "test-nan-allocation",
+]) {
+  assert.match(transactionalDiagnostic, new RegExp(nanCase));
+}
+assert.match(transactionalDiagnostic, /test-real-multi-order/);
+assert.match(transactionalDiagnostic, /jsonb_array_length\(v_result->'allocations'\) <> 2/);
+assert.match(transactionalDiagnostic, /TEST Factory A/);
+assert.match(transactionalDiagnostic, /TEST Factory B/);
+assert.match(transactionalDiagnostic, /test-multi-agent-rollback/);
 for (const field of [
   "batch_id",
   "source_type",
@@ -128,6 +185,21 @@ for (const code of [
   "INSUFFICIENT_CASH",
   "INSUFFICIENT_CREDIT",
   "UNAUTHORIZED",
+  "INVALID_PAYEE_TYPE",
+  "INVALID_IDEMPOTENCY_KEY",
+  "INVALID_AMOUNT",
+  "INVALID_ACTUAL_VALUES",
+  "INVALID_FEE",
+  "INVALID_ALLOCATIONS",
+  "INVALID_ALLOCATION_AMOUNT",
+  "ALLOCATION_SUM_MISMATCH",
+  "OBLIGATION_NOT_FOUND",
+  "ORDER_NOT_FOUND",
+  "CASH_ACCOUNT_NOT_FOUND",
+  "CREDIT_LINE_NOT_FOUND",
+  "INVALID_SOURCE",
+  "LEGACY_MANUAL_PAYMENT",
+  "PARTIAL_PAYMENT_PLAN_MISMATCH",
 ]) {
   assert.match(executionService, new RegExp(`${code}:`), `missing error mapping ${code}`);
 }

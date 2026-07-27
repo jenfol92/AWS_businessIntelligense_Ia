@@ -3,11 +3,38 @@
 
 BEGIN;
 
+DO $status_preflight$
+DECLARE
+  v_conflicts text;
+BEGIN
+  SELECT string_agg(c.conname || ': ' || pg_get_constraintdef(c.oid), E'\n')
+  INTO v_conflicts
+  FROM pg_constraint c
+  WHERE c.conrelid = 'public.finance_supplier_payments'::regclass
+    AND c.contype = 'c'
+    AND c.conname <> 'finance_supplier_payments_status_check'
+    AND pg_get_constraintdef(c.oid) ~* '\mstatus\M';
+  IF v_conflicts IS NOT NULL THEN
+    RAISE EXCEPTION 'PREFLIGHT_CONFLICTING_STATUS_CHECK: %', v_conflicts;
+  END IF;
+END;
+$status_preflight$;
+
 ALTER TABLE public.finance_supplier_payments
   DROP CONSTRAINT IF EXISTS finance_supplier_payments_status_check;
 ALTER TABLE public.finance_supplier_payments
   ADD CONSTRAINT finance_supplier_payments_status_check
   CHECK (status IN ('pendiente', 'parcial', 'pagado', 'vencido'));
+
+CREATE OR REPLACE FUNCTION public.finance_is_finite_numeric(p_value numeric)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT p_value IS NOT NULL
+    AND p_value::text NOT IN ('NaN', 'Infinity', '-Infinity');
+$$;
 
 CREATE TABLE public.finance_purchase_payment_batches (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -53,21 +80,31 @@ CREATE TABLE public.finance_purchase_payment_batches (
     CHECK (entry_mode IN ('free_amount', 'selected_payments')),
   CONSTRAINT finance_purchase_payment_batches_status_check
     CHECK (status IN ('posted', 'reversed')),
-  CONSTRAINT finance_purchase_payment_batches_amount_check CHECK (amount_original > 0),
-  CONSTRAINT finance_purchase_payment_batches_fx_check CHECK (actual_fx_rate > 0),
-  CONSTRAINT finance_purchase_payment_batches_eur_check CHECK (actual_amount_eur > 0),
-  CONSTRAINT finance_purchase_payment_batches_bank_fee_check CHECK (bank_fee_eur >= 0),
-  CONSTRAINT finance_purchase_payment_batches_ff_fee_check CHECK (ff_fee_eur >= 0),
+  CONSTRAINT finance_purchase_payment_batches_amount_check
+    CHECK (public.finance_is_finite_numeric(amount_original) AND amount_original > 0),
+  CONSTRAINT finance_purchase_payment_batches_fx_check
+    CHECK (public.finance_is_finite_numeric(actual_fx_rate) AND actual_fx_rate > 0),
+  CONSTRAINT finance_purchase_payment_batches_eur_check
+    CHECK (public.finance_is_finite_numeric(actual_amount_eur) AND actual_amount_eur > 0),
+  CONSTRAINT finance_purchase_payment_batches_bank_fee_check
+    CHECK (public.finance_is_finite_numeric(bank_fee_eur) AND bank_fee_eur >= 0),
+  CONSTRAINT finance_purchase_payment_batches_ff_fee_check
+    CHECK (public.finance_is_finite_numeric(ff_fee_eur) AND ff_fee_eur >= 0),
   CONSTRAINT finance_purchase_payment_batches_total_check
-    CHECK (funded_total_eur = actual_amount_eur + bank_fee_eur + ff_fee_eur)
+    CHECK (
+      public.finance_is_finite_numeric(funded_total_eur)
+      AND funded_total_eur = actual_amount_eur + bank_fee_eur + ff_fee_eur
+    )
 );
 
 CREATE TABLE public.finance_purchase_payment_allocations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   batch_id uuid NOT NULL REFERENCES public.finance_purchase_payment_batches(id) ON DELETE RESTRICT,
   supplier_payment_id uuid NOT NULL REFERENCES public.finance_supplier_payments(id) ON DELETE RESTRICT,
-  allocated_amount_original numeric(14, 4) NOT NULL CHECK (allocated_amount_original > 0),
-  allocated_amount_eur numeric(14, 2) NOT NULL CHECK (allocated_amount_eur > 0),
+  allocated_amount_original numeric(14, 4) NOT NULL
+    CHECK (public.finance_is_finite_numeric(allocated_amount_original) AND allocated_amount_original > 0),
+  allocated_amount_eur numeric(14, 2) NOT NULL
+    CHECK (public.finance_is_finite_numeric(allocated_amount_eur) AND allocated_amount_eur > 0),
   pending_before_original numeric(14, 4) NOT NULL CHECK (pending_before_original >= 0),
   pending_after_original numeric(14, 4) NOT NULL CHECK (pending_after_original >= 0),
   resulting_status text NOT NULL CHECK (resulting_status IN ('parcial', 'pagado')),
@@ -164,6 +201,7 @@ AS $$
   ) batch_refs ON true
   WHERE oc.estado = 'confirmado'
     AND oc.agente_id IS NOT NULL
+    AND coalesce(sp.payment_source_type, '') <> 'manual'
     AND sp.status NOT IN ('pagado')
     AND sp.amount_original - coalesce(alloc.allocated, 0) > 0.0001
     AND (
@@ -298,7 +336,19 @@ BEGIN
   v_paid_at := (p_payload->>'paid_at')::timestamptz;
 
   IF v_agent_id IS NULL THEN RAISE EXCEPTION 'MISSING_AGENT: agent_id is required'; END IF;
-  IF v_amount IS NULL OR v_amount <= 0 THEN RAISE EXCEPTION 'INVALID_AMOUNT: amount_original must be positive'; END IF;
+  IF NOT public.finance_is_finite_numeric(v_amount) OR v_amount <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT: amount_original must be finite and positive';
+  END IF;
+  IF v_actual_fx IS NOT NULL AND NOT public.finance_is_finite_numeric(v_actual_fx) THEN
+    RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: actual_fx_rate must be finite';
+  END IF;
+  IF v_actual_eur IS NOT NULL AND NOT public.finance_is_finite_numeric(v_actual_eur) THEN
+    RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: actual_amount_eur must be finite';
+  END IF;
+  IF NOT public.finance_is_finite_numeric(v_bank_fee) OR v_bank_fee < 0
+     OR NOT public.finance_is_finite_numeric(v_ff_fee) OR v_ff_fee < 0 THEN
+    RAISE EXCEPTION 'INVALID_FEE: fees must be finite and nonnegative';
+  END IF;
   IF v_currency = 'EUR' THEN
     IF v_actual_fx IS NOT NULL AND abs(v_actual_fx - 1) > 0.00000001 THEN
       RAISE EXCEPTION 'INCONSISTENT_ACTUAL_VALUES: EUR requires fx rate 1';
@@ -318,10 +368,14 @@ BEGIN
   ELSE
     v_actual_eur := round(v_actual_eur, 2);
   END IF;
-  IF v_actual_fx <= 0 OR v_actual_eur <= 0 OR v_bank_fee < 0 OR v_ff_fee < 0 THEN
+  IF NOT public.finance_is_finite_numeric(v_actual_fx) OR v_actual_fx <= 0
+     OR NOT public.finance_is_finite_numeric(v_actual_eur) OR v_actual_eur <= 0 THEN
     RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: actual amounts and fees are invalid';
   END IF;
   v_funded_total := v_actual_eur + v_bank_fee + v_ff_fee;
+  IF NOT public.finance_is_finite_numeric(v_funded_total) OR v_funded_total <= 0 THEN
+    RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: funded_total_eur must be finite and positive';
+  END IF;
 
   IF jsonb_typeof(p_payload->'allocations') <> 'array'
      OR jsonb_array_length(p_payload->'allocations') = 0 THEN
@@ -344,6 +398,9 @@ BEGIN
     SELECT * INTO v_payment FROM public.finance_supplier_payments
       WHERE id = (v_alloc->>'supplier_payment_id')::uuid;
     IF NOT FOUND THEN RAISE EXCEPTION 'OBLIGATION_NOT_FOUND: supplier payment not found'; END IF;
+    IF v_payment.payment_source_type = 'manual' THEN
+      RAISE EXCEPTION 'LEGACY_MANUAL_PAYMENT: legacy manual obligations are read-only';
+    END IF;
     SELECT * INTO v_order FROM public.ordenes_compra WHERE id = v_payment.orden_id;
     IF NOT FOUND THEN RAISE EXCEPTION 'ORDER_NOT_FOUND: obligation order not found'; END IF;
     IF v_order.estado <> 'confirmado' THEN
@@ -360,6 +417,12 @@ BEGIN
     WHERE a.supplier_payment_id = v_payment.id AND b.status <> 'reversed';
     v_pending := v_payment.amount_original - v_previous;
     v_alloc_original := (v_alloc->>'allocated_amount_original')::numeric;
+    IF NOT public.finance_is_finite_numeric(v_previous)
+       OR NOT public.finance_is_finite_numeric(v_pending)
+       OR NOT public.finance_is_finite_numeric(v_alloc_original)
+       OR v_alloc_original <= 0 THEN
+      RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT: allocation values must be finite and positive';
+    END IF;
     IF v_pending <= 0.0001 OR v_payment.status = 'pagado' THEN
       RAISE EXCEPTION 'OBLIGATION_ALREADY_PAID: obligation has no pending balance';
     END IF;
@@ -367,6 +430,9 @@ BEGIN
       RAISE EXCEPTION 'OVERALLOCATION: allocation exceeds real pending balance';
     END IF;
     v_alloc_sum := v_alloc_sum + v_alloc_original;
+    IF NOT public.finance_is_finite_numeric(v_alloc_sum) THEN
+      RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT: allocation sum must be finite';
+    END IF;
   END LOOP;
   IF abs(v_alloc_sum - v_amount) > 0.0001 THEN
     RAISE EXCEPTION 'ALLOCATION_SUM_MISMATCH: allocations must equal batch principal';
@@ -430,7 +496,16 @@ BEGIN
       THEN v_actual_eur - v_eur_assigned
       ELSE round(v_alloc_original * v_actual_fx, 2)
     END;
+    IF NOT public.finance_is_finite_numeric(v_pending)
+       OR NOT public.finance_is_finite_numeric(v_pending_after)
+       OR NOT public.finance_is_finite_numeric(v_alloc_eur)
+       OR v_alloc_eur <= 0 THEN
+      RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT: calculated allocation values must be finite and positive';
+    END IF;
     v_eur_assigned := v_eur_assigned + v_alloc_eur;
+    IF NOT public.finance_is_finite_numeric(v_eur_assigned) THEN
+      RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT: EUR allocation sum must be finite';
+    END IF;
     INSERT INTO public.finance_purchase_payment_allocations (
       batch_id, supplier_payment_id, allocated_amount_original, allocated_amount_eur,
       pending_before_original, pending_after_original, resulting_status
@@ -529,13 +604,18 @@ CREATE OR REPLACE FUNCTION public.sync_supplier_payment_plan(
 )
 RETURNS public.finance_supplier_payments
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
   v_payment public.finance_supplier_payments;
   v_currency text := upper(trim(coalesce(p_original_currency, '')));
 BEGIN
+  IF auth.uid() IS NULL
+     AND coalesce(auth.role(), current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED: authenticated user or service_role required'
+      USING ERRCODE = '42501';
+  END IF;
   IF p_order_id IS NULL THEN RAISE EXCEPTION 'INVALID_ORDER_ID: order_id is required'; END IF;
   IF p_payment_type NOT IN ('DEPOSITO_30', 'BALANCE_70') THEN
     RAISE EXCEPTION 'INVALID_PAYMENT_TYPE: unsupported payment type';
@@ -645,6 +725,9 @@ BEGIN
   WHERE id = p_supplier_payment_id
   FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'SUPPLIER_PAYMENT_NOT_FOUND: supplier payment not found'; END IF;
+  IF v_payment.payment_source_type = 'manual' THEN
+    RAISE EXCEPTION 'LEGACY_MANUAL_PAYMENT: legacy manual obligations are read-only';
+  END IF;
   IF p_order_id IS NOT NULL AND p_order_id <> v_payment.orden_id THEN
     RAISE EXCEPTION 'PAYMENT_ORDER_MISMATCH: payment does not belong to order';
   END IF;
@@ -714,24 +797,64 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.void_pending_supplier_payment_plan(p_order_id uuid)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_deleted integer;
+BEGIN
+  IF auth.uid() IS NULL
+     AND coalesce(auth.role(), current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED: authenticated user or service_role required'
+      USING ERRCODE = '42501';
+  END IF;
+  DELETE FROM public.finance_supplier_payments
+  WHERE orden_id = p_order_id
+    AND status IN ('pendiente', 'vencido')
+    AND coalesce(payment_source_type, '') <> 'manual'
+    AND NOT EXISTS (
+      SELECT 1 FROM public.finance_purchase_payment_allocations a
+      WHERE a.supplier_payment_id = finance_supplier_payments.id
+    );
+  GET DIAGNOSTICS v_deleted = ROW_COUNT;
+  RETURN v_deleted;
+END;
+$$;
+
 REVOKE ALL ON public.finance_purchase_payment_batches FROM PUBLIC, anon;
 REVOKE ALL ON public.finance_purchase_payment_allocations FROM PUBLIC, anon;
+REVOKE INSERT, UPDATE, DELETE ON public.finance_supplier_payments FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON public.finance_purchase_payment_batches TO authenticated, service_role;
 GRANT SELECT ON public.finance_purchase_payment_allocations TO authenticated, service_role;
 REVOKE EXECUTE ON FUNCTION public.get_purchase_payment_candidates(text) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.get_purchase_payment_batch_detail(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.create_and_apply_purchase_payment_batch(jsonb) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.sync_supplier_payment_plan(
+  uuid, text, date, numeric, text, numeric, numeric, text, uuid, text, text, boolean
+) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.void_pending_supplier_payment_plan(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.mark_and_finance_supplier_payment(
   uuid, uuid, timestamptz, numeric, numeric, text, numeric, numeric, text, text, uuid, uuid
 ) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_purchase_payment_candidates(text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.get_purchase_payment_batch_detail(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.create_and_apply_purchase_payment_batch(jsonb) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.sync_supplier_payment_plan(
+  uuid, text, date, numeric, text, numeric, numeric, text, uuid, text, text, boolean
+) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.void_pending_supplier_payment_plan(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.mark_and_finance_supplier_payment(
   uuid, uuid, timestamptz, numeric, numeric, text, numeric, numeric, text, text, uuid, uuid
 ) TO authenticated, service_role;
 
 ALTER FUNCTION public.create_and_apply_purchase_payment_batch(jsonb) OWNER TO postgres;
+ALTER FUNCTION public.sync_supplier_payment_plan(
+  uuid, text, date, numeric, text, numeric, numeric, text, uuid, text, text, boolean
+) OWNER TO postgres;
+ALTER FUNCTION public.void_pending_supplier_payment_plan(uuid) OWNER TO postgres;
 ALTER FUNCTION public.mark_and_finance_supplier_payment(
   uuid, uuid, timestamptz, numeric, numeric, text, numeric, numeric, text, text, uuid, uuid
 ) OWNER TO postgres;

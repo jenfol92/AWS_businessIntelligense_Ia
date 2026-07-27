@@ -123,6 +123,24 @@ export function purchasePaymentBatchErrorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   const code = message.match(/([A-Z][A-Z0-9_]+):/)?.[1];
   if (!code) return null;
-  const conflict = /ALREADY|MISMATCH|INSUFFICIENT|OVERALLOC|IDEMPOT/.test(code);
-  return { status: conflict ? 409 : 422, code, message: message.replace(`${code}:`, "").trim() };
+  const expectedStatus: Record<string, number> = {
+    INVALID_PAYEE_TYPE: 422,
+    INVALID_IDEMPOTENCY_KEY: 422,
+    INVALID_AMOUNT: 422,
+    INVALID_ACTUAL_VALUES: 422,
+    INVALID_FEE: 422,
+    INVALID_ALLOCATIONS: 422,
+    INVALID_ALLOCATION_AMOUNT: 422,
+    ALLOCATION_SUM_MISMATCH: 422,
+    OBLIGATION_NOT_FOUND: 404,
+    ORDER_NOT_FOUND: 404,
+    CASH_ACCOUNT_NOT_FOUND: 404,
+    CREDIT_LINE_NOT_FOUND: 404,
+    INVALID_SOURCE: 422,
+    LEGACY_MANUAL_PAYMENT: 409,
+    PARTIAL_PAYMENT_PLAN_MISMATCH: 409,
+  };
+  const status = expectedStatus[code]
+    ?? (/ALREADY|MISMATCH|INSUFFICIENT|OVERALLOC|IDEMPOT/.test(code) ? 409 : 422);
+  return { status, code, message: message.replace(`${code}:`, "").trim() };
 }

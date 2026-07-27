@@ -104,6 +104,21 @@ export function normalizePurchasePaymentBatchPayload(
   if (Number.isNaN(paidDate.getTime()) || paidDate.toISOString().slice(0, 10) !== paidAt) {
     fail("INVALID_PAID_AT", "paidAt no es una fecha valida.");
   }
+  const manualDueDateRaw = optionalText(payload.manualDueDate);
+  let manualDueDate: string | null = null;
+  if (manualDueDateRaw) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(manualDueDateRaw)) {
+      fail("INVALID_DATE", "manualDueDate debe tener formato YYYY-MM-DD.");
+    }
+    const dueDate = new Date(`${manualDueDateRaw}T00:00:00.000Z`);
+    if (Number.isNaN(dueDate.getTime()) || dueDate.toISOString().slice(0, 10) !== manualDueDateRaw) {
+      fail("INVALID_DATE", "manualDueDate no es una fecha valida.");
+    }
+    if (manualDueDateRaw < paidAt) {
+      fail("INVALID_DATE", "manualDueDate debe ser igual o posterior a paidAt.");
+    }
+    manualDueDate = manualDueDateRaw;
+  }
   const actualFxRate = optionalPositive(payload.actualFxRate, "actualFxRate");
   const actualAmountEur = optionalPositive(payload.actualAmountEur, "actualAmountEur");
   const originalCurrency = text(payload.originalCurrency, "originalCurrency").toUpperCase();
@@ -129,6 +144,7 @@ export function normalizePurchasePaymentBatchPayload(
     sourceType: sourceType as PurchasePaymentSourceType,
     cashAccountId,
     creditLineId,
+    manualDueDate,
     idempotencyKey: text(payload.idempotencyKey, "idempotencyKey"),
     allocations: allocations(payload.allocations),
   };
@@ -159,6 +175,8 @@ export function purchasePaymentBatchErrorResponse(error: unknown) {
     INVALID_UUID: 422,
     INVALID_PAID_AT: 422,
     INVALID_PLAN_CURRENCY: 422,
+    MANUAL_DUE_DATE_REQUIRED: 422,
+    INVALID_DATE: 422,
     IDEMPOTENCY_PAYLOAD_MISMATCH: 409,
     LEGACY_MANUAL_PAYMENT: 409,
     PARTIAL_PAYMENT_PLAN_MISMATCH: 409,

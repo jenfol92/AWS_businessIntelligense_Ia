@@ -6,14 +6,9 @@ import {
   fetchCreditLineById,
   fetchCreditLineMovementById,
   fetchRepaymentGroupById,
-  findOpenRepaymentGroupForDate,
-  insertCashMovement,
-  insertRepaymentGroup,
-  updateCashAccountBalance,
   type LedgerSupabaseClient,
 } from "@/modules/finance/repositories/creditLineLedgerRepository";
 import type {
-  CashAccountRow,
   CreateCashMovementInput,
   CreateCashMovementResult,
   CreateCreditLineDrawdownInput,
@@ -25,29 +20,28 @@ import type {
   RepaymentGroupRow,
 } from "@/modules/finance/types/creditLineLedger.types";
 import { CreditLineLedgerError } from "@/modules/finance/types/creditLineLedger.types";
-
-const EPSILON = 0.000001;
+import {
+  isFinitePositiveMoney,
+  isRealIsoDate,
+  roundMoney,
+} from "@/modules/finance/utils/financeInputValidation";
 
 function assertPositiveAmount(amount: number): void {
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new CreditLineLedgerError("El importe debe ser mayor que 0.", "INVALID_AMOUNT");
+  if (!isFinitePositiveMoney(amount)) {
+    throw new CreditLineLedgerError(
+      "El importe debe ser un numero finito mayor que 0.",
+      "INVALID_AMOUNT",
+    );
   }
 }
 
 function assertDate(value: string): void {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new CreditLineLedgerError("La fecha debe tener formato YYYY-MM-DD.", "INVALID_DATE");
+  if (!isRealIsoDate(value)) {
+    throw new CreditLineLedgerError(
+      "La fecha no es una fecha valida (YYYY-MM-DD).",
+      "INVALID_DATE",
+    );
   }
-}
-
-function addDays(date: string, days: number): string {
-  const d = new Date(`${date}T00:00:00.000Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-function roundMoney(value: number): number {
-  return Math.round(value * 10000) / 10000;
 }
 
 function requireCreditLine(line: CreditLineRow | null): CreditLineRow {
@@ -57,7 +51,9 @@ function requireCreditLine(line: CreditLineRow | null): CreditLineRow {
   return line;
 }
 
-function requireCashAccount(account: CashAccountRow | null): CashAccountRow {
+function requireCashAccount(
+  account: Awaited<ReturnType<typeof fetchCashAccountById>>,
+): NonNullable<Awaited<ReturnType<typeof fetchCashAccountById>>> {
   if (!account) {
     throw new CreditLineLedgerError("Cuenta de caja no encontrada.", "NOT_FOUND");
   }
@@ -76,9 +72,11 @@ const LEDGER_ERROR_CODES = [
   "GROUP_MISMATCH",
   "GROUP_CLOSED",
   "CREDIT_LINE_INACTIVE",
+  "CREDIT_LINE_DELETED",
   "MISSING_CASH_ACCOUNT",
   "MISSING_REPAYMENT_GROUP",
   "UNAUTHORIZED",
+  "IDEMPOTENCY_PAYLOAD_MISMATCH",
 ] as const;
 
 function translateLedgerRpcError(error: unknown): never {
@@ -100,71 +98,17 @@ function translateLedgerRpcError(error: unknown): never {
   throw error;
 }
 
+/**
+ * Legacy helper. Operative flows must use finance_create_credit_line_drawdown RPC.
+ * Direct DML is revoked for authenticated.
+ */
 export async function findOrCreateOpenRepaymentGroup(
-  input: FindOrCreateOpenRepaymentGroupInput & { manualDueDate?: string | null },
-  supabase?: LedgerSupabaseClient,
+  _input: FindOrCreateOpenRepaymentGroupInput & { manualDueDate?: string | null },
+  _supabase?: LedgerSupabaseClient,
 ): Promise<RepaymentGroupRow> {
-  assertDate(input.movementDate);
-
-  const creditLine = requireCreditLine(
-    await fetchCreditLineById(input.creditLineId, supabase),
-  );
-
-  if (creditLine.cycle_days == null) {
-    if (!input.manualDueDate) {
-      throw new CreditLineLedgerError(
-        "La linea requiere vencimiento manual porque no tiene cycle_days.",
-        "MANUAL_DUE_DATE_REQUIRED",
-      );
-    }
-    assertDate(input.manualDueDate);
-    if (input.manualDueDate < input.movementDate) {
-      throw new CreditLineLedgerError(
-        "La fecha de vencimiento manual debe ser igual o posterior a la disposicion.",
-        "INVALID_DATE",
-      );
-    }
-
-    const existingManual = await findOpenRepaymentGroupForDate(
-      {
-        creditLineId: input.creditLineId,
-        movementDate: input.movementDate,
-      },
-      supabase,
-    );
-    if (existingManual && existingManual.due_date === input.manualDueDate) {
-      return existingManual;
-    }
-
-    return insertRepaymentGroup(
-      {
-        creditLineId: input.creditLineId,
-        periodStart: input.movementDate,
-        periodEnd: input.manualDueDate,
-        dueDate: input.manualDueDate,
-      },
-      supabase,
-    );
-  }
-
-  const existingGroup = await findOpenRepaymentGroupForDate(
-    {
-      creditLineId: input.creditLineId,
-      movementDate: input.movementDate,
-    },
-    supabase,
-  );
-  if (existingGroup) return existingGroup;
-
-  const periodEnd = addDays(input.movementDate, creditLine.cycle_days);
-  return insertRepaymentGroup(
-    {
-      creditLineId: input.creditLineId,
-      periodStart: input.movementDate,
-      periodEnd,
-      dueDate: periodEnd,
-    },
-    supabase,
+  throw new CreditLineLedgerError(
+    "findOrCreateOpenRepaymentGroup esta bloqueado. Usa finance_create_credit_line_drawdown.",
+    "DIRECT_DML_FORBIDDEN",
   );
 }
 
@@ -177,7 +121,13 @@ export async function createCreditLineDrawdown(
   if (input.manualDueDate) assertDate(input.manualDueDate);
 
   try {
-    const rpcResult = await createCreditLineDrawdownRpc(input, supabase);
+    const rpcResult = await createCreditLineDrawdownRpc(
+      {
+        ...input,
+        amount: roundMoney(input.amount),
+      },
+      supabase,
+    );
     const [movement, repaymentGroup, creditLine] = await Promise.all([
       fetchCreditLineMovementById(rpcResult.movement_id, supabase),
       fetchRepaymentGroupById(rpcResult.repayment_group_id, supabase),
@@ -202,49 +152,17 @@ export async function createCreditLineDrawdown(
   }
 }
 
+/**
+ * Legacy helper. Cash movements must be created inside atomic RPCs.
+ */
 export async function createCashMovement(
-  input: CreateCashMovementInput,
-  supabase?: LedgerSupabaseClient,
+  _input: CreateCashMovementInput,
+  _supabase?: LedgerSupabaseClient,
 ): Promise<CreateCashMovementResult> {
-  assertPositiveAmount(input.amount);
-  assertDate(input.movementDate);
-
-  const cashAccountBefore = requireCashAccount(
-    await fetchCashAccountById(input.cashAccountId, supabase),
+  throw new CreditLineLedgerError(
+    "createCashMovement esta bloqueado. Usa RPCs atomicas (repayment/batch/mark-paid).",
+    "DIRECT_DML_FORBIDDEN",
   );
-  const balanceDelta = input.direction === "in" ? input.amount : -input.amount;
-  const nextBalance = roundMoney(cashAccountBefore.balance + balanceDelta);
-
-  if (input.direction === "out" && nextBalance < -EPSILON) {
-    throw new CreditLineLedgerError(
-      "La cuenta de caja no tiene saldo suficiente.",
-      "INSUFFICIENT_CASH",
-    );
-  }
-
-  const cashMovement = await insertCashMovement(
-    {
-      cashAccountId: input.cashAccountId,
-      movementType: input.movementType,
-      direction: input.direction,
-      amount: input.amount,
-      sourceType: input.sourceType ?? null,
-      sourceId: input.sourceId ?? null,
-      movementDate: input.movementDate,
-      notes: input.notes ?? null,
-    },
-    supabase,
-  );
-
-  const cashAccount = await updateCashAccountBalance(
-    {
-      cashAccountId: input.cashAccountId,
-      balance: Math.max(0, nextBalance),
-    },
-    supabase,
-  );
-
-  return { cashMovement, cashAccount };
 }
 
 export async function createCreditLineRepayment(
@@ -272,7 +190,13 @@ export async function createCreditLineRepayment(
   }
 
   try {
-    const rpcResult = await createCreditLineRepaymentRpc(input, supabase);
+    const rpcResult = await createCreditLineRepaymentRpc(
+      {
+        ...input,
+        amount: roundMoney(input.amount),
+      },
+      supabase,
+    );
     const [movement, cashMovement, repaymentGroup, creditLine, cashAccountAfter] =
       await Promise.all([
         fetchCreditLineMovementById(rpcResult.movement_id, supabase),

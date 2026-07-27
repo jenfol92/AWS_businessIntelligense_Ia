@@ -133,32 +133,17 @@ export async function fetchRepaymentGroupById(
 }
 
 export async function insertRepaymentGroup(
-  input: {
+  _input: {
     creditLineId: string;
     periodStart: string;
     periodEnd: string;
     dueDate: string;
   },
-  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+  _supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<RepaymentGroupRow> {
-  const { data, error } = await supabase
-    .from("finance_credit_line_repayment_groups")
-    .insert({
-      credit_line_id: input.creditLineId,
-      period_start: input.periodStart,
-      period_end: input.periodEnd,
-      due_date: input.dueDate,
-      amount: 0,
-      paid_amount: 0,
-      remaining_amount: 0,
-      status: "open",
-      updated_at: new Date().toISOString(),
-    })
-    .select("*")
-    .single();
-
-  throwIfError(error);
-  return data as RepaymentGroupRow;
+  throw new Error(
+    "DIRECT_DML_FORBIDDEN: insertRepaymentGroup blocked; use finance_create_credit_line_drawdown",
+  );
 }
 
 export async function createCreditLineDrawdownRpc(
@@ -260,7 +245,7 @@ export async function findExistingCreditLineMovement(
 }
 
 export async function insertCreditLineMovement(
-  input: {
+  _input: {
     creditLineId: string;
     movementType: CreditLineMovementType;
     description: string;
@@ -274,55 +259,27 @@ export async function insertCreditLineMovement(
     repaymentGroupId?: string | null;
     idempotencyKey?: string | null;
   },
-  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+  _supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<CreditLineMovementRow> {
-  const { data, error } = await supabase
-    .from("finance_credit_line_movements")
-    .insert({
-      credit_line_id: input.creditLineId,
-      movement_type: input.movementType,
-      description: input.description,
-      due_date: input.dueDate ?? null,
-      paid_at: input.paidAt ?? null,
-      amount: input.amount,
-      status: input.status,
-      source_type: input.sourceType ?? null,
-      source_id: input.sourceId ?? null,
-      movement_date: input.movementDate,
-      repayment_group_id: input.repaymentGroupId ?? null,
-      idempotency_key: input.idempotencyKey ?? null,
-      updated_at: new Date().toISOString(),
-    })
-    .select("*")
-    .single();
-
-  throwIfError(error);
-  return data as CreditLineMovementRow;
+  throw new Error(
+    "DIRECT_DML_FORBIDDEN: insertCreditLineMovement blocked; use finance_create_credit_line_* RPCs",
+  );
 }
 
 export async function updateCreditLineMovementCashMovement(
-  input: {
+  _input: {
     movementId: string;
     cashMovementId: string;
   },
-  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+  _supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<CreditLineMovementRow> {
-  const { data, error } = await supabase
-    .from("finance_credit_line_movements")
-    .update({
-      cash_movement_id: input.cashMovementId,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.movementId)
-    .select("*")
-    .single();
-
-  throwIfError(error);
-  return data as CreditLineMovementRow;
+  throw new Error(
+    "DIRECT_DML_FORBIDDEN: updateCreditLineMovementCashMovement blocked; use atomic RPCs",
+  );
 }
 
 export async function updateRepaymentGroupAmounts(
-  input: {
+  _input: {
     groupId: string;
     amount: number;
     paidAmount: number;
@@ -330,51 +287,28 @@ export async function updateRepaymentGroupAmounts(
     status: RepaymentGroupStatus;
     paidAt?: string | null;
   },
-  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+  _supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<RepaymentGroupRow> {
-  const { data, error } = await supabase
-    .from("finance_credit_line_repayment_groups")
-    .update({
-      amount: input.amount,
-      paid_amount: input.paidAmount,
-      remaining_amount: input.remainingAmount,
-      status: input.status,
-      paid_at: input.paidAt ?? null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.groupId)
-    .select("*")
-    .single();
-
-  throwIfError(error);
-  return data as RepaymentGroupRow;
+  throw new Error(
+    "DIRECT_DML_FORBIDDEN: updateRepaymentGroupAmounts blocked; use atomic RPCs",
+  );
 }
 
 export async function updateCreditLineBalances(
-  input: {
+  _input: {
     creditLineId: string;
     usedAmount: number;
     availableAmount: number;
   },
-  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+  _supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<CreditLineRow> {
-  const { data, error } = await supabase
-    .from("finance_credit_lines")
-    .update({
-      used_amount: input.usedAmount,
-      available_amount: input.availableAmount,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.creditLineId)
-    .select("id, bank_name, line_name, credit_limit, available_amount, used_amount, cycle_days, status")
-    .single();
-
-  throwIfError(error);
-  return data as CreditLineRow;
+  throw new Error(
+    "DIRECT_DML_FORBIDDEN: updateCreditLineBalances blocked; use atomic RPCs",
+  );
 }
 
 export async function insertCashMovement(
-  input: {
+  _input: {
     cashAccountId: string;
     movementType: CashMovementType;
     direction: CashMovementDirection;
@@ -384,45 +318,21 @@ export async function insertCashMovement(
     movementDate: string;
     notes?: string | null;
   },
-  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+  _supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<CashMovementRow> {
-  const { data, error } = await supabase
-    .from("finance_cash_movements")
-    .insert({
-      cash_account_id: input.cashAccountId,
-      movement_type: input.movementType,
-      direction: input.direction,
-      amount: input.amount,
-      source_type: input.sourceType ?? null,
-      source_id: input.sourceId ?? null,
-      movement_date: input.movementDate,
-      notes: input.notes ?? null,
-      updated_at: new Date().toISOString(),
-    })
-    .select("*")
-    .single();
-
-  throwIfError(error);
-  return data as CashMovementRow;
+  throw new Error(
+    "DIRECT_DML_FORBIDDEN: insertCashMovement blocked; use atomic RPCs",
+  );
 }
 
 export async function updateCashAccountBalance(
-  input: {
+  _input: {
     cashAccountId: string;
     balance: number;
   },
-  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+  _supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<CashAccountRow> {
-  const { data, error } = await supabase
-    .from("finance_cash_accounts")
-    .update({
-      balance: input.balance,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.cashAccountId)
-    .select("id, name, balance, currency")
-    .single();
-
-  throwIfError(error);
-  return data as CashAccountRow;
+  throw new Error(
+    "DIRECT_DML_FORBIDDEN: updateCashAccountBalance blocked; use atomic RPCs",
+  );
 }

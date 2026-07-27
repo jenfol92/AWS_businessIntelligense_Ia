@@ -162,6 +162,16 @@ function isActiveCreditLineStatus(value: unknown): boolean {
   return normalized === "activa" || normalized === "activo" || normalized === "active";
 }
 
+function isDeletedCreditLineStatus(value: unknown): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return (
+    normalized === "eliminada"
+    || normalized === "deleted"
+    || normalized === "cancelled"
+    || normalized === "cancelada"
+  );
+}
+
 function dateToMonth(date: string | null): string | null {
   return date ? date.slice(0, 7) : null;
 }
@@ -695,8 +705,8 @@ export async function buildFinancialPlanning(
   const backfillResult = await backfillMissingSupplierPayments();
   console.log("[finance/planning] backfill completed", backfillResult);
   const raw = await findFinancialPlanningData(query);
-  const creditLines: FinanceCreditLine[] = raw.creditLines
-    .filter((row) => isActiveCreditLineStatus(row["status"]))
+  const allCreditLines: FinanceCreditLine[] = raw.creditLines
+    .filter((row) => !isDeletedCreditLineStatus(row["status"]))
     .map((row) => ({
       id: String(row["id"]),
       bankName: String(row["bank_name"] ?? ""),
@@ -711,6 +721,8 @@ export async function buildFinancialPlanning(
       status: String(row["status"] ?? "activa"),
       notes: asString(row["notes"]),
     }));
+  /** Solo lineas activas: disponibilidad usable para nuevas disposiciones. */
+  const creditLines = allCreditLines.filter((line) => isActiveCreditLineStatus(line.status));
   const cashAccounts: FinanceCashAccount[] = raw.cashAccounts.map((row) => ({
     id: String(row["id"]),
     name: String(row["name"] ?? ""),
@@ -722,7 +734,8 @@ export async function buildFinancialPlanning(
   const globalFxRate = globalFxRaw ? asNumber(globalFxRaw, 0) || null : null;
   const totalCreditAvailable = creditLines.reduce((sum, line) => sum + line.availableAmount, 0);
 
-  const repaymentGroupEvents = buildCreditLineRepaymentGroupEvents(raw, creditLines);
+  // Maturities include inactive lines with open debt; drawdown recommendations stay active-only.
+  const repaymentGroupEvents = buildCreditLineRepaymentGroupEvents(raw, allCreditLines);
   const creditLineInfoEvents = buildCreditLineInformationalEvents(creditLines, repaymentGroupEvents);
 
   const events = [

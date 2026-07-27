@@ -54,6 +54,7 @@ export async function createPurchasePaymentBatchRpc(
       source_type: input.sourceType,
       cash_account_id: input.cashAccountId,
       credit_line_id: input.creditLineId,
+      manual_due_date: input.manualDueDate,
       idempotency_key: input.idempotencyKey,
       allocations: input.allocations.map((row) => ({
         supplier_payment_id: row.supplierPaymentId,

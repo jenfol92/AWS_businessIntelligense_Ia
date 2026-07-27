@@ -39,6 +39,7 @@ export async function markAndFinanceSupplierPaymentRpc(
     p_source_type: input.sourceType,
     p_cash_account_id: input.cashAccountId,
     p_credit_line_id: input.creditLineId,
+    p_manual_due_date: input.manualDueDate,
   });
 
   if (error) throw new Error(formatSupabaseError(error));

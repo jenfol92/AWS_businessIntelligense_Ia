@@ -42,6 +42,16 @@ function isActiveLineStatus(status: string): boolean {
   return normalized === "activa" || normalized === "activo" || normalized === "active";
 }
 
+function isDeletedLineStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return (
+    normalized === "eliminada"
+    || normalized === "deleted"
+    || normalized === "cancelled"
+    || normalized === "cancelada"
+  );
+}
+
 function mapDisplayStatus(
   groupStatus: string,
   dueDate: string,
@@ -140,16 +150,19 @@ export async function buildCreditLineMaturities(
   const { groups, legacyGaps } = await findOpenCreditLineMaturities(query);
 
   const allMaturities: CreditLineMaturity[] = groups
-    .filter((group) => isActiveLineStatus(group.line_status))
+    .filter((group) => !isDeletedLineStatus(group.line_status))
     .filter((group) => group.status === "open" || group.status === "partially_paid")
     .map((group) => {
       const groupStatus = group.status as "open" | "partially_paid";
+      const lineAllowsDrawdown = isActiveLineStatus(group.line_status);
       return {
         id: group.id,
         creditLineId: group.credit_line_id,
         repaymentGroupId: group.id,
         bankName: group.bank_name,
         lineName: group.line_name,
+        lineStatus: group.line_status,
+        lineAllowsDrawdown,
         dueDate: group.due_date,
         originalAmountEur: group.amount,
         paidAmountEur: group.paid_amount,
@@ -180,7 +193,10 @@ export async function buildCreditLineMaturities(
   return {
     ok: true,
     asOf,
-    summary: buildSummary(allMaturities, asOf),
+    summary: buildSummary(
+      allMaturities.filter((item) => matchesFilter(item, undefined, asOf)),
+      asOf,
+    ),
     maturities: filtered,
     legacyGaps: legacy,
   };

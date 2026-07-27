@@ -35,6 +35,7 @@ export function LinkedPurchasePaymentModal({
   const [sourceType, setSourceType] = useState<PurchasePaymentSourceType | "">("");
   const [cashAccountId, setCashAccountId] = useState("");
   const [creditLineId, setCreditLineId] = useState("");
+  const [manualDueDate, setManualDueDate] = useState("");
   const [actualFxRate, setActualFxRate] = useState("");
   const [actualAmountEur, setActualAmountEur] = useState("");
   const [bankFeeEur, setBankFeeEur] = useState("");
@@ -82,6 +83,12 @@ export function LinkedPurchasePaymentModal({
   const totalCharged = eurReal + Number(bankFeeEur || 0) + Number(ffFeeEur || 0);
   const orderCount = new Set(selectedRows.map((row) => row.orderId)).size;
   const supplierCount = new Set(selectedRows.map((row) => row.supplierId ?? row.supplierName)).size;
+  const selectedCreditLine =
+    data?.creditLines.find((line) => line.id === creditLineId) ?? null;
+  const needsManualDueDate =
+    sourceType === "credit_line"
+    && selectedCreditLine != null
+    && selectedCreditLine.cycleDays == null;
 
   const toggle = (row: PurchasePaymentCandidate) => {
     setError(null);
@@ -133,6 +140,16 @@ export function LinkedPurchasePaymentModal({
     if (!sourceType) return setError("Selecciona explícitamente la fuente financiera.");
     if (sourceType === "cash_account" && !cashAccountId) return setError("Selecciona una cuenta propia.");
     if (sourceType === "credit_line" && !creditLineId) return setError("Selecciona una línea de crédito.");
+    if (needsManualDueDate) {
+      if (!manualDueDate) return setError("Indica la fecha de vencimiento de la disposición.");
+      const due = new Date(`${manualDueDate}T00:00:00.000Z`);
+      if (Number.isNaN(due.getTime()) || due.toISOString().slice(0, 10) !== manualDueDate) {
+        return setError("La fecha de vencimiento de la disposición no es valida.");
+      }
+      if (manualDueDate < paidAt) {
+        return setError("El vencimiento debe ser igual o posterior a la fecha efectiva del pago.");
+      }
+    }
     if (lockedCurrency !== "EUR" && !actualFxRate && !actualAmountEur) {
       return setError("Introduce tipo de cambio real o EUR real.");
     }
@@ -158,6 +175,8 @@ export function LinkedPurchasePaymentModal({
           sourceType,
           cashAccountId: sourceType === "cash_account" ? cashAccountId : null,
           creditLineId: sourceType === "credit_line" ? creditLineId : null,
+          manualDueDate:
+            sourceType === "credit_line" && needsManualDueDate ? manualDueDate : null,
           idempotencyKey,
           allocations: selectedRows.map((row) => ({
             supplierPaymentId: row.supplierPaymentId,
@@ -273,8 +292,14 @@ export function LinkedPurchasePaymentModal({
             <fieldset className="space-y-2 text-xs"><legend className="font-semibold">Fuente financiera</legend>
               <label className="flex items-center gap-2"><input type="radio" checked={sourceType === "cash_account"} onChange={() => { setSourceType("cash_account"); setCreditLineId(""); }} /> Cuenta propia</label>
               {sourceType === "cash_account" ? <select value={cashAccountId} onChange={(e) => setCashAccountId(e.target.value)} className="w-full border px-2 py-2"><option value="">Seleccionar cuenta</option>{data?.cashAccounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {money(account.balance, account.currency)}</option>)}</select> : null}
-              <label className="flex items-center gap-2"><input type="radio" checked={sourceType === "credit_line"} onChange={() => { setSourceType("credit_line"); setCashAccountId(""); }} /> Línea de crédito</label>
-              {sourceType === "credit_line" ? <select value={creditLineId} onChange={(e) => setCreditLineId(e.target.value)} className="w-full border px-2 py-2"><option value="">Seleccionar línea</option>{data?.creditLines.map((line) => <option key={line.id} value={line.id}>{line.bankName} · {line.lineName} · {money(line.availableAmount, "EUR")}</option>)}</select> : null}
+              <label className="flex items-center gap-2"><input type="radio" checked={sourceType === "credit_line"} onChange={() => { setSourceType("credit_line"); setCashAccountId(""); setManualDueDate(""); }} /> Línea de crédito</label>
+              {sourceType === "credit_line" ? <select value={creditLineId} onChange={(e) => { setCreditLineId(e.target.value); setManualDueDate(""); }} className="w-full border px-2 py-2"><option value="">Seleccionar línea</option>{data?.creditLines.map((line) => <option key={line.id} value={line.id}>{line.bankName} · {line.lineName} · {money(line.availableAmount, "EUR")}{line.cycleDays == null ? " · vencimiento manual" : ""}</option>)}</select> : null}
+              {needsManualDueDate ? (
+                <label className="block text-xs">
+                  Fecha de vencimiento de la disposición
+                  <input type="date" value={manualDueDate} min={paidAt} onChange={(e) => setManualDueDate(e.target.value)} className="mt-1 w-full border px-2 py-2" />
+                </label>
+              ) : null}
             </fieldset>
             <input value={bankReference} onChange={(e) => setBankReference(e.target.value)} placeholder="Referencia bancaria" className="w-full border px-3 py-2 text-xs" />
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Observaciones" className="w-full border px-3 py-2 text-xs" rows={2} />

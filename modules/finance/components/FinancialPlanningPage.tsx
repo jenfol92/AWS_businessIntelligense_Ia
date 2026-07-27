@@ -223,6 +223,7 @@ function PaymentModal({
     useState<SupplierPaymentFundingSourceType | "">("");
   const [cashAccountId, setCashAccountId] = useState("");
   const [creditLineId, setCreditLineId] = useState("");
+  const [manualDueDate, setManualDueDate] = useState("");
   const [actualFxRate, setActualFxRate] = useState(isEurPayment ? "1" : "");
   const [actualAmountEur, setActualAmountEur] = useState(
     isEurPayment && originalAmount > 0 ? String(originalAmount) : "",
@@ -252,6 +253,12 @@ function PaymentModal({
   }
   const bankFeeNumber = bankFeeEur.trim() ? Number(bankFeeEur) : 0;
   const ffFeeNumber = ffFeeEur.trim() ? Number(ffFeeEur) : 0;
+  const selectedCreditLine =
+    activeCreditLines.find((line) => line.id === creditLineId) ?? null;
+  const needsManualDueDate =
+    sourceType === "credit_line"
+    && selectedCreditLine != null
+    && selectedCreditLine.cycleDays == null;
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -273,6 +280,21 @@ function PaymentModal({
     if (sourceType === "credit_line" && !creditLineId) {
       setError("Selecciona una línea de crédito activa.");
       return;
+    }
+    if (needsManualDueDate) {
+      if (!manualDueDate || !/^\d{4}-\d{2}-\d{2}$/.test(manualDueDate)) {
+        setError("Indica la fecha de vencimiento de la disposición.");
+        return;
+      }
+      const due = new Date(`${manualDueDate}T00:00:00.000Z`);
+      if (Number.isNaN(due.getTime()) || due.toISOString().slice(0, 10) !== manualDueDate) {
+        setError("La fecha de vencimiento de la disposición no es valida.");
+        return;
+      }
+      if (manualDueDate < paidAt) {
+        setError("El vencimiento de la disposición debe ser igual o posterior a la fecha de pago.");
+        return;
+      }
     }
 
     if (
@@ -342,6 +364,8 @@ function PaymentModal({
             sourceType,
             cashAccountId: sourceType === "cash_account" ? cashAccountId : null,
             creditLineId: sourceType === "credit_line" ? creditLineId : null,
+            manualDueDate:
+              sourceType === "credit_line" && needsManualDueDate ? manualDueDate : null,
             paidAt,
             bankReference: bankReference.trim() || null,
             bankFeeEur: bankFeeEur.trim() ? Number(bankFeeEur) : null,
@@ -530,16 +554,36 @@ function PaymentModal({
                 <select
                   required
                   value={creditLineId}
-                  onChange={(e) => setCreditLineId(e.target.value)}
+                  onChange={(e) => {
+                    setCreditLineId(e.target.value);
+                    setManualDueDate("");
+                  }}
                   className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
                 >
                   <option value="">Selecciona una línea</option>
                   {activeCreditLines.map((line) => (
                     <option key={line.id} value={line.id}>
                       {line.bankName} / {line.lineName} (disp. {eur(line.availableAmount)})
+                      {line.cycleDays == null ? " · vencimiento manual" : ""}
                     </option>
                   ))}
                 </select>
+              </label>
+            ) : null}
+            {needsManualDueDate ? (
+              <label className="text-xs font-medium text-slate-600 sm:col-span-2">
+                Fecha de vencimiento de la disposición
+                <input
+                  type="date"
+                  required
+                  value={manualDueDate}
+                  min={paidAt}
+                  onChange={(e) => setManualDueDate(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+                <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                  Obligatoria porque la línea no tiene cycle_days. Debe ser &gt;= fecha de pago.
+                </span>
               </label>
             ) : null}
             <label className="text-xs font-medium text-slate-600">

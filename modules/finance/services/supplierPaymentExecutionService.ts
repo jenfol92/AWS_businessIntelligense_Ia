@@ -50,6 +50,8 @@ const ERROR_STATUS: Record<SupplierPaymentExecutionErrorCode, number> = {
   PARTIAL_PAYMENT_PLAN_MISMATCH: 409,
   INVALID_UUID: 422,
   INVALID_PLAN_CURRENCY: 422,
+  MANUAL_DUE_DATE_REQUIRED: 422,
+  INVALID_DATE: 422,
   IDEMPOTENCY_PAYLOAD_MISMATCH: 409,
   DUPLICATE_ALLOCATION: 422,
   LEGACY_MANUAL_PAYMENT: 409,
@@ -198,6 +200,18 @@ export function normalizeMarkSupplierPaymentPaidInput(
     sourceType,
     cashAccountId,
     creditLineId,
+    manualDueDate: (() => {
+      const value = optionalString(payload.manualDueDate);
+      if (!value) return null;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw executionError("INVALID_DATE", "manualDueDate debe tener formato YYYY-MM-DD.");
+      }
+      const date = new Date(`${value}T00:00:00.000Z`);
+      if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+        throw executionError("INVALID_DATE", "manualDueDate no es una fecha valida.");
+      }
+      return value;
+    })(),
   };
 }
 

@@ -30,9 +30,12 @@ export type CreditLineLedgerErrorCode =
   | "GROUP_MISMATCH"
   | "GROUP_CLOSED"
   | "CREDIT_LINE_INACTIVE"
+  | "CREDIT_LINE_DELETED"
   | "MISSING_CASH_ACCOUNT"
   | "MISSING_REPAYMENT_GROUP"
-  | "UNAUTHORIZED";
+  | "UNAUTHORIZED"
+  | "IDEMPOTENCY_PAYLOAD_MISMATCH"
+  | "DIRECT_DML_FORBIDDEN";
 
 export class CreditLineLedgerError extends Error {
   constructor(

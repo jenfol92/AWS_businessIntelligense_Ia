@@ -4,6 +4,11 @@ import type {
   CreditLineMaturitiesQuery,
   CreditLineMaturityFilter,
 } from "@/modules/finance/types/creditLineMaturities.types";
+import {
+  assertDateRange,
+  isRealIsoDate,
+  isUuid,
+} from "@/modules/finance/utils/financeInputValidation";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 
 export const dynamic = "force-dynamic";
@@ -18,17 +23,6 @@ const STATUS_FILTERS: CreditLineMaturityFilter[] = [
   "partial",
 ];
 
-function isIsoDate(value: string | null): value is string {
-  return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
-}
-
-function isUuid(value: string | null): value is string {
-  return Boolean(
-    value
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value),
-  );
-}
-
 export async function GET(req: Request) {
   const supabase = createSupabaseRouteClient();
   const { data: authData, error: authError } = await supabase.auth.getUser();
@@ -40,8 +34,8 @@ export async function GET(req: Request) {
   const statusRaw = url.searchParams.get("status")?.trim() ?? "all";
   if (!STATUS_FILTERS.includes(statusRaw as CreditLineMaturityFilter)) {
     return NextResponse.json(
-      { ok: false, error: "status invalido" },
-      { status: 400 },
+      { ok: false, error: "status invalido", code: "INVALID_STATUS" },
+      { status: 422 },
     );
   }
 
@@ -49,14 +43,29 @@ export async function GET(req: Request) {
   const to = url.searchParams.get("to")?.trim() ?? null;
   const creditLineId = url.searchParams.get("creditLineId")?.trim() ?? null;
 
-  if (from && !isIsoDate(from)) {
-    return NextResponse.json({ ok: false, error: "from debe ser YYYY-MM-DD" }, { status: 400 });
+  if (from && !isRealIsoDate(from)) {
+    return NextResponse.json(
+      { ok: false, error: "from no es una fecha valida", code: "INVALID_DATE" },
+      { status: 422 },
+    );
   }
-  if (to && !isIsoDate(to)) {
-    return NextResponse.json({ ok: false, error: "to debe ser YYYY-MM-DD" }, { status: 400 });
+  if (to && !isRealIsoDate(to)) {
+    return NextResponse.json(
+      { ok: false, error: "to no es una fecha valida", code: "INVALID_DATE" },
+      { status: 422 },
+    );
+  }
+  try {
+    assertDateRange(from, to);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Rango de fechas invalido";
+    return NextResponse.json({ ok: false, error: message, code: "INVALID_DATE_RANGE" }, { status: 422 });
   }
   if (creditLineId && !isUuid(creditLineId)) {
-    return NextResponse.json({ ok: false, error: "creditLineId invalido" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: "creditLineId debe ser un UUID valido", code: "INVALID_UUID" },
+      { status: 422 },
+    );
   }
 
   const query: CreditLineMaturitiesQuery = {

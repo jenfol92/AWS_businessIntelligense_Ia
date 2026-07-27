@@ -27,9 +27,14 @@ export type CreditLineLegacyGapRaw = {
   explained_remaining: number;
 };
 
+function firstRelation<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
 /**
- * Carga vencimientos abiertos sin horizonte de 6 meses.
- * Los filtros de fecha/status se aplican en el servicio.
+ * DISPLAY_QUERY: open groups with optional visual filters.
+ * INTEGRITY_QUERY: explained remaining uses ALL open/partial groups (no date filter).
  */
 export async function findOpenCreditLineMaturities(
   query: CreditLineMaturitiesQuery = {},
@@ -39,7 +44,7 @@ export async function findOpenCreditLineMaturities(
 }> {
   const supabase = createSupabaseRouteClient();
 
-  let groupsQuery = supabase
+  let displayQuery = supabase
     .from("finance_credit_line_repayment_groups")
     .select(
       `id, credit_line_id, period_start, period_end, due_date,
@@ -54,51 +59,133 @@ export async function findOpenCreditLineMaturities(
     .order("due_date", { ascending: true });
 
   if (query.creditLineId) {
-    groupsQuery = groupsQuery.eq("credit_line_id", query.creditLineId);
+    displayQuery = displayQuery.eq("credit_line_id", query.creditLineId);
   }
   if (query.from) {
-    groupsQuery = groupsQuery.gte("due_date", query.from);
+    displayQuery = displayQuery.gte("due_date", query.from);
   }
   if (query.to) {
-    groupsQuery = groupsQuery.lte("due_date", query.to);
+    displayQuery = displayQuery.lte("due_date", query.to);
   }
 
-  const [groupsResult, linesResult, supplierPaymentsResult] = await Promise.all([
-    groupsQuery,
-    supabase
-      .from("finance_credit_lines")
-      .select("id, bank_name, line_name, used_amount, status"),
-    supabase
-      .from("finance_supplier_payments")
-      .select("id, orden_id, ordenes_compra(numero_orden)"),
+  let integrityQuery = supabase
+    .from("finance_credit_line_repayment_groups")
+    .select("credit_line_id, remaining_amount, status")
+    .in("status", ["open", "partially_paid"])
+    .gt("remaining_amount", 0);
+
+  if (query.creditLineId) {
+    integrityQuery = integrityQuery.eq("credit_line_id", query.creditLineId);
+  }
+
+  let linesQuery = supabase
+    .from("finance_credit_lines")
+    .select("id, bank_name, line_name, used_amount, status");
+  if (query.creditLineId) {
+    linesQuery = linesQuery.eq("id", query.creditLineId);
+  }
+
+  const [groupsResult, integrityResult, linesResult] = await Promise.all([
+    displayQuery,
+    integrityQuery,
+    linesQuery,
   ]);
 
   if (groupsResult.error) throw new Error(groupsResult.error.message);
+  if (integrityResult.error) throw new Error(integrityResult.error.message);
   if (linesResult.error) throw new Error(linesResult.error.message);
-  if (supplierPaymentsResult.error) throw new Error(supplierPaymentsResult.error.message);
+
+  const supplierPaymentIds = new Set<string>();
+  const batchIds = new Set<string>();
+  for (const row of groupsResult.data ?? []) {
+    const movements =
+      ((row as Record<string, unknown>)["finance_credit_line_movements"] as
+        | Record<string, unknown>[]
+        | null) ?? [];
+    for (const movement of movements) {
+      if (
+        movement["movement_type"] === "drawdown"
+        && typeof movement["source_id"] === "string"
+      ) {
+        if (movement["source_type"] === "supplier_payment") {
+          supplierPaymentIds.add(movement["source_id"]);
+        }
+        if (movement["source_type"] === "purchase_payment_batch") {
+          batchIds.add(movement["source_id"]);
+        }
+      }
+    }
+  }
 
   const paymentOrderById = new Map<string, string>();
-  for (const payment of supplierPaymentsResult.data ?? []) {
-    const row = payment as Record<string, unknown>;
-    const order = row["ordenes_compra"] as
-      | { numero_orden?: string | null }
-      | Array<{ numero_orden?: string | null }>
-      | null;
-    const orderObj = Array.isArray(order) ? order[0] : order;
-    const code = orderObj?.numero_orden?.trim();
-    if (typeof row["id"] === "string" && code) {
-      paymentOrderById.set(row["id"], code);
+  if (supplierPaymentIds.size > 0) {
+    const { data, error } = await supabase
+      .from("finance_supplier_payments")
+      .select("id, ordenes_compra(numero_orden)")
+      .in("id", Array.from(supplierPaymentIds));
+    if (error) throw new Error(error.message);
+    for (const payment of data ?? []) {
+      const record = payment as Record<string, unknown>;
+      const order = firstRelation(
+        record["ordenes_compra"] as
+          | { numero_orden?: string | null }
+          | Array<{ numero_orden?: string | null }>
+          | null,
+      );
+      const code = order?.numero_orden?.trim();
+      if (typeof record["id"] === "string" && code) {
+        paymentOrderById.set(record["id"], code);
+      }
+    }
+  }
+
+  const batchOrderCodes = new Map<string, string[]>();
+  if (batchIds.size > 0) {
+    const { data, error } = await supabase
+      .from("finance_purchase_payment_allocations")
+      .select(
+        `batch_id,
+         finance_supplier_payments!inner(
+           id,
+           ordenes_compra(numero_orden)
+         )`,
+      )
+      .in("batch_id", Array.from(batchIds));
+    if (error) throw new Error(error.message);
+
+    for (const row of data ?? []) {
+      const record = row as Record<string, unknown>;
+      const batchId = String(record["batch_id"]);
+      const payment = firstRelation(
+        record["finance_supplier_payments"] as
+          | Record<string, unknown>
+          | Record<string, unknown>[]
+          | null,
+      );
+      const order = firstRelation(
+        payment?.["ordenes_compra"] as
+          | { numero_orden?: string | null }
+          | Array<{ numero_orden?: string | null }>
+          | null,
+      );
+      const code = order?.numero_orden?.trim();
+      if (!code) continue;
+      const list = batchOrderCodes.get(batchId) ?? [];
+      if (!list.includes(code)) list.push(code);
+      batchOrderCodes.set(batchId, list);
     }
   }
 
   const groups: CreditLineMaturityRawGroup[] = (groupsResult.data ?? []).map((row) => {
     const record = row as Record<string, unknown>;
-    const lineRaw = record["finance_credit_lines"] as
-      | Record<string, unknown>
-      | Record<string, unknown>[]
-      | null;
-    const line = Array.isArray(lineRaw) ? lineRaw[0] : lineRaw;
-    const movements = (record["finance_credit_line_movements"] as Record<string, unknown>[] | null) ?? [];
+    const line = firstRelation(
+      record["finance_credit_lines"] as
+        | Record<string, unknown>
+        | Record<string, unknown>[]
+        | null,
+    );
+    const movements =
+      (record["finance_credit_line_movements"] as Record<string, unknown>[] | null) ?? [];
     const orderCodes = new Set<string>();
     let isLegacy = false;
 
@@ -106,13 +193,17 @@ export async function findOpenCreditLineMaturities(
       if (movement["source_type"] === "legacy_opening_balance") {
         isLegacy = true;
       }
-      if (
-        movement["movement_type"] === "drawdown"
-        && movement["source_type"] === "supplier_payment"
-        && typeof movement["source_id"] === "string"
-      ) {
+      if (movement["movement_type"] !== "drawdown" || typeof movement["source_id"] !== "string") {
+        continue;
+      }
+      if (movement["source_type"] === "supplier_payment") {
         const code = paymentOrderById.get(movement["source_id"]);
         if (code) orderCodes.add(code);
+      }
+      if (movement["source_type"] === "purchase_payment_batch") {
+        for (const code of batchOrderCodes.get(movement["source_id"]) ?? []) {
+          orderCodes.add(code);
+        }
       }
     }
 
@@ -129,17 +220,23 @@ export async function findOpenCreditLineMaturities(
       bank_name: String(line?.["bank_name"] ?? ""),
       line_name: String(line?.["line_name"] ?? ""),
       line_status: String(line?.["status"] ?? ""),
-      movement_count: movements.filter((m) => m["movement_type"] === "drawdown" || m["source_type"] === "legacy_opening_balance").length,
+      movement_count: movements.filter(
+        (m) =>
+          m["movement_type"] === "drawdown"
+          || m["source_type"] === "legacy_opening_balance",
+      ).length,
       financed_order_codes: Array.from(orderCodes).sort(),
       is_legacy_opening_balance: isLegacy,
     };
   });
 
   const explainedByLine = new Map<string, number>();
-  for (const group of groups) {
+  for (const row of integrityResult.data ?? []) {
+    const record = row as Record<string, unknown>;
+    const lineId = String(record["credit_line_id"]);
     explainedByLine.set(
-      group.credit_line_id,
-      (explainedByLine.get(group.credit_line_id) ?? 0) + group.remaining_amount,
+      lineId,
+      (explainedByLine.get(lineId) ?? 0) + Number(record["remaining_amount"] ?? 0),
     );
   }
 
@@ -149,8 +246,7 @@ export async function findOpenCreditLineMaturities(
     const id = String(row["id"]);
     const used = Number(row["used_amount"] ?? 0);
     const explained = explainedByLine.get(id) ?? 0;
-    const unexplained = used - explained;
-    if (unexplained > 0.01) {
+    if (used - explained > 0.01) {
       legacyGaps.push({
         id,
         bank_name: String(row["bank_name"] ?? ""),

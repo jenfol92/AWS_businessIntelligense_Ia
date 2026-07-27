@@ -109,6 +109,7 @@ export function CreditLineRepaymentModal({
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
 
   const selectedAccount = eurAccounts.find((account) => account.id === cashAccountId) ?? null;
 
@@ -154,7 +155,7 @@ export function CreditLineRepaymentModal({
           repaymentGroupId: maturity.repaymentGroupId,
           bankReference: bankReference.trim() ? bankReference.trim() : null,
           notes: notes.trim() ? notes.trim() : null,
-          idempotencyKey: `credit-line-repayment:${maturity.creditLineId}:${maturity.repaymentGroupId}:${cashAccountId}:${amountNumber}:${movementDate}:${bankReference.trim() || "noref"}`,
+          idempotencyKey,
         }),
       });
       const json = await res.json();
@@ -185,6 +186,9 @@ export function CreditLineRepaymentModal({
             <h2 className="text-base font-semibold text-slate-900">Pagar linea de credito</h2>
             <p className="text-xs text-slate-500">
               {maturity.bankName} / {maturity.lineName}
+              {!maturity.lineAllowsDrawdown
+                ? ` · Linea ${maturity.lineStatus || "inactiva"} (deuda pagable)`
+                : null}
             </p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700">
@@ -429,6 +433,11 @@ export function CreditLineMaturitiesSection({
                 <h3 className="text-sm font-semibold text-slate-900">
                   {maturity.bankName} / {maturity.lineName}
                 </h3>
+                {!maturity.lineAllowsDrawdown ? (
+                  <p className="text-[11px] text-slate-600">
+                    Linea {maturity.lineStatus || "inactiva"} · sin nuevas disposiciones · deuda pagable
+                  </p>
+                ) : null}
                 {maturity.isLegacyOpeningBalance ? (
                   <p className="text-[11px] text-amber-700">Saldo inicial regularizado (legacy)</p>
                 ) : null}

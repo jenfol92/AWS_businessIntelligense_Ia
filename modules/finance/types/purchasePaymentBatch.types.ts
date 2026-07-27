@@ -41,6 +41,7 @@ export type CreatePurchasePaymentBatchPayload = {
   sourceType?: unknown;
   cashAccountId?: unknown;
   creditLineId?: unknown;
+  manualDueDate?: unknown;
   idempotencyKey?: unknown;
   allocations?: unknown;
 };
@@ -61,6 +62,8 @@ export type CreatePurchasePaymentBatchInput = {
   sourceType: PurchasePaymentSourceType;
   cashAccountId: string | null;
   creditLineId: string | null;
+  /** Obligatorio cuando la linea seleccionada no tiene cycle_days. */
+  manualDueDate: string | null;
   idempotencyKey: string;
   allocations: PurchasePaymentAllocationInput[];
 };

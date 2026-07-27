@@ -14,6 +14,8 @@ export type MarkSupplierPaymentPaidPayload = {
   sourceType?: unknown;
   cashAccountId?: unknown;
   creditLineId?: unknown;
+  /** Obligatorio cuando la linea no tiene cycle_days. */
+  manualDueDate?: unknown;
   /** @deprecated Legacy descriptive label; ignored for accounting. */
   paymentSource?: unknown;
 };
@@ -31,6 +33,7 @@ export type MarkSupplierPaymentPaidInput = {
   sourceType: SupplierPaymentFundingSourceType;
   cashAccountId: string | null;
   creditLineId: string | null;
+  manualDueDate: string | null;
 };
 
 export type MarkSupplierPaymentPaidResult = SupplierPaymentRow & {
@@ -90,6 +93,8 @@ export type SupplierPaymentExecutionErrorCode =
   | "PARTIAL_PAYMENT_PLAN_MISMATCH"
   | "INVALID_UUID"
   | "INVALID_PLAN_CURRENCY"
+  | "MANUAL_DUE_DATE_REQUIRED"
+  | "INVALID_DATE"
   | "IDEMPOTENCY_PAYLOAD_MISMATCH"
   | "DUPLICATE_ALLOCATION"
   | "LEGACY_MANUAL_PAYMENT"

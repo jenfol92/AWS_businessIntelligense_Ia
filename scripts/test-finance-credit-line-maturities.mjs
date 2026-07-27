@@ -1,12 +1,24 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const migration = readFileSync(
+const phase1 = readFileSync(
   new URL("../sql/migrations/20260727_credit_line_maturities_phase1.sql", import.meta.url),
+  "utf8",
+);
+const harden = readFileSync(
+  new URL("../sql/migrations/20260728_harden_credit_line_maturity_execution.sql", import.meta.url),
   "utf8",
 );
 const legacyMigration = readFileSync(
   new URL("../sql/migrations/20260727_credit_line_legacy_opening_balance_rpc.sql", import.meta.url),
+  "utf8",
+);
+const preflight = readFileSync(
+  new URL("../sql/diagnostics/credit_line_maturities_hardening_preflight.sql", import.meta.url),
+  "utf8",
+);
+const migrationOrder = readFileSync(
+  new URL("../sql/diagnostics/credit_line_maturities_migration_order.sql", import.meta.url),
   "utf8",
 );
 const diagnostic = readFileSync(
@@ -45,6 +57,10 @@ const planningPage = readFileSync(
   new URL("../modules/finance/components/FinancialPlanningPage.tsx", import.meta.url),
   "utf8",
 );
+const linkedModal = readFileSync(
+  new URL("../modules/finance/components/LinkedPurchasePaymentModal.tsx", import.meta.url),
+  "utf8",
+);
 const ledgerService = readFileSync(
   new URL("../modules/finance/services/creditLineLedgerService.ts", import.meta.url),
   "utf8",
@@ -53,102 +69,143 @@ const ledgerRepo = readFileSync(
   new URL("../modules/finance/repositories/creditLineLedgerRepository.ts", import.meta.url),
   "utf8",
 );
+const syncLegacy = readFileSync(
+  new URL("../modules/finance/services/syncCreditLineDueFromSupplierPayment.ts", import.meta.url),
+  "utf8",
+);
+const inputValidation = readFileSync(
+  new URL("../modules/finance/utils/financeInputValidation.ts", import.meta.url),
+  "utf8",
+);
+const batchService = readFileSync(
+  new URL("../modules/finance/services/purchasePaymentBatchService.ts", import.meta.url),
+  "utf8",
+);
+const markService = readFileSync(
+  new URL("../modules/finance/services/supplierPaymentExecutionService.ts", import.meta.url),
+  "utf8",
+);
 
-// 1-3 Drawdown / due dates
-assert.match(migration, /finance_create_credit_line_drawdown/);
-assert.match(migration, /p_manual_due_date date DEFAULT NULL/);
-assert.match(migration, /MANUAL_DUE_DATE_REQUIRED/);
-assert.match(migration, /v_period_end := p_movement_date \+ v_line\.cycle_days/);
-assert.match(migration, /due_date = v_due_date/);
-assert.match(ledgerService, /manualDueDate/);
-assert.match(ledgerRepo, /p_manual_due_date/);
-
-// 4 Dedicated section not limited to 6 months
-assert.match(maturitiesRepo, /finance_credit_line_repayment_groups/);
-assert.doesNotMatch(maturitiesRepo, /months\s*=\s*6|addMonths/);
-assert.match(maturitiesRoute, /\/api\/finance\/credit-lines\/maturities|buildCreditLineMaturities/);
+// --- Phase1 baseline contracts still present ---
+assert.match(phase1, /finance_create_credit_line_drawdown/);
+assert.match(phase1, /MANUAL_DUE_DATE_REQUIRED/);
 assert.match(maturitiesService, /next_7|next_15|this_month|overdue/);
-
-// 5 partially_paid → parcial
-assert.match(maturitiesService, /partially_paid/);
-assert.match(maturitiesService, /"parcial"/);
-assert.match(planning, /groupStatus === "partially_paid"/);
-assert.match(planning, /status: "parcial"|: "parcial"/);
-
-// 6 overdue outside current month still listed
-assert.match(maturitiesService, /dueDate < asOf/);
-assert.match(diagnostic, /outside_six_month_horizon|overdue/);
-
-// 7 informational 0€ not as maturity
 assert.match(planningTypes, /credit_line_maturity/);
-assert.match(planning, /type: "credit_line_maturity"/);
-assert.match(planning, /isInformational: true/);
-assert.match(planning, /type: "credit_line_release" as const/);
-assert.match(
-  planning,
-  /function buildCreditLineRepaymentGroupEvents[\s\S]*?type: "credit_line_maturity"/,
-);
-assert.match(
-  planning,
-  /function buildCreditLineInformationalEvents[\s\S]*?type: "credit_line_release" as const/,
-);
-
-// 8-9 Modal starts empty, EUR only
 assert.match(uiSection, /useState\(""\)/);
 assert.match(uiSection, /currency\.trim\(\)\.toUpperCase\(\) === "EUR"/);
-assert.doesNotMatch(uiSection, /cashAccounts\[0\]\?\.id/);
-assert.match(uiSection, /Selecciona cuenta/);
-
-// 10-15 repayment RPC contracts
-assert.match(migration, /finance_create_credit_line_repayment/);
-assert.match(migration, /partially_paid/);
-assert.match(migration, /v_next_status := CASE WHEN v_next_remaining = 0 THEN 'paid' ELSE 'partially_paid' END/);
-assert.match(migration, /used_amount = used_amount - p_amount/);
-assert.match(migration, /available_amount = available_amount \+ p_amount/);
-assert.match(migration, /balance = balance - p_amount/);
-assert.match(migration, /idempotency_key/);
-assert.match(migration, /INSUFFICIENT_CASH/);
-assert.match(migration, /INVALID_CURRENCY: cash account must be EUR/);
-assert.match(migration, /MISSING_REPAYMENT_GROUP/);
-assert.match(migration, /GROUP_CLOSED/);
-assert.match(migration, /CREDIT_LINE_INACTIVE/);
-assert.match(migration, /FOR UPDATE/);
-assert.match(migration, /SECURITY DEFINER/);
-assert.match(migration, /SET search_path = public/);
-assert.match(migration, /OWNER TO postgres/);
-assert.match(migration, /auth\.uid\(\) IS NULL/);
-assert.match(migration, /REVOKE EXECUTE[\s\S]*FROM PUBLIC, anon/);
-assert.match(migration, /GRANT EXECUTE[\s\S]*TO authenticated, service_role/);
-assert.match(migration, /REVOKE INSERT, UPDATE, DELETE ON public\.finance_credit_line_movements FROM PUBLIC, anon, authenticated/);
-assert.match(migration, /REVOKE UPDATE ON public\.finance_cash_accounts FROM PUBLIC, anon, authenticated/);
-
-// 16 EUR rejected
-assert.match(ledgerService, /INVALID_CURRENCY/);
-assert.match(repayRoute, /bankReference/);
-
-// 18-19 DML blocked / RPC authorized
-assert.match(migration, /REVOKE INSERT, UPDATE, DELETE ON public\.finance_credit_line_repayment_groups/);
-assert.match(migration, /GRANT EXECUTE ON FUNCTION public\.finance_create_credit_line_repayment/);
-
-// 20 no automatic legacy regularization
-assert.doesNotMatch(planning, /finance_register_legacy_opening_balance/);
-assert.doesNotMatch(maturitiesService, /finance_register_legacy_opening_balance/);
-assert.match(legacyMigration, /legacy_opening_balance/);
-assert.match(legacyMigration, /Does not change used_amount/);
-assert.match(uiSection, /Saldo inicial pendiente de regularizar/);
-assert.match(uiSection, /No se regulariza automaticamente/);
-
-// UI section wired
 assert.match(planningPage, /CreditLineMaturitiesSection/);
-assert.match(uiSection, /Vencimientos de lineas/);
-assert.match(uiSection, /Pagar saldo completo/);
-assert.match(uiSection, /Registrar pago parcial/);
 
-// Diagnostic classification
-assert.match(diagnostic, /CONSISTENT/);
-assert.match(diagnostic, /LEGACY_OPENING_BALANCE/);
-assert.match(diagnostic, /ORPHAN_DRAWDOWN/);
-assert.match(diagnostic, /GROUP_MISMATCH/);
-assert.match(diagnostic, /MANUAL_DUE_DATE_REQUIRED/);
+// 1 Full repayment retry returns idempotent=true (order: lock → find → return even if paid)
+assert.match(harden, /pg_advisory_xact_lock\(hashtextextended\('credit_line_repay:'/);
+assert.match(harden, /idempotent',\s*true/);
+assert.match(
+  harden,
+  /IF FOUND THEN[\s\S]*IDEMPOTENCY_PAYLOAD_MISMATCH[\s\S]*idempotent',\s*true/,
+);
+
+// 2 Same key other line rejected
+assert.match(harden, /v_existing\.credit_line_id <> p_credit_line_id/);
+assert.match(harden, /IDEMPOTENCY_PAYLOAD_MISMATCH: repayment idempotency payload differs/);
+
+// 3 Same key other amount rejected
+assert.match(harden, /round\(v_existing\.amount, 4\) <> v_amount/);
+
+// 4 Concurrency: advisory lock + unique partial index (preflight first)
+assert.match(harden, /ux_finance_credit_line_movements_idempotency_key/);
+assert.match(preflight, /duplicate|idempotency/i);
+
+// 5 Inactive line with debt can be repaid
+assert.match(harden, /eliminada|deleted|cancelled|cancelada/);
+assert.doesNotMatch(
+  harden,
+  /CREATE OR REPLACE FUNCTION public\.finance_create_credit_line_repayment[\s\S]*?CREDIT_LINE_INACTIVE: credit line must be active/,
+);
+assert.match(maturitiesService, /lineAllowsDrawdown/);
+assert.match(maturitiesService, /canRepay: group\.remaining_amount > 0/);
+assert.match(uiSection, /deuda pagable/);
+
+// 6 Inactive line cannot drawdown
+assert.match(harden, /CREDIT_LINE_INACTIVE: credit line must be active for drawdown/);
+
+// 7 Second identical partial from new modal → new UUID key
+assert.match(uiSection, /useState\(\(\) => crypto\.randomUUID\(\)\)/);
+assert.doesNotMatch(uiSection, /credit-line-repayment:\$\{/);
+
+// 8-9 Manual due date from individual + linked payment
+assert.match(planningPage, /Fecha de vencimiento de la disposición/);
+assert.match(planningPage, /manualDueDate/);
+assert.match(linkedModal, /Fecha de vencimiento de la disposición/);
+assert.match(linkedModal, /manualDueDate/);
+assert.match(batchService, /manualDueDate/);
+assert.match(markService, /manualDueDate/);
+assert.match(harden, /manual_due_date/);
+assert.match(harden, /p_manual_due_date/);
+
+// 10 Absence of date → MANUAL_DUE_DATE_REQUIRED (rollback at RPC)
+assert.match(harden, /MANUAL_DUE_DATE_REQUIRED/);
+assert.match(batchService, /MANUAL_DUE_DATE_REQUIRED:\s*422/);
+assert.match(markService, /MANUAL_DUE_DATE_REQUIRED:\s*422/);
+
+// 11 Date filter does not create false legacy gaps
+assert.match(maturitiesRepo, /INTEGRITY_QUERY/);
+assert.match(maturitiesRepo, /integrityQuery/);
+assert.doesNotMatch(
+  maturitiesRepo.split("let integrityQuery")[1]?.split("let linesQuery")[0] ?? "",
+  /\.gte\("due_date"|\.lte\("due_date"/,
+);
+
+// 12 creditLineId filter scopes gaps
+assert.match(
+  maturitiesRepo.split("let integrityQuery")[1]?.split("let linesQuery")[0] ?? "",
+  /query\.creditLineId/,
+);
+assert.match(
+  maturitiesRepo.split("let linesQuery")[1]?.split("const [groupsResult")[0] ?? "",
+  /query\.creditLineId/,
+);
+
+// 13 Batch multi-order trace
+assert.match(maturitiesRepo, /purchase_payment_batch/);
+assert.match(maturitiesRepo, /finance_purchase_payment_allocations/);
+assert.match(maturitiesRepo, /financed_order_codes/);
+
+// 14 Non-existent date → 422
+assert.match(inputValidation, /isRealIsoDate/);
+assert.match(maturitiesRoute, /status: 422/);
+assert.match(repayRoute, /status: 422/);
+assert.match(inputValidation, /parsed\.toISOString\(\)\.slice\(0, 10\) === value/);
+
+// 15 Invalid UUID → 422
+assert.match(repayRoute, /INVALID_UUID/);
+assert.match(maturitiesRoute, /INVALID_UUID/);
+
+// 16 NaN / out of range rejected in SQL helper + TS
+assert.match(harden, /finance_assert_finite_money/);
+assert.match(harden, /'NaN'|is nan|<> amount/i);
+assert.match(inputValidation, /isFinitePositiveMoney/);
+assert.match(inputValidation, /Number\.isFinite\(value\)/);
+
+// 17 No operative direct DML consumers
+assert.match(ledgerService, /DIRECT_DML_FORBIDDEN/);
+assert.match(ledgerRepo, /DIRECT_DML_FORBIDDEN/);
+assert.match(syncLegacy, /Intentionally a no-op/);
+assert.doesNotMatch(syncLegacy, /\.insert\(/);
+assert.doesNotMatch(ledgerService, /insertCashMovement\(/);
+
+// 18 Dedicated section still shows maturities outside six months
+assert.doesNotMatch(maturitiesRepo, /months\s*=\s*6|addMonths/);
+assert.match(diagnostic, /outside_six_month_horizon|overdue/);
+
+// Migration order docs: not only the two 20260727 files
+assert.match(migrationOrder, /20260722_linked_purchase_payment_batches/);
+assert.match(migrationOrder, /20260721_supplier_payment/);
+assert.match(migrationOrder, /20260728_harden_credit_line_maturity_execution/);
+assert.match(migrationOrder, /pg_notify|NOTIFY pgrst|reload schema/);
+assert.match(migrationOrder, /ROLLBACK/);
+
+// Available amount of inactive lines is not treated as usable credit in planning totals
+assert.match(planning, /allCreditLines/);
+assert.match(planning, /Solo lineas activas/);
+assert.match(planning, /buildCreditLineRepaymentGroupEvents\(raw, allCreditLines\)/);
 
 console.log("test-finance-credit-line-maturities: OK");

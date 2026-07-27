@@ -22,6 +22,8 @@ export type CreditLineMaturity = {
   repaymentGroupId: string;
   bankName: string;
   lineName: string;
+  lineStatus: string;
+  lineAllowsDrawdown: boolean;
   dueDate: string;
   originalAmountEur: number;
   paidAmountEur: number;

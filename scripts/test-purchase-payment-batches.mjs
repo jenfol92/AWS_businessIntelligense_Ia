@@ -408,4 +408,29 @@ assert.deepEqual(
 );
 assert.deepEqual(partitioned.datedEvents.map((event) => event.id), ["deposit-dated"]);
 
+const hardenMigration = readFileSync(
+  new URL("../sql/migrations/20260728_harden_credit_line_maturity_execution.sql", import.meta.url),
+  "utf8",
+);
+assert.match(modal, /Fecha de vencimiento de la disposición/);
+assert.match(modal, /manualDueDate/);
+assert.match(service, /manualDueDate/);
+assert.match(executionService, /manualDueDate/);
+assert.match(hardenMigration, /manual_due_date/);
+assert.match(hardenMigration, /p_manual_due_date date DEFAULT NULL/);
+assert.match(hardenMigration, /MANUAL_DUE_DATE_REQUIRED/);
+assert.match(service, /MANUAL_DUE_DATE_REQUIRED:\s*422/);
+
+assert.throws(
+  () => normalizePurchasePaymentBatchPayload({
+    ...eurPayload,
+    paidAt: "2026-07-24",
+    sourceType: "credit_line",
+    cashAccountId: null,
+    creditLineId: "11111111-1111-4111-8111-111111111111",
+    manualDueDate: "2026-02-31",
+  }),
+  /manualDueDate|fecha/i,
+);
+
 console.log("OK purchase payment batches: behavior, persistent selection, EUR, authorization, partials, idempotency and detail contracts");

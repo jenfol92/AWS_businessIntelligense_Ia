@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import { createCreditLineRepayment } from "@/modules/finance/services/creditLineLedgerService";
 import { CreditLineLedgerError } from "@/modules/finance/types/creditLineLedger.types";
+import {
+  isFinitePositiveMoney,
+  isRealIsoDate,
+  isUuid,
+  roundMoney,
+} from "@/modules/finance/utils/financeInputValidation";
 
 type Params = {
   params: {
@@ -17,19 +23,11 @@ type RepayPayload = {
   notes?: unknown;
   bankReference?: unknown;
   idempotencyKey?: unknown;
+  sourceId?: unknown;
 };
 
 function requiredString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function positiveNumber(value: unknown): number | null {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-function isIsoDate(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 function ledgerErrorResponse(error: CreditLineLedgerError) {
@@ -38,7 +36,15 @@ function ledgerErrorResponse(error: CreditLineLedgerError) {
       ? 404
       : error.code === "UNAUTHORIZED"
         ? 401
-        : 409;
+        : error.code === "INVALID_AMOUNT"
+          || error.code === "INVALID_DATE"
+          || error.code === "INVALID_CURRENCY"
+          || error.code === "MANUAL_DUE_DATE_REQUIRED"
+          || error.code === "MISSING_REPAYMENT_GROUP"
+          || error.code === "MISSING_CASH_ACCOUNT"
+          || error.code === "DIRECT_DML_FORBIDDEN"
+          ? 422
+          : 409;
   return NextResponse.json({ ok: false, error: error.message, code: error.code }, { status });
 }
 
@@ -57,34 +63,55 @@ export async function POST(req: Request, { params }: Params) {
     return NextResponse.json({ ok: false, error: "JSON invalido" }, { status: 400 });
   }
 
-  const creditLineId = requiredString(params.id);
-  if (!creditLineId) {
-    return NextResponse.json({ ok: false, error: "creditLineId es obligatorio" }, { status: 400 });
-  }
-
-  const amount = positiveNumber(body.amount);
-  if (amount == null) {
-    return NextResponse.json({ ok: false, error: "amount debe ser mayor que 0" }, { status: 400 });
-  }
-
-  const movementDate = body.movementDate;
-  if (!isIsoDate(movementDate)) {
+  if (!isUuid(params.id)) {
     return NextResponse.json(
-      { ok: false, error: "movementDate debe tener formato YYYY-MM-DD" },
-      { status: 400 },
+      { ok: false, error: "creditLineId debe ser un UUID valido", code: "INVALID_UUID" },
+      { status: 422 },
     );
   }
+  const creditLineId = params.id.trim();
 
-  const cashAccountId = requiredString(body.cashAccountId);
-  if (!cashAccountId) {
-    return NextResponse.json({ ok: false, error: "cashAccountId es obligatorio" }, { status: 400 });
-  }
-
-  const repaymentGroupId = requiredString(body.repaymentGroupId);
-  if (!repaymentGroupId) {
+  const amountRaw = typeof body.amount === "number" ? body.amount : Number(body.amount);
+  if (!isFinitePositiveMoney(amountRaw)) {
     return NextResponse.json(
-      { ok: false, error: "repaymentGroupId es obligatorio para pagar un vencimiento de linea" },
-      { status: 400 },
+      { ok: false, error: "amount debe ser un numero finito mayor que 0", code: "INVALID_AMOUNT" },
+      { status: 422 },
+    );
+  }
+  const amount = roundMoney(amountRaw);
+
+  if (!isRealIsoDate(body.movementDate)) {
+    return NextResponse.json(
+      { ok: false, error: "movementDate no es una fecha valida", code: "INVALID_DATE" },
+      { status: 422 },
+    );
+  }
+  const movementDate = body.movementDate;
+
+  if (!isUuid(body.cashAccountId)) {
+    return NextResponse.json(
+      { ok: false, error: "cashAccountId debe ser un UUID valido", code: "INVALID_UUID" },
+      { status: 422 },
+    );
+  }
+  const cashAccountId = String(body.cashAccountId).trim();
+
+  if (!isUuid(body.repaymentGroupId)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "repaymentGroupId debe ser un UUID valido",
+        code: "INVALID_UUID",
+      },
+      { status: 422 },
+    );
+  }
+  const repaymentGroupId = String(body.repaymentGroupId).trim();
+
+  if (body.sourceId != null && body.sourceId !== "" && !isUuid(body.sourceId)) {
+    return NextResponse.json(
+      { ok: false, error: "sourceId debe ser un UUID valido", code: "INVALID_UUID" },
+      { status: 422 },
     );
   }
 
@@ -97,7 +124,7 @@ export async function POST(req: Request, { params }: Params) {
         cashAccountId,
         repaymentGroupId,
         sourceType: "repayment_group",
-        sourceId: null,
+        sourceId: isUuid(body.sourceId) ? String(body.sourceId).trim() : null,
         notes: requiredString(body.notes),
         bankReference: requiredString(body.bankReference),
         idempotencyKey: requiredString(body.idempotencyKey),

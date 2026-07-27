@@ -24,6 +24,10 @@ const runtime = readFileSync(
   new URL("../sql/migrations/20260729_close_credit_line_runtime_invariants.sql", import.meta.url),
   "utf8",
 );
+const concurrency = readFileSync(
+  new URL("../sql/migrations/20260730_serialize_credit_line_operation_identities.sql", import.meta.url),
+  "utf8",
+);
 const legacyMigration = readFileSync(
   new URL("../sql/migrations/20260727_credit_line_legacy_opening_balance_rpc.sql", import.meta.url),
   "utf8",
@@ -170,6 +174,26 @@ assert.match(runtime, /drawdown source fallback payload differs|IDEMPOTENCY_PAYL
 assert.match(runtime, /p_manual_due_date IS NULL[\s\S]*cycle_days IS NULL/);
 assert.match(repayRoute, /IDEMPOTENCY_PAYLOAD_MISMATCH[\s\S]*409/);
 
+// CONCURRENCY LOCKS (20260730)
+assert.match(concurrency, /credit_line_operation:/);
+assert.doesNotMatch(concurrency, /credit_line_drawdown:' \|\| v_key|credit_line_repay:' \|\| v_key/);
+assert.equal(
+  (concurrency.match(/hashtextextended\('credit_line_operation:' \|\| v_key/g) || []).length,
+  2,
+);
+assert.match(concurrency, /credit_line_drawdown_source:/);
+assert.match(concurrency, /ux_finance_credit_line_movements_drawdown_source/);
+assert.match(concurrency, /DRAWDOWN_SOURCE_DUPLICATES/);
+assert.match(concurrency, /no auto-merge/);
+assert.match(concurrency, /SCHEMA_MONEY_LIMIT_TOO_SMALL/);
+assert.match(concurrency, /FINANCE_MONEY_MAX_AFTER_ROUND/);
+assert.match(concurrency, /lower\(trim\(coalesce\(v_existing\.source_type/);
+assert.match(concurrency, /v_source, p_source_id, p_movement_date, v_group\.id/);
+assert.match(preflight, /Duplicate drawdown source identities|source_type_normalized/);
+assert.match(preflight, /admits_app_ceiling/);
+assert.doesNotMatch(concurrency, /WHEN unique_violation|EXCEPTION WHEN unique_violation/);
+assert.match(concurrency, /IDEMPOTENCY_PAYLOAD_MISMATCH: idempotency key belongs to a different movement_type/);
+
 // AUTHORIZATION
 assert.match(runtime, /REVOKE EXECUTE ON FUNCTION public\.finance_create_credit_line_drawdown[\s\S]*FROM PUBLIC, anon, authenticated/);
 assert.match(runtime, /GRANT EXECUTE ON FUNCTION public\.finance_create_credit_line_drawdown[\s\S]*TO service_role/);
@@ -196,6 +220,7 @@ assert.match(migrationOrder, /20260721_supplier_payment_actual_fields\.sql/);
 assert.match(migrationOrder, /20260722_linked_purchase_payment_batches\.sql/);
 assert.match(migrationOrder, /20260728_harden_credit_line_maturity_execution\.sql/);
 assert.match(migrationOrder, /20260729_close_credit_line_runtime_invariants\.sql/);
+assert.match(migrationOrder, /20260730_serialize_credit_line_operation_identities\.sql/);
 assert.match(migrationOrder, /supabase_migrations\.schema_migrations/);
 assert.match(migrationOrder, /pendiente|aplicado/);
 

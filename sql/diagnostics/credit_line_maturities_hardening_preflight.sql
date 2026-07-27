@@ -104,3 +104,48 @@ FROM (
       OR (c.table_name = 'finance_cash_movements' AND c.column_name = 'amount')
     )
 ) s;
+
+-- 7) Must admit FINANCE_MONEY_MAX_AFTER_ROUND (9999999999.9999); migration aborts if smaller
+SELECT
+  min(derived_max_inclusive) AS most_restrictive_max,
+  9999999999.9999 AS finance_money_max_after_round,
+  min(derived_max_inclusive) >= 9999999999.9999 AS admits_app_ceiling
+FROM (
+  SELECT
+    CASE
+      WHEN c.numeric_precision IS NULL THEN 9999999999.9999::numeric
+      ELSE power(10::numeric, c.numeric_precision - coalesce(c.numeric_scale, 0))
+           - power(10::numeric, -coalesce(c.numeric_scale, 0))
+    END AS derived_max_inclusive
+  FROM information_schema.columns c
+  WHERE c.table_schema = 'public'
+    AND (
+      (c.table_name = 'finance_credit_line_movements' AND c.column_name = 'amount')
+      OR (c.table_name = 'finance_credit_line_repayment_groups'
+          AND c.column_name IN ('amount', 'paid_amount', 'remaining_amount'))
+      OR (c.table_name = 'finance_credit_lines'
+          AND c.column_name IN ('credit_limit', 'used_amount', 'available_amount'))
+      OR (c.table_name = 'finance_cash_accounts' AND c.column_name = 'balance')
+      OR (c.table_name = 'finance_cash_movements' AND c.column_name = 'amount')
+    )
+) s;
+
+-- 8) Duplicate drawdown source identities (must be 0 before unique index; do not auto-merge)
+SELECT
+  lower(trim(source_type)) AS source_type_normalized,
+  source_id,
+  count(*) AS rows,
+  array_agg(id) AS movement_ids
+FROM public.finance_credit_line_movements
+WHERE movement_type = 'drawdown'
+  AND source_id IS NOT NULL
+  AND lower(trim(source_type)) IN ('supplier_payment', 'purchase_payment_batch')
+GROUP BY 1, 2
+HAVING count(*) > 1;
+
+-- 9) Drawdown source unique index presence
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename = 'finance_credit_line_movements'
+  AND indexname = 'ux_finance_credit_line_movements_drawdown_source';

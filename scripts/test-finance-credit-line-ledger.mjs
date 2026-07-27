@@ -17,6 +17,10 @@ const runtime = readFileSync(
   new URL("../sql/migrations/20260729_close_credit_line_runtime_invariants.sql", import.meta.url),
   "utf8",
 );
+const concurrency = readFileSync(
+  new URL("../sql/migrations/20260730_serialize_credit_line_operation_identities.sql", import.meta.url),
+  "utf8",
+);
 const baseRpc = readFileSync(
   new URL("../sql/migrations/finance_credit_lines_ledger_rpc.sql", import.meta.url),
   "utf8",
@@ -49,6 +53,17 @@ assert.match(runtime, /GRANT EXECUTE ON FUNCTION public\.finance_create_credit_l
 assert.match(runtime, /source_type must be supplier_payment or purchase_payment_batch/);
 assert.match(runtime, /v_line_status IN \('eliminada', 'deleted'\)/);
 
+assert.match(concurrency, /credit_line_operation:/);
+assert.equal(
+  (concurrency.match(/hashtextextended\('credit_line_operation:' \|\| v_key/g) || []).length,
+  2,
+);
+assert.match(concurrency, /credit_line_drawdown_source:/);
+assert.match(concurrency, /DRAWDOWN_SOURCE_DUPLICATES/);
+assert.match(concurrency, /SCHEMA_MONEY_LIMIT_TOO_SMALL/);
+assert.doesNotMatch(concurrency, /WHEN unique_violation|EXCEPTION WHEN unique_violation/);
+assert.match(concurrency, /lower\(trim\(source_type\)\) = v_source/);
+assert.match(concurrency, /IDEMPOTENCY_PAYLOAD_MISMATCH: idempotency key belongs to a different movement_type/);
 assert.match(ledgerTypes, /manualDueDate/);
 assert.match(ledgerTypes, /IDEMPOTENCY_PAYLOAD_MISMATCH/);
 assert.match(ledgerTypes, /DIRECT_DML_FORBIDDEN/);

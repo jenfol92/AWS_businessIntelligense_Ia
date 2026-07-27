@@ -5,7 +5,7 @@ const dir = join("sql", "migrations");
 const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
 const relevant = files.filter(
   (f) =>
-    /^(20260721_|20260722_|20260727_|20260728_|20260729_)/.test(f)
+    /^(20260721_|20260722_|20260727_|20260728_|20260729_|20260730_)/.test(f)
     || /^finance_/.test(f),
 );
 
@@ -52,6 +52,11 @@ const rows = relevant.map((name) => {
     role = "pending";
     note = "debt summary/status/numeric/global key/auth";
   }
+  if (name === "20260730_serialize_credit_line_operation_identities.sql") {
+    kind = "concurrency_locks";
+    role = "pending";
+    note = "shared credit_line_operation lock + drawdown source unique index";
+  }
   return { name, kind, role, note };
 });
 
@@ -88,7 +93,7 @@ ORDER BY e.name;
 -- Applied finance-ish versions missing from this repo inventory (informational)
 SELECT a.version AS applied_missing_from_repo_inventory
 FROM supabase_migrations.schema_migrations a
-WHERE a.version ~ '^(20260721_|20260722_|20260727_|20260728_|20260729_|finance_)'
+WHERE a.version ~ '^(20260721_|20260722_|20260727_|20260728_|20260729_|20260730_|finance_)'
   AND a.version NOT IN (SELECT name FROM (VALUES ${nameList}) v(name));
 `;
 

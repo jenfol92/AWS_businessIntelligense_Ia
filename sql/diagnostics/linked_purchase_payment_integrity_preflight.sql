@@ -58,9 +58,23 @@ WHERE n.nspname = 'public'
     'mark_and_finance_supplier_payment',
     'create_and_apply_purchase_payment_batch',
     'get_purchase_payment_candidates',
-    'get_purchase_payment_batch_detail'
+    'get_purchase_payment_batch_detail',
+    'update_confirmed_purchase_order_operations'
   )
 ORDER BY p.proname, p.oid::regprocedure::text;
+
+-- Debe devolver cero filas: ninguna funcion invoker puede hacer DML sobre
+-- finance_supplier_payments despues de revocar escrituras directas.
+SELECT
+  p.oid::regprocedure AS unsafe_invoker_signature,
+  pg_get_functiondef(p.oid) AS definition
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'public'
+  AND p.prokind = 'f'
+  AND NOT p.prosecdef
+  AND pg_get_functiondef(p.oid) ~*
+    '(insert[[:space:]]+into|update|delete[[:space:]]+from)[[:space:]]+public[.]finance_supplier_payments';
 
 -- Obligaciones manuales quedan trazables en planificacion general, pero fuera
 -- de candidatos de settlement nuevo.

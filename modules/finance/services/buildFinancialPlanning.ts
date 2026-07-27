@@ -376,14 +376,15 @@ function buildSupplierPaymentEvents(
 
     for (const { allocation, batch } of allocationStats.active) {
       const settlementPaidAt = asString(batch["paid_at"]);
+      const settlementDate = settlementPaidAt ? settlementPaidAt.slice(0, 10) : null;
       const settlementEur = asNumber(allocation["allocated_amount_eur"]);
       events.push({
         id: `${String(payment["id"])}:${String(batch["id"])}`,
         type: "supplier_payment_settlement",
         title: `${title} pagado`,
-        date: settlementPaidAt,
-        month: dateToMonth(settlementPaidAt),
-        isPendingDate: !settlementPaidAt,
+        date: settlementDate,
+        month: dateToMonth(settlementDate),
+        isPendingDate: !settlementDate,
         status: "pagado",
         containerId: asString(container?.["id"]) ?? asString(payment["contenedor_id"]),
         containerCode: asString(container?.["identificador_embarque"]),
@@ -735,6 +736,9 @@ export async function buildFinancialPlanning(
       pendingDateEvents: [],
     };
   });
+  // El summary comparte exactamente el horizonte de los buckets visibles.
+  // Un historico global requeriria un campo separado y explicitamente etiquetado.
+  const horizonEvents = months.flatMap((month) => month.events);
 
   return {
     ok: true,
@@ -743,13 +747,13 @@ export async function buildFinancialPlanning(
       totalCreditUsed: creditLines.reduce((sum, line) => sum + line.usedAmount, 0),
       totalCreditAvailable,
       cashBalance,
-      pendingPayments: events
+      pendingPayments: horizonEvents
         .filter((event) => !event.isInformational && ["pendiente", "parcial", "vencido"].includes(event.status))
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
-      paidPayments: events
+      paidPayments: horizonEvents
         .filter((event) => !event.isInformational)
         .reduce((sum, event) => sum + paidEventAmountEur(event), 0),
-      plannedIncome: events
+      plannedIncome: horizonEvents
         .filter((event) => !event.isInformational && event.type === "amazon_income")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       plannedUsdEurRate: globalFxRate,

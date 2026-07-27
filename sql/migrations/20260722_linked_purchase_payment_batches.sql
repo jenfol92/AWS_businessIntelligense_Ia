@@ -307,6 +307,9 @@ DECLARE
   v_key text;
   v_supplier_payment_id uuid;
   v_payload_fingerprint text;
+  v_entry_mode text;
+  v_bank_reference text;
+  v_notes text;
 BEGIN
   IF auth.uid() IS NULL
      AND coalesce(auth.role(), current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
@@ -348,17 +351,36 @@ BEGIN
 
   v_agent_id := (p_payload->>'agent_id')::uuid;
   v_currency := upper(trim(p_payload->>'original_currency'));
-  IF v_currency NOT IN ('USD', 'EUR', 'GBP', 'CNY') THEN
+  IF v_currency IS NULL OR v_currency = ''
+     OR v_currency NOT IN ('USD', 'EUR', 'GBP', 'CNY') THEN
     RAISE EXCEPTION 'INVALID_PLAN_CURRENCY: unsupported original_currency';
+  END IF;
+  v_entry_mode := nullif(trim(p_payload->>'entry_mode'), '');
+  IF v_entry_mode IS NULL OR v_entry_mode NOT IN ('free_amount', 'selected_payments') THEN
+    RAISE EXCEPTION 'INVALID_ENTRY_MODE: unsupported entry_mode';
   END IF;
   v_source_type := p_payload->>'source_type';
   v_cash_id := nullif(p_payload->>'cash_account_id', '')::uuid;
   v_line_id := nullif(p_payload->>'credit_line_id', '')::uuid;
-  v_amount := (p_payload->>'amount_original')::numeric;
-  v_actual_fx := nullif(p_payload->>'actual_fx_rate', '')::numeric;
-  v_actual_eur := nullif(p_payload->>'actual_amount_eur', '')::numeric;
-  v_bank_fee := coalesce((p_payload->>'bank_fee_eur')::numeric, 0);
-  v_ff_fee := coalesce((p_payload->>'ff_fee_eur')::numeric, 0);
+  v_bank_reference := nullif(trim(p_payload->>'bank_reference'), '');
+  v_notes := nullif(trim(p_payload->>'notes'), '');
+  BEGIN
+    v_amount := (p_payload->>'amount_original')::numeric;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT: amount_original must be numeric';
+  END;
+  BEGIN
+    v_actual_fx := nullif(p_payload->>'actual_fx_rate', '')::numeric;
+    v_actual_eur := nullif(p_payload->>'actual_amount_eur', '')::numeric;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: actual values must be numeric';
+  END;
+  BEGIN
+    v_bank_fee := coalesce((p_payload->>'bank_fee_eur')::numeric, 0);
+    v_ff_fee := coalesce((p_payload->>'ff_fee_eur')::numeric, 0);
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'INVALID_FEE: fees must be numeric';
+  END;
 
   IF v_agent_id IS NULL THEN RAISE EXCEPTION 'MISSING_AGENT: agent_id is required'; END IF;
   IF NOT public.finance_is_finite_numeric(v_amount) OR v_amount <= 0 THEN
@@ -402,8 +424,10 @@ BEGIN
     RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: funded_total_eur must be finite and positive';
   END IF;
 
-  IF jsonb_typeof(p_payload->'allocations') <> 'array'
-     OR jsonb_array_length(p_payload->'allocations') = 0 THEN
+  IF jsonb_typeof(p_payload->'allocations') <> 'array' THEN
+    RAISE EXCEPTION 'INVALID_ALLOCATIONS: allocations must be an array';
+  END IF;
+  IF jsonb_array_length(p_payload->'allocations') = 0 THEN
     RAISE EXCEPTION 'INVALID_ALLOCATIONS: at least one allocation is required';
   END IF;
   v_count := jsonb_array_length(p_payload->'allocations');
@@ -415,15 +439,35 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'INVALID_UUID: supplier_payment_id must be a UUID';
   END IF;
+  FOR v_alloc IN SELECT * FROM jsonb_array_elements(p_payload->'allocations')
+  LOOP
+    BEGIN
+      v_alloc_original := (v_alloc->>'allocated_amount_original')::numeric;
+    EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+      RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT: allocated_amount_original must be numeric';
+    END;
+    IF NOT public.finance_is_finite_numeric(v_alloc_original) OR v_alloc_original <= 0 THEN
+      RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT: allocation must be finite and positive';
+    END IF;
+  END LOOP;
 
   SELECT md5(jsonb_build_object(
+    'payee_type', 'agent',
     'agent_id', v_agent_id,
+    'entry_mode', v_entry_mode,
     'original_currency', v_currency,
     'amount_original', v_amount,
+    'actual_fx_rate', v_actual_fx,
+    'actual_amount_eur', v_actual_eur,
+    'bank_fee_eur', v_bank_fee,
+    'ff_fee_eur', v_ff_fee,
+    'funded_total_eur', v_funded_total,
     'source_type', v_source_type,
     'cash_account_id', v_cash_id,
     'credit_line_id', v_line_id,
     'paid_at', v_paid_at,
+    'bank_reference', v_bank_reference,
+    'notes', v_notes,
     'allocations', (
       SELECT jsonb_agg(jsonb_build_object(
         'supplier_payment_id', item->>'supplier_payment_id',
@@ -521,8 +565,8 @@ BEGIN
     ) VALUES (
       'agent', v_agent_id, v_paid_at, v_currency, v_amount,
       v_actual_fx, v_actual_eur, v_bank_fee, v_ff_fee, v_funded_total,
-      v_source_type, v_cash_id, v_line_id, nullif(trim(p_payload->>'bank_reference'), ''),
-      nullif(trim(p_payload->>'notes'), ''), p_payload->>'entry_mode', v_key,
+      v_source_type, v_cash_id, v_line_id, v_bank_reference,
+      v_notes, v_entry_mode, v_key,
       v_payload_fingerprint, auth.uid()
     ) RETURNING * INTO v_batch;
   EXCEPTION WHEN unique_violation THEN

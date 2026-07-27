@@ -9,7 +9,8 @@ CREATE OR REPLACE FUNCTION public.update_confirmed_purchase_order_operations(
 )
 RETURNS public.ordenes_compra
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   v_order public.ordenes_compra;
@@ -19,6 +20,11 @@ DECLARE
   v_balance_due date;
   v_balance_days integer;
 BEGIN
+  IF auth.uid() IS NULL
+     AND coalesce(auth.role(), current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED: authenticated user or service_role required'
+      USING ERRCODE = '42501';
+  END IF;
   IF jsonb_typeof(coalesce(p_patch, '{}'::jsonb)) <> 'object' THEN
     RAISE EXCEPTION 'El patch operativo debe ser un objeto JSON.'
       USING ERRCODE = '22023';
@@ -224,9 +230,12 @@ END;
 $$;
 
 REVOKE EXECUTE ON FUNCTION public.update_confirmed_purchase_order_operations(uuid, jsonb)
-FROM PUBLIC;
+FROM PUBLIC, anon;
 
 GRANT EXECUTE ON FUNCTION public.update_confirmed_purchase_order_operations(uuid, jsonb)
 TO authenticated, service_role;
+
+ALTER FUNCTION public.update_confirmed_purchase_order_operations(uuid, jsonb)
+OWNER TO postgres;
 
 COMMIT;

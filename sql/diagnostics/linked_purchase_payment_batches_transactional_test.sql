@@ -96,6 +96,9 @@ DECLARE
   v_movement_count bigint;
   v_failed boolean;
   v_cash_before numeric;
+  v_multi_payload jsonb;
+  v_multi_batch_id uuid;
+  v_due_before date;
 BEGIN
   SELECT id INTO v_user_id FROM auth.users ORDER BY created_at LIMIT 1;
   IF v_user_id IS NULL THEN
@@ -156,7 +159,7 @@ BEGIN
     id, orden_id, payment_type, amount_original, original_currency, amount_eur,
     status, payment_source_type
   ) VALUES
-    (v_payment_a, v_order_a, 'DEPOSITO_30', 10000, 'USD', 9000, 'pendiente', NULL),
+    (v_payment_a, v_order_a, 'BALANCE_70', 10000, 'USD', 9000, 'pendiente', NULL),
     (v_payment_b, v_order_b, 'DEPOSITO_30', 5000, 'USD', 4500, 'pendiente', NULL),
     (v_payment_other_agent, v_order_other_agent, 'DEPOSITO_30', 1000, 'USD', 900, 'pendiente', 'manual'),
     (v_payment_other_currency, v_order_other_currency, 'DEPOSITO_30', 100, 'EUR', 100, 'pendiente', NULL),
@@ -319,6 +322,46 @@ BEGIN
     RAISE EXCEPTION 'ASSERT_FAILED: invalid identifier/date created a batch';
   END IF;
 
+  FOREACH v_result IN ARRAY ARRAY[
+    jsonb_build_object('field', 'amount_original', 'value', 'abc', 'key', 'test-text-amount', 'expected', 'INVALID_AMOUNT:%'),
+    jsonb_build_object('field', 'actual_fx_rate', 'value', 'abc', 'key', 'test-text-fx', 'expected', 'INVALID_ACTUAL_VALUES:%'),
+    jsonb_build_object('field', 'bank_fee_eur', 'value', 'abc', 'key', 'test-text-fee', 'expected', 'INVALID_FEE:%'),
+    jsonb_build_object('field', 'allocation', 'value', 'abc', 'key', 'test-text-allocation', 'expected', 'INVALID_ALLOCATION_AMOUNT:%'),
+    jsonb_build_object('field', 'entry_mode', 'value', 'otro', 'key', 'test-entry-mode', 'expected', 'INVALID_ENTRY_MODE:%'),
+    jsonb_build_object('field', 'currency', 'value', '', 'key', 'test-missing-currency', 'expected', 'INVALID_PLAN_CURRENCY:%')
+  ]
+  LOOP
+    v_failed := false;
+    BEGIN
+      PERFORM public.create_and_apply_purchase_payment_batch(
+        jsonb_build_object(
+          'payee_type', 'agent', 'agent_id', v_agent_a,
+          'entry_mode', CASE WHEN v_result->>'field' = 'entry_mode' THEN v_result->>'value' ELSE 'selected_payments' END,
+          'amount_original', CASE WHEN v_result->>'field' = 'amount_original' THEN v_result->>'value' ELSE '1000' END,
+          'original_currency', CASE WHEN v_result->>'field' = 'currency' THEN v_result->>'value' ELSE 'USD' END,
+          'actual_fx_rate', CASE WHEN v_result->>'field' = 'actual_fx_rate' THEN v_result->>'value' ELSE '0.9' END,
+          'bank_fee_eur', CASE WHEN v_result->>'field' = 'bank_fee_eur' THEN v_result->>'value' ELSE '0' END,
+          'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+          'idempotency_key', v_result->>'key',
+          'allocations', jsonb_build_array(jsonb_build_object(
+            'supplier_payment_id', v_payment_a,
+            'allocated_amount_original',
+            CASE WHEN v_result->>'field' = 'allocation' THEN v_result->>'value' ELSE '1000' END
+          ))
+        )
+      );
+    EXCEPTION WHEN OTHERS THEN v_failed := SQLERRM LIKE (v_result->>'expected');
+    END;
+    IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: malformed JSON cast was accepted'; END IF;
+  END LOOP;
+  IF EXISTS (
+    SELECT 1 FROM public.finance_purchase_payment_batches
+    WHERE idempotency_key LIKE 'test-text-%'
+       OR idempotency_key IN ('test-entry-mode', 'test-missing-currency')
+  ) THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: malformed JSON payload created a batch';
+  END IF;
+
   -- Legacy manual: visible en planificacion general, nunca candidato ni liquidable.
   IF EXISTS (
     SELECT 1 FROM public.get_purchase_payment_candidates(NULL)
@@ -345,16 +388,22 @@ BEGIN
     RAISE EXCEPTION 'ASSERT_FAILED: legacy manual obligation was settled';
   END IF;
   -- Batch real multiorden/multifabrica: una transferencia, dos aplicaciones.
-  v_result := public.create_and_apply_purchase_payment_batch(jsonb_build_object(
+  v_multi_payload := jsonb_build_object(
     'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
-    'amount_original', 1000, 'original_currency', 'USD', 'actual_amount_eur', 900,
-    'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+    'amount_original', 1000, 'original_currency', 'USD',
+    'actual_fx_rate', 0.9, 'actual_amount_eur', 900,
+    'bank_fee_eur', 0, 'ff_fee_eur', 0,
+    'paid_at', '2026-07-24T18:30:00Z',
+    'bank_reference', 'TEST-MULTI', 'notes', 'multi order baseline',
+    'source_type', 'cash_account', 'cash_account_id', v_cash_id,
     'idempotency_key', 'test-real-multi-order',
     'allocations', jsonb_build_array(
       jsonb_build_object('supplier_payment_id', v_payment_multi_a, 'allocated_amount_original', 600),
       jsonb_build_object('supplier_payment_id', v_payment_multi_b, 'allocated_amount_original', 400)
     )
-  ));
+  );
+  v_result := public.create_and_apply_purchase_payment_batch(v_multi_payload);
+  v_multi_batch_id := (v_result->'batch'->>'id')::uuid;
   IF jsonb_array_length(v_result->'allocations') <> 2
      OR (SELECT count(*) FROM public.finance_cash_movements
          WHERE source_type = 'purchase_payment_batch'
@@ -374,13 +423,42 @@ BEGIN
     RAISE EXCEPTION 'ASSERT_FAILED: both factories missing from batch detail';
   END IF;
 
+  SELECT balance INTO v_cash_before FROM public.finance_cash_accounts WHERE id = v_cash_id;
+  FOREACH v_result IN ARRAY ARRAY[
+    jsonb_set(v_multi_payload, '{actual_fx_rate}', '0.900001'::jsonb),
+    jsonb_set(v_multi_payload, '{actual_amount_eur}', '900.01'::jsonb),
+    jsonb_set(v_multi_payload, '{bank_fee_eur}', '1'::jsonb),
+    jsonb_set(v_multi_payload, '{ff_fee_eur}', '1'::jsonb),
+    jsonb_set(v_multi_payload, '{bank_reference}', to_jsonb('TEST-MULTI-CHANGED'::text)),
+    jsonb_set(v_multi_payload, '{paid_at}', to_jsonb('2026-07-25T18:30:00Z'::text)),
+    jsonb_set(v_multi_payload, '{allocations,0,allocated_amount_original}', '599'::jsonb)
+  ]
+  LOOP
+    v_failed := false;
+    BEGIN
+      PERFORM public.create_and_apply_purchase_payment_batch(v_result);
+    EXCEPTION WHEN OTHERS THEN
+      v_failed := SQLERRM LIKE 'IDEMPOTENCY_PAYLOAD_MISMATCH:%';
+    END;
+    IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: changed idempotent semantics were accepted'; END IF;
+  END LOOP;
+  IF (SELECT count(*) FROM public.finance_purchase_payment_batches
+      WHERE idempotency_key = 'test-real-multi-order') <> 1
+     OR (SELECT count(*) FROM public.finance_purchase_payment_allocations
+         WHERE batch_id = v_multi_batch_id) <> 2
+     OR (SELECT count(*) FROM public.finance_cash_movements
+         WHERE source_type = 'purchase_payment_batch' AND source_id = v_multi_batch_id) <> 1
+     OR (SELECT balance FROM public.finance_cash_accounts WHERE id = v_cash_id) <> v_cash_before THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: mismatched retry changed persisted state';
+  END IF;
+
   -- El mismo payload no puede mezclar Intracap/Yubei (agentes distintos).
   SELECT balance INTO v_cash_before FROM public.finance_cash_accounts WHERE id = v_cash_id;
   v_failed := false;
   BEGIN
     PERFORM public.create_and_apply_purchase_payment_batch(jsonb_build_object(
       'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
-      'amount_original', 1400, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
+      'amount_original', 1000, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
       'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
       'idempotency_key', 'test-multi-agent-rollback',
       'allocations', jsonb_build_array(
@@ -427,9 +505,26 @@ BEGIN
     RAISE EXCEPTION 'ASSERT_FAILED: first allocation must leave partial status';
   END IF;
 
+  -- authenticated puede cambiar ETA por la RPC definer sin UPDATE directo.
+  PERFORM public.update_confirmed_purchase_order_operations(
+    v_order_a,
+    jsonb_build_object('eta', (current_date + 50)::text)
+  );
+  IF NOT EXISTS (
+    SELECT 1 FROM public.finance_supplier_payments
+    WHERE id = v_payment_a
+      AND status = 'parcial'
+      AND due_date = current_date + 40
+      AND actual_amount_original = 4000
+      AND actual_amount_eur = 3600
+      AND actual_fx_rate = 0.9
+  ) THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: operational ETA RPC did not preserve partial settlement';
+  END IF;
+
   -- El sync puede mover due_date pero conserva todo el settlement parcial.
   PERFORM public.sync_supplier_payment_plan(
-    v_order_a, 'DEPOSITO_30', current_date + 30, 10000, 'USD',
+    v_order_a, 'BALANCE_70', current_date + 30, 10000, 'USD',
     NULL, 9000, 'propio', NULL, 'pendiente', 'updated plan note', true
   );
   IF NOT EXISTS (
@@ -486,6 +581,16 @@ BEGIN
       AND b.idempotency_key = 'individual-supplier-payment:' || v_payment_a::text
   ) <> 'pagado' THEN
     RAISE EXCEPTION 'ASSERT_FAILED: historical allocation status was not preserved';
+  END IF;
+
+  SELECT due_date INTO v_due_before FROM public.finance_supplier_payments WHERE id = v_payment_a;
+  PERFORM public.update_confirmed_purchase_order_operations(
+    v_order_a,
+    jsonb_build_object('eta', (current_date + 60)::text)
+  );
+  IF (SELECT due_date FROM public.finance_supplier_payments WHERE id = v_payment_a)
+     IS DISTINCT FROM v_due_before THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: operational ETA RPC modified a paid obligation';
   END IF;
 
   -- Mismo agente y obligaciones de ordenes distintas es valido.
@@ -570,22 +675,6 @@ BEGIN
     v_failed := SQLERRM LIKE 'ORDER_NOT_CONFIRMED:%';
   END;
   IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: draft order was accepted'; END IF;
-
-  -- Agente distinto.
-  v_failed := false;
-  BEGIN
-    PERFORM public.create_and_apply_purchase_payment_batch(jsonb_build_object(
-      'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
-      'amount_original', 1000, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
-      'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
-      'idempotency_key', 'test-agent-mismatch',
-      'allocations', jsonb_build_array(jsonb_build_object(
-        'supplier_payment_id', v_payment_other_agent, 'allocated_amount_original', 1000
-      ))
-    ));
-  EXCEPTION WHEN OTHERS THEN v_failed := SQLERRM LIKE 'AGENT_MISMATCH:%';
-  END;
-  IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: mixed agent was accepted'; END IF;
 
   -- Moneda distinta.
   v_failed := false;

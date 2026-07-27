@@ -122,6 +122,7 @@ export type FinancePlanningSummary = {
   totalCreditAvailable: number;
   cashBalance: number;
   pendingPayments: number;
+  /** Pagos ejecutados dentro del mismo horizonte mensual visible. */
   paidPayments: number;
   plannedIncome: number;
   plannedUsdEurRate: number | null;

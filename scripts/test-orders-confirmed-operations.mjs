@@ -41,6 +41,11 @@ assert.doesNotMatch(
 );
 
 const paymentBlock = rpcSql.slice(rpcSql.indexOf("IF v_changed_schedule"));
+assert.match(rpcSql, /SECURITY DEFINER/);
+assert.match(rpcSql, /SET search_path = public/);
+assert.match(rpcSql, /auth\.uid\(\) IS NULL/);
+assert.match(rpcSql, /OWNER TO postgres/);
+assert.match(rpcSql, /FROM PUBLIC, anon/);
 assert.match(
   paymentBlock,
   /payment_type = 'BALANCE_70'[\s\S]*status IN \('pendiente', 'parcial', 'vencido'\)/,

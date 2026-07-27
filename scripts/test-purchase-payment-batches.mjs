@@ -139,7 +139,12 @@ assert.match(planning, /if \(event\.status === "pagado"\) continue;/);
 assert.match(planningTypes, /supplier_payment_settlement/);
 assert.match(planning, /type: "supplier_payment_settlement"/);
 assert.match(planning, /date: dueDate/);
-assert.match(planning, /date: settlementPaidAt/);
+assert.match(planning, /settlementPaidAt \? settlementPaidAt\.slice\(0, 10\) : null/);
+assert.match(planning, /date: settlementDate/);
+assert.match(planning, /month: dateToMonth\(settlementDate\)/);
+assert.match(planning, /paidAt: settlementPaidAt/);
+assert.match(planning, /const horizonEvents = months\.flatMap/);
+assert.match(planning, /paidPayments: horizonEvents/);
 assert.match(planning, /if \(pendingOriginal > 0\.0001\) events\.push/);
 assert.match(planning, /supplier_payment_settlement"\) return event\.allocatedAmountEur/);
 assert.match(
@@ -175,11 +180,38 @@ assert.match(transactionalDiagnostic, /test-multi-agent-rollback/);
 assert.doesNotMatch(transactionalDiagnostic, /AGENT_MISMATCH:%'[\s\S]{0,80}OBLIGATION_ALREADY_PAID/);
 assert.match(transactionalDiagnostic, /authenticated updated status directly/);
 assert.match(transactionalDiagnostic, /IDEMPOTENCY_PAYLOAD_MISMATCH/);
+for (const malformedCase of [
+  "test-text-amount",
+  "test-text-fx",
+  "test-text-fee",
+  "test-text-allocation",
+  "test-entry-mode",
+  "test-missing-currency",
+]) {
+  assert.match(transactionalDiagnostic, new RegExp(malformedCase));
+}
+assert.match(transactionalDiagnostic, /0\.900001/);
+assert.match(transactionalDiagnostic, /900\.01/);
+assert.match(transactionalDiagnostic, /TEST-MULTI-CHANGED/);
+assert.match(transactionalDiagnostic, /2026-07-25T18:30:00Z/);
 assert.match(migration, /payload_fingerprint/);
 assert.match(integrityPreflight, /payload_fingerprint/);
 assert.match(migration, /INVALID_PLAN_FX/);
 assert.match(migration, /INVALID_PLAN_EUR_AMOUNT/);
 assert.match(migration, /IDEMPOTENCY_PAYLOAD_MISMATCH/);
+for (const fingerprintField of [
+  "payee_type",
+  "entry_mode",
+  "actual_fx_rate",
+  "actual_amount_eur",
+  "bank_fee_eur",
+  "ff_fee_eur",
+  "funded_total_eur",
+  "bank_reference",
+  "notes",
+]) {
+  assert.match(migration, new RegExp(`'${fingerprintField}'`));
+}
 for (const field of [
   "batch_id",
   "source_type",
@@ -271,6 +303,14 @@ assert.throws(
   () => normalizePurchasePaymentBatchPayload({ ...eurPayload, sourceType: "manual" }),
   /fuente manual no está permitida/i,
 );
+
+const settlementPaidAt = "2026-07-24T18:30:00Z";
+const settlementDate = settlementPaidAt.slice(0, 10);
+assert.equal(settlementDate, "2026-07-24");
+assert.equal(settlementPaidAt, "2026-07-24T18:30:00Z");
+assert.equal(settlementDate.slice(0, 7), "2026-07");
+assert.ok(settlementDate <= "2026-07-24", "fechaHasta inclusiva debe conservar el settlement");
+assert.equal(Number.isNaN(new Date(`${settlementDate}T00:00:00Z`).getTime()), false);
 assert.throws(
   () => normalizePurchasePaymentBatchPayload({ ...eurPayload, paidAt: "2026-07-24", agentId: "not-a-uuid" }),
   /UUID valido/i,

@@ -72,6 +72,7 @@ DECLARE
   v_order_multi_b uuid := gen_random_uuid();
   v_order_intracap uuid := gen_random_uuid();
   v_order_yubei uuid := gen_random_uuid();
+  v_order_partial uuid := gen_random_uuid();
   v_payment_a uuid := gen_random_uuid();
   v_payment_b uuid := gen_random_uuid();
   v_payment_other_agent uuid := gen_random_uuid();
@@ -84,6 +85,7 @@ DECLARE
   v_payment_multi_b uuid := gen_random_uuid();
   v_payment_intracap uuid := gen_random_uuid();
   v_payment_yubei uuid := gen_random_uuid();
+  v_payment_partial uuid := gen_random_uuid();
   v_factory_a uuid := gen_random_uuid();
   v_factory_b uuid := gen_random_uuid();
   v_product_id uuid;
@@ -148,7 +150,8 @@ BEGIN
     (v_order_multi_a, 'TEST-BATCH-MULTI-A', 'confirmado', v_agent_a, 'USD', current_date),
     (v_order_multi_b, 'TEST-BATCH-MULTI-B', 'confirmado', v_agent_a, 'USD', current_date),
     (v_order_intracap, 'TEST-INTRACAP', 'confirmado', v_agent_a, 'USD', current_date),
-    (v_order_yubei, 'TEST-YUBEI', 'confirmado', v_agent_b, 'USD', current_date);
+    (v_order_yubei, 'TEST-YUBEI', 'confirmado', v_agent_b, 'USD', current_date),
+    (v_order_partial, 'TEST-PARTIAL-AGENT', 'confirmado', v_agent_a, 'USD', current_date);
 
   INSERT INTO public.orden_items(orden_id, producto_id, proveedor_id, cantidad)
   VALUES
@@ -170,7 +173,8 @@ BEGIN
     (v_payment_multi_a, v_order_multi_a, 'DEPOSITO_30', 600, 'USD', 540, 'pendiente', NULL),
     (v_payment_multi_b, v_order_multi_b, 'DEPOSITO_30', 400, 'USD', 360, 'pendiente', NULL),
     (v_payment_intracap, v_order_intracap, 'DEPOSITO_30', 700, 'USD', 630, 'pendiente', NULL),
-    (v_payment_yubei, v_order_yubei, 'DEPOSITO_30', 300, 'USD', 270, 'pendiente', NULL);
+    (v_payment_yubei, v_order_yubei, 'DEPOSITO_30', 300, 'USD', 270, 'pendiente', NULL),
+    (v_payment_partial, v_order_partial, 'DEPOSITO_30', 1000, 'USD', 900, 'parcial', NULL);
 
   UPDATE public.ordenes_compra SET moneda_compra = 'EUR' WHERE id = v_order_other_currency;
 
@@ -362,6 +366,106 @@ BEGIN
     RAISE EXCEPTION 'ASSERT_FAILED: malformed JSON payload created a batch';
   END IF;
 
+  -- allocations debe existir, ser array no vacio y no repetir obligaciones.
+  FOREACH v_result IN ARRAY ARRAY[
+    jsonb_build_object('key', 'test-allocations-missing', 'mode', 'missing'),
+    jsonb_build_object('key', 'test-allocations-null', 'mode', 'null'),
+    jsonb_build_object('key', 'test-allocations-object', 'mode', 'object'),
+    jsonb_build_object('key', 'test-allocations-empty', 'mode', 'empty')
+  ]
+  LOOP
+    v_failed := false;
+    BEGIN
+      PERFORM public.create_and_apply_purchase_payment_batch(
+        jsonb_build_object(
+          'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+          'amount_original', 1000, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
+          'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+          'idempotency_key', v_result->>'key',
+          'allocations', CASE v_result->>'mode'
+            WHEN 'null' THEN 'null'::jsonb
+            WHEN 'object' THEN '{}'::jsonb
+            ELSE '[]'::jsonb
+          END
+        ) - CASE WHEN v_result->>'mode' = 'missing' THEN 'allocations' ELSE '__none__' END
+      );
+    EXCEPTION WHEN OTHERS THEN v_failed := SQLERRM LIKE 'INVALID_ALLOCATIONS:%';
+    END;
+    IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: invalid allocations shape was accepted'; END IF;
+  END LOOP;
+
+  v_failed := false;
+  BEGIN
+    PERFORM public.create_and_apply_purchase_payment_batch(jsonb_build_object(
+      'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+      'amount_original', 1000, 'original_currency', 'USD', 'actual_fx_rate', 0.9,
+      'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+      'idempotency_key', 'test-duplicate-allocation',
+      'allocations', jsonb_build_array(
+        jsonb_build_object('supplier_payment_id', v_payment_a, 'allocated_amount_original', 500),
+        jsonb_build_object('supplier_payment_id', v_payment_a, 'allocated_amount_original', 500)
+      )
+    ));
+  EXCEPTION WHEN OTHERS THEN v_failed := SQLERRM LIKE 'DUPLICATE_ALLOCATION:%';
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: duplicate allocation was accepted'; END IF;
+
+  -- Los limites de almacenamiento deben fallar funcionalmente antes de escribir.
+  FOREACH v_result IN ARRAY ARRAY[
+    jsonb_build_object('field', 'amount', 'key', 'test-range-amount', 'expected', 'INVALID_AMOUNT:%'),
+    jsonb_build_object('field', 'fx', 'key', 'test-range-fx', 'expected', 'INVALID_ACTUAL_VALUES:%'),
+    jsonb_build_object('field', 'fee', 'key', 'test-range-fee', 'expected', 'INVALID_FEE:%'),
+    jsonb_build_object('field', 'allocation', 'key', 'test-range-allocation', 'expected', 'INVALID_ALLOCATION_AMOUNT:%')
+  ]
+  LOOP
+    v_failed := false;
+    BEGIN
+      PERFORM public.create_and_apply_purchase_payment_batch(jsonb_build_object(
+        'payee_type', 'agent', 'agent_id', v_agent_a, 'entry_mode', 'selected_payments',
+        'amount_original', CASE WHEN v_result->>'field' = 'amount' THEN '1e100' ELSE '1000' END,
+        'original_currency', 'USD',
+        'actual_fx_rate', CASE WHEN v_result->>'field' = 'fx' THEN '1e100' ELSE '0.9' END,
+        'bank_fee_eur', CASE WHEN v_result->>'field' = 'fee' THEN '1e100' ELSE '0' END,
+        'paid_at', now(), 'source_type', 'cash_account', 'cash_account_id', v_cash_id,
+        'idempotency_key', v_result->>'key',
+        'allocations', jsonb_build_array(jsonb_build_object(
+          'supplier_payment_id', v_payment_a,
+          'allocated_amount_original', CASE
+            WHEN v_result->>'field' = 'allocation' THEN '1e100' ELSE '1000'
+          END
+        ))
+      ));
+    EXCEPTION WHEN OTHERS THEN v_failed := SQLERRM LIKE (v_result->>'expected');
+    END;
+    IF NOT v_failed THEN RAISE EXCEPTION 'ASSERT_FAILED: out-of-range numeric was accepted'; END IF;
+  END LOOP;
+
+  -- Antes de cualquier settlement, el agente puede cambiar y volver.
+  PERFORM public.update_confirmed_purchase_order_operations(
+    v_order_low_cash, jsonb_build_object('agente_id', v_agent_b)
+  );
+  IF (SELECT agente_id FROM public.ordenes_compra WHERE id = v_order_low_cash) <> v_agent_b THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: pre-settlement agent change was blocked';
+  END IF;
+  PERFORM public.update_confirmed_purchase_order_operations(
+    v_order_low_cash, jsonb_build_object('agente_id', v_agent_a)
+  );
+
+  -- Un estado parcial legacy inmoviliza agente y no altera orden ni pago.
+  v_failed := false;
+  BEGIN
+    PERFORM public.update_confirmed_purchase_order_operations(
+      v_order_partial, jsonb_build_object('agente_id', v_agent_b)
+    );
+  EXCEPTION WHEN OTHERS THEN
+    v_failed := SQLERRM LIKE 'AGENT_CHANGE_AFTER_SETTLEMENT:%';
+  END;
+  IF NOT v_failed
+     OR (SELECT agente_id FROM public.ordenes_compra WHERE id = v_order_partial) <> v_agent_a
+     OR (SELECT status FROM public.finance_supplier_payments WHERE id = v_payment_partial) <> 'parcial' THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: partial settlement agent guard was not atomic';
+  END IF;
+
   -- Legacy manual: visible en planificacion general, nunca candidato ni liquidable.
   IF EXISTS (
     SELECT 1 FROM public.get_purchase_payment_candidates(NULL)
@@ -421,6 +525,45 @@ BEGIN
   IF v_result::text NOT LIKE '%TEST Factory A%'
      OR v_result::text NOT LIKE '%TEST Factory B%' THEN
     RAISE EXCEPTION 'ASSERT_FAILED: both factories missing from batch detail';
+  END IF;
+
+  -- Tras settlement activo, el agente queda inmutable y la orden no cambia.
+  v_failed := false;
+  BEGIN
+    PERFORM public.update_confirmed_purchase_order_operations(
+      v_order_multi_a, jsonb_build_object('agente_id', v_agent_b)
+    );
+  EXCEPTION WHEN OTHERS THEN
+    v_failed := SQLERRM LIKE 'AGENT_CHANGE_AFTER_SETTLEMENT:%';
+  END;
+  IF NOT v_failed
+     OR (SELECT agente_id FROM public.ordenes_compra WHERE id = v_order_multi_a) <> v_agent_a THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: settled order agent was mutable';
+  END IF;
+
+  -- Una obligacion manual legacy tambien inmoviliza el agente.
+  v_failed := false;
+  BEGIN
+    PERFORM public.update_confirmed_purchase_order_operations(
+      v_order_other_agent, jsonb_build_object('agente_id', v_agent_a)
+    );
+  EXCEPTION WHEN OTHERS THEN
+    v_failed := SQLERRM LIKE 'AGENT_CHANGE_AFTER_SETTLEMENT:%';
+  END;
+  IF NOT v_failed
+     OR (SELECT agente_id FROM public.ordenes_compra WHERE id = v_order_other_agent) <> v_agent_b THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: legacy manual order agent was mutable';
+  END IF;
+
+  -- Diferencias solo de escala normalizada son el mismo reintento.
+  v_result := public.create_and_apply_purchase_payment_batch(
+    jsonb_set(
+      jsonb_set(v_multi_payload, '{amount_original}', to_jsonb('1000.0000'::text)),
+      '{actual_fx_rate}', to_jsonb('0.90000000'::text)
+    )
+  );
+  IF coalesce((v_result->>'idempotent')::boolean, false) IS NOT TRUE THEN
+    RAISE EXCEPTION 'ASSERT_FAILED: normalized numeric retry was not idempotent';
   END IF;
 
   SELECT balance INTO v_cash_before FROM public.finance_cash_accounts WHERE id = v_cash_id;

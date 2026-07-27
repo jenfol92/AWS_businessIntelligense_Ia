@@ -34,6 +34,7 @@ const MONTH_LABELS = [
 
 import { LOGISTICS_LABELS } from "../utils/logisticsLabels";
 import { partitionFinanceEventsByDate } from "../utils/partitionFinanceEventsByDate";
+import { resolveLegacySupplierPaymentSettlement } from "../utils/legacySupplierPaymentSettlement";
 
 function asNumber(value: unknown, fallback = 0): number {
   if (value === null || value === undefined || value === "") return fallback;
@@ -303,7 +304,10 @@ function buildSupplierPaymentEvents(
     );
 
     const notes = asString(payment["notes"]);
-    const reason = notes ?? recommendation.reason;
+    const isLegacyManual = asString(payment["payment_source_type"]) === "manual";
+    const legacyManualMessage =
+      "Obligación legacy manual de solo lectura. Debe regularizarse antes de operar.";
+    const reason = isLegacyManual ? legacyManualMessage : notes ?? recommendation.reason;
     const canonicalStatus = allocationStats.count > 0
       ? allocatedOriginal >= plannedOriginalAmount - 0.0001
         ? "pagado"
@@ -357,22 +361,73 @@ function buildSupplierPaymentEvents(
       paidAt,
       paymentSource,
       bankReference,
-      bankFeeEur,
-      ffFeeEur,
+      bankFeeEur: allocationStats.count > 0 ? null : bankFeeEur,
+      ffFeeEur: allocationStats.count > 0 ? null : ffFeeEur,
       orderTotalEur,
       orderPaidRealOriginal,
       orderPendingRealOriginal,
       orderPaidRealEur,
       orderPendingRealEur,
-      recommendedSource: recommendation.source,
+      recommendedSource: isLegacyManual ? null : recommendation.source,
       recommendationReason: reason,
-      canMarkPaid: true,
+      canMarkPaid: !isLegacyManual,
       paymentSourceType: allocationStats.count > 0
         ? allocationStats.sourceType
         : supplierPaymentSourceType(payment["payment_source_type"]),
       paymentCashAccountId: asString(payment["cash_account_id"]),
       paymentCreditLineId: asString(payment["credit_line_id"]),
     });
+
+    const legacySettlement = resolveLegacySupplierPaymentSettlement(payment, allocationStats.count);
+    if (legacySettlement) {
+      events.push({
+        id: legacySettlement.id,
+        type: "supplier_payment_settlement",
+        title: `${title} pagado (legacy)`,
+        date: legacySettlement.date,
+        month: dateToMonth(legacySettlement.date),
+        isPendingDate: !legacySettlement.date,
+        status: "pagado",
+        containerId: asString(container?.["id"]) ?? asString(payment["contenedor_id"]),
+        containerCode: asString(container?.["identificador_embarque"]),
+        orderId,
+        orderCode: asString(order?.["numero_orden"]),
+        numeroPedidoAgente: asString(order?.["numero_pedido_agente"]),
+        agentContact: agentContact(order),
+        logisticsType,
+        originalAmount: legacySettlement.originalAmount,
+        allocatedAmountOriginal: legacySettlement.originalAmount,
+        pendingAmountOriginal: null,
+        allocatedAmountEur: legacySettlement.amountEur,
+        linkedBatchCount: 0,
+        latestBatchId: null,
+        latestBatchReference: asString(payment["bank_reference"]),
+        hasMixedPaymentSources: false,
+        originalCurrency,
+        depositPercent,
+        balancePercent,
+        plannedFxRate: asNumber(payment["actual_fx_rate"], 0) || null,
+        plannedFxSource: "not_configured",
+        plannedAmountEur: 0,
+        paidAmountEur: legacySettlement.amountEur,
+        actualAmountOriginal: legacySettlement.originalAmount,
+        actualAmountEur: legacySettlement.amountEur,
+        actualFxRate: asNumber(payment["actual_fx_rate"], 0) || null,
+        actualFxRateIsWeighted: false,
+        paidAt: legacySettlement.paidAt,
+        paymentSource: supplierPaymentSource(payment["payment_source"]),
+        bankReference: asString(payment["bank_reference"]),
+        bankFeeEur: asNumber(payment["bank_fee_eur"], 0) || null,
+        ffFeeEur: asNumber(payment["ff_fee_eur"], 0) || null,
+        recommendedSource: null,
+        recommendationReason: isLegacyManual
+          ? legacyManualMessage
+          : "Settlement legacy histórico; el movimiento ya está incluido en saldos actuales.",
+        canMarkPaid: false,
+        paymentSourceType: supplierPaymentSourceType(payment["payment_source_type"]),
+        sourcePaymentId: String(payment["id"]),
+      });
+    }
 
     for (const { allocation, batch } of allocationStats.active) {
       const settlementPaidAt = asString(batch["paid_at"]);

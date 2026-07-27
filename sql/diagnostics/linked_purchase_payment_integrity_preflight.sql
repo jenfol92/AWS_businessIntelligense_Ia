@@ -63,8 +63,21 @@ WHERE n.nspname = 'public'
   )
 ORDER BY p.proname, p.oid::regprocedure::text;
 
--- Debe devolver cero filas: ninguna funcion invoker puede hacer DML sobre
--- finance_supplier_payments despues de revocar escrituras directas.
+-- Inventario completo: toda funcion invoker que mencione la tabla debe
+-- revisarse, aunque el acceso parezca de solo lectura.
+SELECT
+  p.oid::regprocedure AS invoker_signature,
+  pg_get_functiondef(p.oid) AS definition
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'public'
+  AND p.prokind = 'f'
+  AND NOT p.prosecdef
+  AND pg_get_functiondef(p.oid) ~* 'finance_supplier_payments'
+ORDER BY p.oid::regprocedure::text;
+
+-- Debe devolver cero filas: deteccion flexible de DML invoker, con schema
+-- opcional, identificadores entrecomillados y espacios/saltos de linea.
 SELECT
   p.oid::regprocedure AS unsafe_invoker_signature,
   pg_get_functiondef(p.oid) AS definition
@@ -74,7 +87,20 @@ WHERE n.nspname = 'public'
   AND p.prokind = 'f'
   AND NOT p.prosecdef
   AND pg_get_functiondef(p.oid) ~*
-    '(insert[[:space:]]+into|update|delete[[:space:]]+from)[[:space:]]+public[.]finance_supplier_payments';
+    '(insert[[:space:]]+into|update|delete[[:space:]]+from)[[:space:]]+([\"]?public[\"]?[[:space:]]*[.][[:space:]]*)?[\"]?finance_supplier_payments[\"]?'
+ORDER BY p.oid::regprocedure::text;
+
+-- Revision manual obligatoria: SQL dinamico puede ocultar el nombre de tabla.
+SELECT
+  p.oid::regprocedure AS dynamic_sql_invoker_signature,
+  pg_get_functiondef(p.oid) AS definition
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'public'
+  AND p.prokind = 'f'
+  AND NOT p.prosecdef
+  AND pg_get_functiondef(p.oid) ~* '(\mexecute\M|format[[:space:]]*[(])'
+ORDER BY p.oid::regprocedure::text;
 
 -- Obligaciones manuales quedan trazables en planificacion general, pero fuera
 -- de candidatos de settlement nuevo.

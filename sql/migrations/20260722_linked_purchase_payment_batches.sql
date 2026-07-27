@@ -281,6 +281,7 @@ DECLARE
   v_payment public.finance_supplier_payments;
   v_order public.ordenes_compra;
   v_allocations jsonb := '[]'::jsonb;
+  v_normalized_allocations jsonb := '[]'::jsonb;
   v_obligations jsonb := '[]'::jsonb;
   v_agent_id uuid;
   v_currency text;
@@ -382,18 +383,27 @@ BEGIN
     RAISE EXCEPTION 'INVALID_FEE: fees must be numeric';
   END;
 
+  v_amount := round(v_amount, 4);
+  v_actual_fx := CASE WHEN v_actual_fx IS NULL THEN NULL ELSE round(v_actual_fx, 8) END;
+  v_actual_eur := CASE WHEN v_actual_eur IS NULL THEN NULL ELSE round(v_actual_eur, 2) END;
+  v_bank_fee := round(v_bank_fee, 2);
+  v_ff_fee := round(v_ff_fee, 2);
   IF v_agent_id IS NULL THEN RAISE EXCEPTION 'MISSING_AGENT: agent_id is required'; END IF;
-  IF NOT public.finance_is_finite_numeric(v_amount) OR v_amount <= 0 THEN
+  IF NOT public.finance_is_finite_numeric(v_amount) OR v_amount <= 0 OR abs(v_amount) >= 10000000000 THEN
     RAISE EXCEPTION 'INVALID_AMOUNT: amount_original must be finite and positive';
   END IF;
-  IF v_actual_fx IS NOT NULL AND NOT public.finance_is_finite_numeric(v_actual_fx) THEN
+  IF v_actual_fx IS NOT NULL
+     AND (NOT public.finance_is_finite_numeric(v_actual_fx) OR abs(v_actual_fx) >= 10000000000) THEN
     RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: actual_fx_rate must be finite';
   END IF;
-  IF v_actual_eur IS NOT NULL AND NOT public.finance_is_finite_numeric(v_actual_eur) THEN
+  IF v_actual_eur IS NOT NULL
+     AND (NOT public.finance_is_finite_numeric(v_actual_eur) OR abs(v_actual_eur) >= 1000000000000) THEN
     RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: actual_amount_eur must be finite';
   END IF;
   IF NOT public.finance_is_finite_numeric(v_bank_fee) OR v_bank_fee < 0
-     OR NOT public.finance_is_finite_numeric(v_ff_fee) OR v_ff_fee < 0 THEN
+     OR abs(v_bank_fee) >= 1000000000000
+     OR NOT public.finance_is_finite_numeric(v_ff_fee) OR v_ff_fee < 0
+     OR abs(v_ff_fee) >= 1000000000000 THEN
     RAISE EXCEPTION 'INVALID_FEE: fees must be finite and nonnegative';
   END IF;
   IF v_currency = 'EUR' THEN
@@ -415,16 +425,19 @@ BEGIN
   ELSE
     v_actual_eur := round(v_actual_eur, 2);
   END IF;
+  v_actual_fx := round(v_actual_fx, 8);
+  v_actual_eur := round(v_actual_eur, 2);
   IF NOT public.finance_is_finite_numeric(v_actual_fx) OR v_actual_fx <= 0
      OR NOT public.finance_is_finite_numeric(v_actual_eur) OR v_actual_eur <= 0 THEN
     RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: actual amounts and fees are invalid';
   END IF;
-  v_funded_total := v_actual_eur + v_bank_fee + v_ff_fee;
-  IF NOT public.finance_is_finite_numeric(v_funded_total) OR v_funded_total <= 0 THEN
+  v_funded_total := round(v_actual_eur + v_bank_fee + v_ff_fee, 2);
+  IF NOT public.finance_is_finite_numeric(v_funded_total) OR v_funded_total <= 0
+     OR abs(v_funded_total) >= 1000000000000 THEN
     RAISE EXCEPTION 'INVALID_ACTUAL_VALUES: funded_total_eur must be finite and positive';
   END IF;
 
-  IF jsonb_typeof(p_payload->'allocations') <> 'array' THEN
+  IF jsonb_typeof(p_payload->'allocations') IS DISTINCT FROM 'array' THEN
     RAISE EXCEPTION 'INVALID_ALLOCATIONS: allocations must be an array';
   END IF;
   IF jsonb_array_length(p_payload->'allocations') = 0 THEN
@@ -446,10 +459,24 @@ BEGIN
     EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
       RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT: allocated_amount_original must be numeric';
     END;
-    IF NOT public.finance_is_finite_numeric(v_alloc_original) OR v_alloc_original <= 0 THEN
+    v_alloc_original := round(v_alloc_original, 4);
+    IF NOT public.finance_is_finite_numeric(v_alloc_original) OR v_alloc_original <= 0
+       OR abs(v_alloc_original) >= 10000000000 THEN
       RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT: allocation must be finite and positive';
     END IF;
+    v_normalized_allocations := v_normalized_allocations || jsonb_build_array(jsonb_build_object(
+      'supplier_payment_id', v_alloc->>'supplier_payment_id',
+      'allocated_amount_original', v_alloc_original
+    ));
   END LOOP;
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(v_normalized_allocations) item
+    GROUP BY item->>'supplier_payment_id'
+    HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'DUPLICATE_ALLOCATION: supplier_payment_id cannot be repeated';
+  END IF;
 
   SELECT md5(jsonb_build_object(
     'payee_type', 'agent',
@@ -473,7 +500,7 @@ BEGIN
         'supplier_payment_id', item->>'supplier_payment_id',
         'allocated_amount_original', (item->>'allocated_amount_original')::numeric
       ) ORDER BY item->>'supplier_payment_id')
-      FROM jsonb_array_elements(p_payload->'allocations') item
+      FROM jsonb_array_elements(v_normalized_allocations) item
     )
   )::text)
   INTO v_payload_fingerprint;
@@ -490,12 +517,12 @@ BEGIN
   FROM public.finance_supplier_payments sp
   WHERE sp.id IN (
     SELECT (item->>'supplier_payment_id')::uuid
-    FROM jsonb_array_elements(p_payload->'allocations') item
+    FROM jsonb_array_elements(v_normalized_allocations) item
   )
   ORDER BY sp.id
   FOR UPDATE;
 
-  FOR v_alloc IN SELECT * FROM jsonb_array_elements(p_payload->'allocations')
+  FOR v_alloc IN SELECT * FROM jsonb_array_elements(v_normalized_allocations)
   LOOP
     SELECT * INTO v_payment FROM public.finance_supplier_payments
       WHERE id = (v_alloc->>'supplier_payment_id')::uuid;
@@ -583,7 +610,7 @@ BEGIN
     RAISE;
   END;
 
-  FOR v_alloc IN SELECT * FROM jsonb_array_elements(p_payload->'allocations')
+  FOR v_alloc IN SELECT * FROM jsonb_array_elements(v_normalized_allocations)
   LOOP
     v_supplier_payment_id := (v_alloc->>'supplier_payment_id')::uuid;
     v_index := v_index + 1;

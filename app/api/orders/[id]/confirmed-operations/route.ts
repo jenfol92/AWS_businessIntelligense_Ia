@@ -28,6 +28,7 @@ export async function PATCH(req: Request, { params }: Params) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Error actualizando la operación confirmada.";
-    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+    const status = message.includes("AGENT_CHANGE_AFTER_SETTLEMENT") ? 409 : 400;
+    return NextResponse.json({ ok: false, error: message }, { status });
   }
 }

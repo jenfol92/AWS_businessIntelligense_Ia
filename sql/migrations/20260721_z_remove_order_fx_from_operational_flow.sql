@@ -17,6 +17,7 @@ DECLARE
   v_updated public.ordenes_compra;
   v_changed_schedule boolean;
   v_changed_shipping boolean;
+  v_changed_agent boolean;
   v_balance_due date;
   v_balance_days integer;
 BEGIN
@@ -127,10 +128,36 @@ BEGIN
   v_changed_shipping :=
     p_patch ? 'tipo_envio'
     AND (p_patch->>'tipo_envio') IS DISTINCT FROM v_order.tipo_envio;
+  v_changed_agent :=
+    p_patch ? 'agente_id'
+    AND nullif(trim(p_patch->>'agente_id'), '')::uuid IS DISTINCT FROM v_order.agente_id;
   v_changed_schedule :=
     (p_patch ? 'etd' AND (p_patch->>'etd') IS DISTINCT FROM v_order.etd::text)
     OR (p_patch ? 'eta' AND (p_patch->>'eta') IS DISTINCT FROM v_order.eta::text)
     OR (p_patch ? 'eta_real' AND (p_patch->>'eta_real') IS DISTINCT FROM v_order.eta_real::text);
+
+  IF v_changed_agent AND EXISTS (
+    SELECT 1
+    FROM public.finance_supplier_payments fsp
+    WHERE fsp.orden_id = p_order_id
+      AND (
+        fsp.status IN ('parcial', 'pagado')
+        OR coalesce(fsp.actual_amount_original, 0) > 0
+        OR coalesce(fsp.actual_amount_eur, 0) > 0
+        OR fsp.payment_source_type = 'manual'
+        OR EXISTS (
+          SELECT 1
+          FROM public.finance_purchase_payment_allocations fppa
+          JOIN public.finance_purchase_payment_batches fppb
+            ON fppb.id = fppa.batch_id
+          WHERE fppa.supplier_payment_id = fsp.id
+            AND fppb.status <> 'reversed'
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION 'AGENT_CHANGE_AFTER_SETTLEMENT: purchase agent cannot change after settlement'
+      USING ERRCODE = 'P0001';
+  END IF;
 
   IF v_changed_shipping AND p_patch->>'tipo_envio' = 'amazon_agl' AND (
     EXISTS (

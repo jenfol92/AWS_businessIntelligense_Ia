@@ -9,6 +9,9 @@ import {
 import {
   partitionFinanceEventsByDate,
 } from "../modules/finance/utils/partitionFinanceEventsByDate.ts";
+import {
+  resolveLegacySupplierPaymentSettlement,
+} from "../modules/finance/utils/legacySupplierPaymentSettlement.ts";
 
 const migration = readFileSync(
   new URL("../sql/migrations/20260722_linked_purchase_payment_batches.sql", import.meta.url),
@@ -90,6 +93,7 @@ const requiredSql = [
   "finance_is_finite_numeric",
   "INVALID_FEE",
   "INVALID_ALLOCATION_AMOUNT",
+  "DUPLICATE_ALLOCATION",
   "LEGACY_MANUAL_PAYMENT",
   "PREFLIGHT_CONFLICTING_STATUS_CHECK",
   "REVOKE INSERT, UPDATE, DELETE ON public.finance_supplier_payments FROM PUBLIC, anon, authenticated",
@@ -138,6 +142,13 @@ assert.match(planning, /partitionFinanceEventsByDate\(events\)/);
 assert.match(planning, /if \(event\.status === "pagado"\) continue;/);
 assert.match(planningTypes, /supplier_payment_settlement/);
 assert.match(planning, /type: "supplier_payment_settlement"/);
+assert.ok(
+  planning.includes("Obligaci\u00f3n legacy manual de solo lectura. Debe regularizarse antes de operar."),
+);
+assert.match(planning, /recommendedSource: isLegacyManual \? null/);
+assert.match(planning, /canMarkPaid: !isLegacyManual/);
+assert.match(planning, /bankFeeEur: allocationStats\.count > 0 \? null : bankFeeEur/);
+assert.match(planning, /ffFeeEur: allocationStats\.count > 0 \? null : ffFeeEur/);
 assert.match(planning, /date: dueDate/);
 assert.match(planning, /settlementPaidAt \? settlementPaidAt\.slice\(0, 10\) : null/);
 assert.match(planning, /date: settlementDate/);
@@ -180,6 +191,18 @@ assert.match(transactionalDiagnostic, /test-multi-agent-rollback/);
 assert.doesNotMatch(transactionalDiagnostic, /AGENT_MISMATCH:%'[\s\S]{0,80}OBLIGATION_ALREADY_PAID/);
 assert.match(transactionalDiagnostic, /authenticated updated status directly/);
 assert.match(transactionalDiagnostic, /IDEMPOTENCY_PAYLOAD_MISMATCH/);
+assert.match(transactionalDiagnostic, /test-duplicate-allocation/);
+assert.match(transactionalDiagnostic, /test-allocations-missing/);
+assert.match(transactionalDiagnostic, /test-allocations-null/);
+assert.match(transactionalDiagnostic, /test-allocations-object/);
+assert.match(transactionalDiagnostic, /test-allocations-empty/);
+assert.match(transactionalDiagnostic, /test-range-amount/);
+assert.match(transactionalDiagnostic, /test-range-fx/);
+assert.match(transactionalDiagnostic, /test-range-fee/);
+assert.match(transactionalDiagnostic, /test-range-allocation/);
+assert.match(transactionalDiagnostic, /1000\.0000/);
+assert.match(transactionalDiagnostic, /0\.90000000/);
+assert.match(transactionalDiagnostic, /AGENT_CHANGE_AFTER_SETTLEMENT/);
 for (const malformedCase of [
   "test-text-amount",
   "test-text-fx",
@@ -248,9 +271,44 @@ for (const code of [
   "INVALID_UUID",
   "INVALID_PLAN_CURRENCY",
   "IDEMPOTENCY_PAYLOAD_MISMATCH",
+  "DUPLICATE_ALLOCATION",
 ]) {
   assert.match(executionService, new RegExp(`${code}:`), `missing error mapping ${code}`);
 }
+
+const legacyPaid = resolveLegacySupplierPaymentSettlement({
+  id: "paid",
+  status: "pagado",
+  amount_original: 1000,
+  actual_amount_eur: 900,
+  paid_at: "2026-07-25T18:30:00Z",
+}, 0);
+assert.deepEqual(legacyPaid, {
+  id: "legacy-settlement:paid",
+  paidAt: "2026-07-25T18:30:00Z",
+  date: "2026-07-25",
+  originalAmount: 1000,
+  amountEur: 900,
+});
+assert.equal(resolveLegacySupplierPaymentSettlement({
+  id: "allocated",
+  status: "pagado",
+  amount_original: 1000,
+}, 1), null);
+const legacyPartial = resolveLegacySupplierPaymentSettlement({
+  id: "partial",
+  status: "parcial",
+  amount_original: 1000,
+  actual_amount_original: 400,
+  actual_amount_eur: 360,
+}, 0);
+assert.equal(legacyPartial?.originalAmount, 400);
+assert.equal(legacyPartial?.date, null);
+assert.equal(resolveLegacySupplierPaymentSettlement({
+  id: "pending",
+  status: "pendiente",
+  amount_original: 1000,
+}, 0), null);
 
 const baseCandidate = {
   supplierPaymentId: "payment-a",

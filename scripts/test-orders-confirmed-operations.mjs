@@ -155,7 +155,18 @@ assert.match(rpcSql, /lead_time_produccion debe ser un entero mayor o igual que 
 assert.match(rpcSql, /lead_time_transito debe ser un entero mayor o igual que cero/);
 assert.match(rpcSql, /tipo_envio debe ser propio o amazon_agl/);
 assert.match(rpcSql, /La edición operativa contiene campos no permitidos/);
-assert.doesNotMatch(rpcSql, /tipo_cambio_moneda_eur|planned_fx_rate|amount_eur|coste_total_eur|v_changed_fx|orden_items/);
+assert.doesNotMatch(rpcSql, /tipo_cambio_moneda_eur|planned_fx_rate|coste_total_eur|v_changed_fx|orden_items/);
+assert.match(rpcSql, /AGENT_CHANGE_AFTER_SETTLEMENT/);
+assert.match(rpcSql, /status IN \('parcial', 'pagado'\)/);
+assert.match(rpcSql, /actual_amount_original/);
+assert.match(rpcSql, /actual_amount_eur/);
+assert.match(rpcSql, /payment_source_type = 'manual'/);
+assert.match(rpcSql, /fppb\.status <> 'reversed'/);
+assert.ok(
+  rpcSql.indexOf("AGENT_CHANGE_AFTER_SETTLEMENT") < rpcSql.indexOf("UPDATE public.ordenes_compra"),
+  "agent settlement guard must run before order mutation",
+);
+assert.match(operationsRoute, /AGENT_CHANGE_AFTER_SETTLEMENT"\) \? 409 : 400/);
 
 assert.match(
   versionSql,

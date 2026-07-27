@@ -55,12 +55,12 @@ assert.doesNotMatch(
 
 assert.match(
   rpcSql,
-  /payment_type = 'BALANCE_70'\s+AND fsp\.status IN \('pendiente', 'vencido'\)/,
-  "ETA/ETD solo deben recalcular el balance pendiente o vencido",
+  /payment_type = 'BALANCE_70'\s+AND fsp\.status IN \('pendiente', 'parcial', 'vencido'\)/,
+  "ETA/ETD deben recalcular obligaciones no finalizadas",
 );
 assert.match(
   rpcSql,
-  /SET\s+logistics_type = v_updated\.tipo_envio[\s\S]*status IN \('pendiente', 'vencido'\)/,
+  /SET\s+logistics_type = v_updated\.tipo_envio[\s\S]*status IN \('pendiente', 'parcial', 'vencido'\)/,
   "tipo_envio debe actualizar logistics_type sin tocar pagos pagados",
 );
 assert.doesNotMatch(

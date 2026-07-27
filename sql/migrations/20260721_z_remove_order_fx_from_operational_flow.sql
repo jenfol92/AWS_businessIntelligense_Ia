@@ -200,13 +200,14 @@ BEGIN
     SET
       due_date = v_balance_due,
       status = CASE
+        WHEN fsp.status = 'parcial' THEN 'parcial'
         WHEN v_balance_due IS NOT NULL AND v_balance_due < CURRENT_DATE THEN 'vencido'
         ELSE 'pendiente'
       END,
       updated_at = now()
     WHERE fsp.orden_id = p_order_id
       AND fsp.payment_type = 'BALANCE_70'
-      AND fsp.status IN ('pendiente', 'vencido');
+      AND fsp.status IN ('pendiente', 'parcial', 'vencido');
 
     IF v_changed_shipping THEN
       UPDATE public.finance_supplier_payments fsp
@@ -214,7 +215,7 @@ BEGIN
         logistics_type = v_updated.tipo_envio,
         updated_at = now()
       WHERE fsp.orden_id = p_order_id
-        AND fsp.status IN ('pendiente', 'vencido');
+        AND fsp.status IN ('pendiente', 'parcial', 'vencido');
     END IF;
   END IF;
 

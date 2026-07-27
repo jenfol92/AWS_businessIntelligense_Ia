@@ -1,6 +1,7 @@
 export type FinanceEventType =
   | "supplier_deposit"
   | "supplier_balance"
+  | "supplier_payment_settlement"
   | "container_freight"
   | "container_arrival_expense"
   | "container_transit"

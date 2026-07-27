@@ -8,6 +8,17 @@ SELECT
   has_table_privilege('authenticated', 'public.finance_supplier_payments', 'UPDATE') AS can_update,
   has_table_privilege('authenticated', 'public.finance_supplier_payments', 'DELETE') AS can_delete;
 
+-- La huella es obligatoria para distinguir reintentos identicos de reutilizacion
+-- conflictiva de la misma idempotency_key.
+SELECT
+  c.column_name,
+  c.is_nullable,
+  c.data_type
+FROM information_schema.columns c
+WHERE c.table_schema = 'public'
+  AND c.table_name = 'finance_purchase_payment_batches'
+  AND c.column_name = 'payload_fingerprint';
+
 -- Todas las CHECK que mencionan status. Antes de migrar solo se admite como
 -- reemplazable finance_supplier_payments_status_check.
 SELECT c.conname, pg_get_constraintdef(c.oid) AS definition

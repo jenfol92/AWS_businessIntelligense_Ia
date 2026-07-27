@@ -48,6 +48,9 @@ const ERROR_STATUS: Record<SupplierPaymentExecutionErrorCode, number> = {
   CREDIT_LINE_NOT_FOUND: 404,
   INVALID_SOURCE: 422,
   PARTIAL_PAYMENT_PLAN_MISMATCH: 409,
+  INVALID_UUID: 422,
+  INVALID_PLAN_CURRENCY: 422,
+  IDEMPOTENCY_PAYLOAD_MISMATCH: 409,
   LEGACY_MANUAL_PAYMENT: 409,
   MISSING_FUNDING_SOURCE: 422,
   OBLIGATION_ALREADY_PAID: 409,
@@ -68,6 +71,8 @@ function executionError(
 function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function optionalPositiveNumber(
   value: unknown,
@@ -114,6 +119,9 @@ export function normalizeMarkSupplierPaymentPaidInput(
   if (!id) {
     throw executionError("INVALID_REQUEST", "El identificador del pago es obligatorio.");
   }
+  if (!UUID_PATTERN.test(id)) {
+    throw executionError("INVALID_UUID", "supplierPaymentId debe ser un UUID valido.");
+  }
 
   if (payload.sourceType === "manual") {
     throw executionError(
@@ -135,6 +143,12 @@ export function normalizeMarkSupplierPaymentPaidInput(
   const sourceType = payload.sourceType as SupplierPaymentFundingSourceType;
   const cashAccountId = optionalString(payload.cashAccountId);
   const creditLineId = optionalString(payload.creditLineId);
+  if (cashAccountId && !UUID_PATTERN.test(cashAccountId)) {
+    throw executionError("INVALID_UUID", "cashAccountId debe ser un UUID valido.");
+  }
+  if (creditLineId && !UUID_PATTERN.test(creditLineId)) {
+    throw executionError("INVALID_UUID", "creditLineId debe ser un UUID valido.");
+  }
 
   if (sourceType === "cash_account") {
     if (!cashAccountId || creditLineId) {

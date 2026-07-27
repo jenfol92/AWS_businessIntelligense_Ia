@@ -81,6 +81,7 @@ function purchasePaymentAllocationStats(payment: Record<string, unknown>) {
   );
   const latest = active[0]?.batch ?? null;
   return {
+    active,
     allocatedOriginal,
     allocatedEur,
     count: active.length,
@@ -317,19 +318,16 @@ function buildSupplierPaymentEvents(
         : null,
       dueDate,
     );
-    const displayStatus = status;
-    // El flujo de caja historico agrupa pagos ejecutados por paid_at. dueDate se
-    // conserva aparte para el seguimiento de la obligacion.
-    const cashFlowDate = status === "pagado" ? paidAt ?? dueDate : dueDate;
+    const displayStatus = status === "pagado" ? "pagado" : status;
 
-    events.push({
+    if (pendingOriginal > 0.0001) events.push({
       id: String(payment["id"]),
       type: mappedPaymentType.eventType,
       title,
-      date: cashFlowDate,
-      month: dateToMonth(cashFlowDate),
-      isPendingDate: !cashFlowDate,
-      status: displayStatus,
+      date: dueDate,
+      month: dateToMonth(dueDate),
+      isPendingDate: !dueDate,
+      status: displayStatus === "pagado" ? "parcial" : displayStatus,
       containerId: asString(container?.["id"]) ?? asString(payment["contenedor_id"]),
       containerCode: asString(container?.["identificador_embarque"]),
       orderId,
@@ -351,7 +349,7 @@ function buildSupplierPaymentEvents(
       plannedFxRate,
       plannedFxSource: plannedFxRate != null ? "legacy" : "not_configured",
       plannedAmountEur: displayAmountEur,
-      paidAmountEur: actualAmountEur,
+      paidAmountEur: null,
       actualAmountOriginal,
       actualAmountEur,
       actualFxRate,
@@ -375,6 +373,57 @@ function buildSupplierPaymentEvents(
       paymentCashAccountId: asString(payment["cash_account_id"]),
       paymentCreditLineId: asString(payment["credit_line_id"]),
     });
+
+    for (const { allocation, batch } of allocationStats.active) {
+      const settlementPaidAt = asString(batch["paid_at"]);
+      const settlementEur = asNumber(allocation["allocated_amount_eur"]);
+      events.push({
+        id: `${String(payment["id"])}:${String(batch["id"])}`,
+        type: "supplier_payment_settlement",
+        title: `${title} pagado`,
+        date: settlementPaidAt,
+        month: dateToMonth(settlementPaidAt),
+        isPendingDate: !settlementPaidAt,
+        status: "pagado",
+        containerId: asString(container?.["id"]) ?? asString(payment["contenedor_id"]),
+        containerCode: asString(container?.["identificador_embarque"]),
+        orderId,
+        orderCode: asString(order?.["numero_orden"]),
+        numeroPedidoAgente: asString(order?.["numero_pedido_agente"]),
+        agentContact: agentContact(order),
+        logisticsType,
+        originalAmount: asNumber(allocation["allocated_amount_original"]),
+        allocatedAmountOriginal: asNumber(allocation["allocated_amount_original"]),
+        pendingAmountOriginal: null,
+        allocatedAmountEur: settlementEur,
+        linkedBatchCount: 1,
+        latestBatchId: asString(batch["id"]),
+        latestBatchReference: asString(batch["bank_reference"]),
+        hasMixedPaymentSources: false,
+        originalCurrency,
+        depositPercent,
+        balancePercent,
+        plannedFxRate: asNumber(batch["actual_fx_rate"], 0) || null,
+        plannedFxSource: "not_configured",
+        plannedAmountEur: 0,
+        paidAmountEur: settlementEur,
+        actualAmountOriginal: asNumber(allocation["allocated_amount_original"]),
+        actualAmountEur: settlementEur,
+        actualFxRate: asNumber(batch["actual_fx_rate"], 0) || null,
+        actualFxRateIsWeighted: false,
+        paidAt: settlementPaidAt,
+        paymentSource: null,
+        bankReference: asString(batch["bank_reference"]),
+        // Las comisiones pertenecen al batch, no se repiten por allocation.
+        bankFeeEur: null,
+        ffFeeEur: null,
+        recommendedSource: null,
+        recommendationReason: "Settlement historico; el movimiento ya esta incluido en saldos actuales.",
+        canMarkPaid: false,
+        paymentSourceType: supplierPaymentSourceType(batch["source_type"]),
+        sourcePaymentId: String(payment["id"]),
+      });
+    }
   }
 
   return events;
@@ -548,9 +597,8 @@ function effectiveEventAmountEur(event: FinancePlanningEvent): number {
 }
 
 function paidEventAmountEur(event: FinancePlanningEvent): number {
-  if (event.type === "supplier_deposit" || event.type === "supplier_balance") {
-    return event.allocatedAmountEur ?? event.actualAmountEur ?? 0;
-  }
+  if (event.type === "supplier_payment_settlement") return event.allocatedAmountEur ?? 0;
+  if (event.type === "supplier_deposit" || event.type === "supplier_balance") return 0;
   return event.status === "pagado" ? effectiveEventAmountEur(event) : 0;
 }
 

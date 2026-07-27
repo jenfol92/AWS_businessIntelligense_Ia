@@ -136,7 +136,12 @@ assert.match(planning, /mixedSources/);
 assert.match(planning, /weightedFxRate/);
 assert.match(planning, /partitionFinanceEventsByDate\(events\)/);
 assert.match(planning, /if \(event\.status === "pagado"\) continue;/);
-assert.match(planning, /status === "pagado" \? paidAt \?\? dueDate : dueDate/);
+assert.match(planningTypes, /supplier_payment_settlement/);
+assert.match(planning, /type: "supplier_payment_settlement"/);
+assert.match(planning, /date: dueDate/);
+assert.match(planning, /date: settlementPaidAt/);
+assert.match(planning, /if \(pendingOriginal > 0\.0001\) events\.push/);
+assert.match(planning, /supplier_payment_settlement"\) return event\.allocatedAmountEur/);
 assert.match(
   planning,
   /if \(event\.status === "pagado"\) continue;[\s\S]*?event\.recommendedSource === "cash"/,
@@ -167,6 +172,14 @@ assert.match(transactionalDiagnostic, /jsonb_array_length\(v_result->'allocation
 assert.match(transactionalDiagnostic, /TEST Factory A/);
 assert.match(transactionalDiagnostic, /TEST Factory B/);
 assert.match(transactionalDiagnostic, /test-multi-agent-rollback/);
+assert.doesNotMatch(transactionalDiagnostic, /AGENT_MISMATCH:%'[\s\S]{0,80}OBLIGATION_ALREADY_PAID/);
+assert.match(transactionalDiagnostic, /authenticated updated status directly/);
+assert.match(transactionalDiagnostic, /IDEMPOTENCY_PAYLOAD_MISMATCH/);
+assert.match(migration, /payload_fingerprint/);
+assert.match(integrityPreflight, /payload_fingerprint/);
+assert.match(migration, /INVALID_PLAN_FX/);
+assert.match(migration, /INVALID_PLAN_EUR_AMOUNT/);
+assert.match(migration, /IDEMPOTENCY_PAYLOAD_MISMATCH/);
 for (const field of [
   "batch_id",
   "source_type",
@@ -200,6 +213,9 @@ for (const code of [
   "INVALID_SOURCE",
   "LEGACY_MANUAL_PAYMENT",
   "PARTIAL_PAYMENT_PLAN_MISMATCH",
+  "INVALID_UUID",
+  "INVALID_PLAN_CURRENCY",
+  "IDEMPOTENCY_PAYLOAD_MISMATCH",
 ]) {
   assert.match(executionService, new RegExp(`${code}:`), `missing error mapping ${code}`);
 }
@@ -239,21 +255,33 @@ assert.equal(persistentSelection.size, 2, "agent lock must apply to persistent s
 
 const eurPayload = normalizePurchasePaymentBatchPayload({
   payeeType: "agent",
-  agentId: "agent-a",
+  agentId: "11111111-1111-4111-8111-111111111111",
   entryMode: "selected_payments",
   amountOriginal: 100,
   originalCurrency: "EUR",
   paidAt: "2026-07-24",
   sourceType: "cash_account",
-  cashAccountId: "cash-a",
+  cashAccountId: "22222222-2222-4222-8222-222222222222",
   idempotencyKey: "eur-without-explicit-fx",
-  allocations: [{ supplierPaymentId: "payment-a", amountOriginal: 100 }],
+  allocations: [{ supplierPaymentId: "33333333-3333-4333-8333-333333333333", amountOriginal: 100 }],
 });
 assert.equal(eurPayload.actualFxRate, null);
 assert.equal(eurPayload.actualAmountEur, null);
 assert.throws(
   () => normalizePurchasePaymentBatchPayload({ ...eurPayload, sourceType: "manual" }),
   /fuente manual no está permitida/i,
+);
+assert.throws(
+  () => normalizePurchasePaymentBatchPayload({ ...eurPayload, paidAt: "2026-07-24", agentId: "not-a-uuid" }),
+  /UUID valido/i,
+);
+assert.throws(
+  () => normalizePurchasePaymentBatchPayload({ ...eurPayload, paidAt: "2026-02-31" }),
+  /fecha valida/i,
+);
+assert.throws(
+  () => normalizePurchasePaymentBatchPayload({ ...eurPayload, paidAt: "2026-07-24", originalCurrency: "JPY" }),
+  /USD, EUR, GBP o CNY/i,
 );
 
 const eventBase = {

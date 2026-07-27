@@ -22,13 +22,22 @@ export class PurchasePaymentBatchError extends Error {
   }
 }
 
-const fail = (code: string, message: string, status = 400): never => {
+const fail = (code: string, message: string, status = 422): never => {
   throw new PurchasePaymentBatchError(message, code, status);
 };
 
 function text(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) fail("INVALID_REQUEST", `${label} es obligatorio.`);
   return (value as string).trim();
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SUPPORTED_CURRENCIES = new Set(["USD", "EUR", "GBP", "CNY"]);
+
+function uuid(value: unknown, label: string): string {
+  const normalized = text(value, label);
+  if (!UUID_PATTERN.test(normalized)) fail("INVALID_UUID", `${label} debe ser un UUID valido.`);
+  return normalized;
 }
 
 function positive(value: unknown, label: string): number {
@@ -59,7 +68,7 @@ function allocations(value: unknown): PurchasePaymentAllocationInput[] {
   return (value as unknown[]).map((row) => {
     if (!row || typeof row !== "object") fail("INVALID_ALLOCATIONS", "Allocation inválida.");
     const record = row as Record<string, unknown>;
-    const supplierPaymentId = text(record.supplierPaymentId, "supplierPaymentId");
+    const supplierPaymentId = uuid(record.supplierPaymentId, "supplierPaymentId");
     if (seen.has(supplierPaymentId)) fail("DUPLICATE_ALLOCATION", "Una obligación no puede repetirse.");
     seen.add(supplierPaymentId);
     return { supplierPaymentId, amountOriginal: positive(record.amountOriginal, "amountOriginal") };
@@ -81,6 +90,8 @@ export function normalizePurchasePaymentBatchPayload(
   }
   const cashAccountId = optionalText(payload.cashAccountId);
   const creditLineId = optionalText(payload.creditLineId);
+  if (cashAccountId && !UUID_PATTERN.test(cashAccountId)) fail("INVALID_UUID", "cashAccountId debe ser un UUID valido.");
+  if (creditLineId && !UUID_PATTERN.test(creditLineId)) fail("INVALID_UUID", "creditLineId debe ser un UUID valido.");
   if (sourceType === "cash_account" && (!cashAccountId || creditLineId)) {
     fail("INVALID_SOURCE", "La cuenta propia es obligatoria y la línea debe quedar vacía.");
   }
@@ -89,15 +100,22 @@ export function normalizePurchasePaymentBatchPayload(
   }
   const paidAt = text(payload.paidAt, "paidAt");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(paidAt)) fail("INVALID_PAID_AT", "paidAt debe tener formato YYYY-MM-DD.");
+  const paidDate = new Date(`${paidAt}T00:00:00.000Z`);
+  if (Number.isNaN(paidDate.getTime()) || paidDate.toISOString().slice(0, 10) !== paidAt) {
+    fail("INVALID_PAID_AT", "paidAt no es una fecha valida.");
+  }
   const actualFxRate = optionalPositive(payload.actualFxRate, "actualFxRate");
   const actualAmountEur = optionalPositive(payload.actualAmountEur, "actualAmountEur");
   const originalCurrency = text(payload.originalCurrency, "originalCurrency").toUpperCase();
+  if (!SUPPORTED_CURRENCIES.has(originalCurrency)) {
+    fail("INVALID_PLAN_CURRENCY", "originalCurrency debe ser USD, EUR, GBP o CNY.");
+  }
   if (originalCurrency !== "EUR" && actualFxRate === null && actualAmountEur === null) {
     fail("MISSING_ACTUAL_VALUE", "Introduce el tipo de cambio real o el importe EUR real.");
   }
   return {
     payeeType: "agent",
-    agentId: text(payload.agentId, "agentId"),
+    agentId: uuid(payload.agentId, "agentId"),
     entryMode: entryMode as PurchasePaymentEntryMode,
     amountOriginal: positive(payload.amountOriginal, "amountOriginal"),
     originalCurrency,
@@ -137,6 +155,10 @@ export function purchasePaymentBatchErrorResponse(error: unknown) {
     CASH_ACCOUNT_NOT_FOUND: 404,
     CREDIT_LINE_NOT_FOUND: 404,
     INVALID_SOURCE: 422,
+    INVALID_UUID: 422,
+    INVALID_PAID_AT: 422,
+    INVALID_PLAN_CURRENCY: 422,
+    IDEMPOTENCY_PAYLOAD_MISMATCH: 409,
     LEGACY_MANUAL_PAYMENT: 409,
     PARTIAL_PAYMENT_PLAN_MISMATCH: 409,
   };

@@ -279,7 +279,7 @@ export async function fetchConfirmedOrderIdsNeedingPaymentRefresh(): Promise<str
   const { data, error } = await supabase
     .from("finance_supplier_payments")
     .select("orden_id")
-    .eq("status", "pendiente")
+    .in("status", ["pendiente", "parcial", "vencido"])
     .or("logistics_type.is.null,logistics_type.eq.sin_definir,logistics_type.eq.SIN_DEFINIR");
 
   if (error) throw new Error(formatSupabaseError(error));

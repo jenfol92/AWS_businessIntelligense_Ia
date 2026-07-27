@@ -43,8 +43,9 @@ assert.doesNotMatch(
 const paymentBlock = rpcSql.slice(rpcSql.indexOf("IF v_changed_schedule"));
 assert.match(
   paymentBlock,
-  /payment_type = 'BALANCE_70'[\s\S]*status IN \('pendiente', 'vencido'\)/,
+  /payment_type = 'BALANCE_70'[\s\S]*status IN \('pendiente', 'parcial', 'vencido'\)/,
 );
+assert.match(paymentBlock, /WHEN fsp\.status = 'parcial' THEN 'parcial'/);
 assert.doesNotMatch(paymentBlock, /DEPOSITO_30|amount_original\s*=|producto_costos/);
 assert.match(
   paymentBlock,
@@ -59,14 +60,14 @@ assert.match(
 // syncSupplierPaymentsForOrder, que fija el mismo valor en DEPOSITO_30 y BALANCE_70),
 // mientras que due_date/status siguen limitados a BALANCE_70.
 const dueDateUpdate = paymentBlock.match(
-  /UPDATE public\.finance_supplier_payments fsp\s+SET\s+due_date[\s\S]*?status IN \('pendiente', 'vencido'\);/,
+  /UPDATE public\.finance_supplier_payments fsp\s+SET\s+due_date[\s\S]*?status IN \('pendiente', 'parcial', 'vencido'\);/,
 )?.[0] ?? "";
 assert.ok(dueDateUpdate, "debe existir el UPDATE de due_date/status");
 assert.match(dueDateUpdate, /payment_type = 'BALANCE_70'/);
 assert.doesNotMatch(dueDateUpdate, /logistics_type/);
 
 const logisticsUpdate = paymentBlock.match(
-  /IF v_changed_shipping THEN\s+UPDATE public\.finance_supplier_payments fsp\s+SET\s+logistics_type[\s\S]*?status IN \('pendiente', 'vencido'\);/,
+  /IF v_changed_shipping THEN\s+UPDATE public\.finance_supplier_payments fsp\s+SET\s+logistics_type[\s\S]*?status IN \('pendiente', 'parcial', 'vencido'\);/,
 )?.[0] ?? "";
 assert.ok(logisticsUpdate, "debe existir el UPDATE de logistics_type");
 assert.doesNotMatch(

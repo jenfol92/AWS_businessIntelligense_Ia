@@ -88,8 +88,7 @@ export async function findFinancialPlanningData(
              actual_fx_rate, actual_amount_eur, bank_fee_eur, ff_fee_eur
            )
          )`,
-      )
-      .or(`due_date.gte.${fromDate},due_date.lte.${toDate},due_date.is.null`),
+      ),
     supabase
       .from("finance_credit_lines")
       .select("*")

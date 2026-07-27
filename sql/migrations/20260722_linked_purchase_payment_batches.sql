@@ -60,6 +60,7 @@ CREATE TABLE public.finance_purchase_payment_batches (
   entry_mode text NOT NULL,
   status text NOT NULL DEFAULT 'posted',
   idempotency_key text NOT NULL UNIQUE,
+  payload_fingerprint text NOT NULL,
   created_by uuid NULL REFERENCES auth.users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT finance_purchase_payment_batches_payee_check
@@ -305,6 +306,7 @@ DECLARE
   v_paid_at timestamptz;
   v_key text;
   v_supplier_payment_id uuid;
+  v_payload_fingerprint text;
 BEGIN
   IF auth.uid() IS NULL
      AND coalesce(auth.role(), current_setting('request.jwt.claim.role', true), '') <> 'service_role' THEN
@@ -319,12 +321,36 @@ BEGIN
   -- Serializa reintentos concurrentes sin conceder INSERT directo a authenticated.
   PERFORM pg_advisory_xact_lock(hashtextextended(v_key, 0));
   SELECT * INTO v_existing FROM public.finance_purchase_payment_batches WHERE idempotency_key = v_key;
-  IF FOUND THEN
-    RETURN public.get_purchase_payment_batch_detail(v_existing.id) || jsonb_build_object('idempotent', true);
-  END IF;
 
-  v_agent_id := nullif(p_payload->>'agent_id', '')::uuid;
+  IF coalesce(p_payload->>'agent_id', '') !~
+     '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$' THEN
+    RAISE EXCEPTION 'INVALID_UUID: agent_id must be a UUID';
+  END IF;
+  IF nullif(p_payload->>'cash_account_id', '') IS NOT NULL
+     AND (p_payload->>'cash_account_id') !~
+       '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$' THEN
+    RAISE EXCEPTION 'INVALID_UUID: cash_account_id must be a UUID';
+  END IF;
+  IF nullif(p_payload->>'credit_line_id', '') IS NOT NULL
+     AND (p_payload->>'credit_line_id') !~
+       '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$' THEN
+    RAISE EXCEPTION 'INVALID_UUID: credit_line_id must be a UUID';
+  END IF;
+  IF coalesce(p_payload->>'paid_at', '') !~
+     '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T.*)?$' THEN
+    RAISE EXCEPTION 'INVALID_PAID_AT: paid_at must be a valid date';
+  END IF;
+  BEGIN
+    v_paid_at := (p_payload->>'paid_at')::timestamptz;
+  EXCEPTION WHEN invalid_datetime_format OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'INVALID_PAID_AT: paid_at must be a valid date';
+  END;
+
+  v_agent_id := (p_payload->>'agent_id')::uuid;
   v_currency := upper(trim(p_payload->>'original_currency'));
+  IF v_currency NOT IN ('USD', 'EUR', 'GBP', 'CNY') THEN
+    RAISE EXCEPTION 'INVALID_PLAN_CURRENCY: unsupported original_currency';
+  END IF;
   v_source_type := p_payload->>'source_type';
   v_cash_id := nullif(p_payload->>'cash_account_id', '')::uuid;
   v_line_id := nullif(p_payload->>'credit_line_id', '')::uuid;
@@ -333,7 +359,6 @@ BEGIN
   v_actual_eur := nullif(p_payload->>'actual_amount_eur', '')::numeric;
   v_bank_fee := coalesce((p_payload->>'bank_fee_eur')::numeric, 0);
   v_ff_fee := coalesce((p_payload->>'ff_fee_eur')::numeric, 0);
-  v_paid_at := (p_payload->>'paid_at')::timestamptz;
 
   IF v_agent_id IS NULL THEN RAISE EXCEPTION 'MISSING_AGENT: agent_id is required'; END IF;
   IF NOT public.finance_is_finite_numeric(v_amount) OR v_amount <= 0 THEN
@@ -382,6 +407,39 @@ BEGIN
     RAISE EXCEPTION 'INVALID_ALLOCATIONS: at least one allocation is required';
   END IF;
   v_count := jsonb_array_length(p_payload->'allocations');
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(p_payload->'allocations') item
+    WHERE coalesce(item->>'supplier_payment_id', '') !~
+      '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+  ) THEN
+    RAISE EXCEPTION 'INVALID_UUID: supplier_payment_id must be a UUID';
+  END IF;
+
+  SELECT md5(jsonb_build_object(
+    'agent_id', v_agent_id,
+    'original_currency', v_currency,
+    'amount_original', v_amount,
+    'source_type', v_source_type,
+    'cash_account_id', v_cash_id,
+    'credit_line_id', v_line_id,
+    'paid_at', v_paid_at,
+    'allocations', (
+      SELECT jsonb_agg(jsonb_build_object(
+        'supplier_payment_id', item->>'supplier_payment_id',
+        'allocated_amount_original', (item->>'allocated_amount_original')::numeric
+      ) ORDER BY item->>'supplier_payment_id')
+      FROM jsonb_array_elements(p_payload->'allocations') item
+    )
+  )::text)
+  INTO v_payload_fingerprint;
+  IF v_existing.id IS NOT NULL THEN
+    IF v_existing.payload_fingerprint IS DISTINCT FROM v_payload_fingerprint THEN
+      RAISE EXCEPTION 'IDEMPOTENCY_PAYLOAD_MISMATCH: idempotency key belongs to a different payload';
+    END IF;
+    RETURN public.get_purchase_payment_batch_detail(v_existing.id)
+      || jsonb_build_object('idempotent', true);
+  END IF;
 
   -- Lock in stable UUID order before calculating any balance.
   PERFORM sp.id
@@ -459,18 +517,22 @@ BEGIN
       payee_type, agent_id, paid_at, original_currency, amount_original,
       actual_fx_rate, actual_amount_eur, bank_fee_eur, ff_fee_eur, funded_total_eur,
       source_type, cash_account_id, credit_line_id, bank_reference, notes,
-      entry_mode, idempotency_key, created_by
+      entry_mode, idempotency_key, payload_fingerprint, created_by
     ) VALUES (
       'agent', v_agent_id, v_paid_at, v_currency, v_amount,
       v_actual_fx, v_actual_eur, v_bank_fee, v_ff_fee, v_funded_total,
       v_source_type, v_cash_id, v_line_id, nullif(trim(p_payload->>'bank_reference'), ''),
-      nullif(trim(p_payload->>'notes'), ''), p_payload->>'entry_mode', v_key, auth.uid()
+      nullif(trim(p_payload->>'notes'), ''), p_payload->>'entry_mode', v_key,
+      v_payload_fingerprint, auth.uid()
     ) RETURNING * INTO v_batch;
   EXCEPTION WHEN unique_violation THEN
     SELECT * INTO v_existing
     FROM public.finance_purchase_payment_batches
     WHERE idempotency_key = v_key;
     IF FOUND THEN
+      IF v_existing.payload_fingerprint IS DISTINCT FROM v_payload_fingerprint THEN
+        RAISE EXCEPTION 'IDEMPOTENCY_PAYLOAD_MISMATCH: idempotency key belongs to a different payload';
+      END IF;
       RETURN public.get_purchase_payment_batch_detail(v_existing.id)
         || jsonb_build_object('idempotent', true);
     END IF;
@@ -625,6 +687,19 @@ BEGIN
   END IF;
   IF p_amount_original IS NULL OR p_amount_original <= 0 OR v_currency = '' THEN
     RAISE EXCEPTION 'INVALID_PLAN_AMOUNT: positive amount and currency are required';
+  END IF;
+  IF NOT public.finance_is_finite_numeric(p_amount_original) OR p_amount_original <= 0 THEN
+    RAISE EXCEPTION 'INVALID_PLAN_AMOUNT: amount_original must be finite and positive';
+  END IF;
+  IF p_planned_fx_rate IS NOT NULL
+     AND (NOT public.finance_is_finite_numeric(p_planned_fx_rate) OR p_planned_fx_rate <= 0) THEN
+    RAISE EXCEPTION 'INVALID_PLAN_FX: planned_fx_rate must be finite and positive';
+  END IF;
+  IF NOT public.finance_is_finite_numeric(p_amount_eur) OR p_amount_eur < 0 THEN
+    RAISE EXCEPTION 'INVALID_PLAN_EUR_AMOUNT: amount_eur must be finite and nonnegative';
+  END IF;
+  IF v_currency NOT IN ('USD', 'EUR', 'GBP', 'CNY') THEN
+    RAISE EXCEPTION 'INVALID_PLAN_CURRENCY: unsupported original_currency';
   END IF;
 
   INSERT INTO public.finance_supplier_payments (

@@ -550,22 +550,44 @@ function buildCreditLineRepaymentGroupEvents(
   creditLines: FinanceCreditLine[],
 ): FinancePlanningEvent[] {
   const events: FinancePlanningEvent[] = [];
+  const today = new Date().toISOString().slice(0, 10);
 
   for (const group of raw.creditLineRepaymentGroups) {
     const creditLineId = asString(group["credit_line_id"]);
     const line = creditLines.find((item) => item.id === creditLineId);
     const dueDate = asString(group["due_date"]);
     const remainingAmount = asNumber(group["remaining_amount"]);
+    const originalAmount = asNumber(group["amount"]);
+    const paidAmount = asNumber(group["paid_amount"]);
+    const groupStatus = asString(group["status"]);
     if (!line || remainingAmount <= 0) continue;
+    if (groupStatus !== "open" && groupStatus !== "partially_paid") continue;
+
+    const overdue = Boolean(dueDate && dueDate < today);
+    const status: FinanceEventStatus =
+      groupStatus === "partially_paid"
+        ? overdue
+          ? "vencido"
+          : "parcial"
+        : overdue
+          ? "vencido"
+          : "pendiente";
+
+    const daysUntilDue = dueDate
+      ? Math.round(
+          (Date.parse(`${dueDate}T00:00:00.000Z`) - Date.parse(`${today}T00:00:00.000Z`))
+            / 86400000,
+        )
+      : null;
 
     events.push({
       id: String(group["id"]),
-      type: "credit_line_release",
-      title: "Pago/devolucion de linea de credito",
+      type: "credit_line_maturity",
+      title: "Vencimiento de linea de credito",
       date: dueDate,
       month: dateToMonth(dueDate),
       isPendingDate: !dueDate,
-      status: statusFromRow(null, null, dueDate),
+      status,
       containerId: null,
       containerCode: null,
       orderId: null,
@@ -573,21 +595,26 @@ function buildCreditLineRepaymentGroupEvents(
       numeroPedidoAgente: null,
       agentContact: null,
       logisticsType: "SIN_DEFINIR",
-      originalAmount: remainingAmount,
+      originalAmount: originalAmount,
       originalCurrency: "EUR",
       plannedFxRate: null,
       plannedFxSource: "not_configured",
       plannedAmountEur: remainingAmount,
-      paidAmountEur: null,
+      paidAmountEur: paidAmount,
       recommendedSource: "cash",
-      recommendationReason: "Pago/devolucion de linea de credito con saldo pendiente real.",
+      recommendationReason: "Devolucion de linea con saldo pendiente real.",
       canMarkPaid: false,
       creditLineId: line.id,
       creditLineBank: line.bankName,
       creditLineName: line.lineName,
-      paidLineAmountEur: asNumber(group["paid_amount"]),
+      paidLineAmountEur: paidAmount,
       repaymentGroupId: asString(group["id"]),
-      repaymentGroupStatus: asString(group["status"]),
+      repaymentGroupStatus: groupStatus,
+      originalAmountEur: originalAmount,
+      remainingAmountEur: remainingAmount,
+      daysUntilDue,
+      canRepay: remainingAmount > 0,
+      isInformational: false,
     });
   }
 
@@ -755,9 +782,11 @@ export async function buildFinancialPlanning(
       if (event.isInformational) continue;
       const effectiveAmountEur = effectiveEventAmountEur(event);
       if (event.type === "amazon_income") projectedCash += event.plannedAmountEur;
-      if (event.type === "credit_line_release") {
-        projectedCash -= event.plannedAmountEur;
-        projectedCredit += event.plannedAmountEur;
+      if (event.type === "credit_line_maturity" || event.type === "credit_line_release") {
+        if (event.type === "credit_line_maturity") {
+          projectedCash -= event.plannedAmountEur;
+          projectedCredit += event.plannedAmountEur;
+        }
       }
       // Los saldos iniciales ya incluyen settlements ejecutados. Solo se proyectan salidas futuras;
       // los pagados se agrupan por paid_at para histórico y el due_date permanece en el detalle.
@@ -783,7 +812,7 @@ export async function buildFinancialPlanning(
         .filter((event) => !event.isInformational && event.type === "amazon_income")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       totalCreditReleases: datedEvents
-        .filter((event) => !event.isInformational && event.type === "credit_line_release")
+        .filter((event) => !event.isInformational && event.type === "credit_line_maturity")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       projectedCashBalance: projectedCash,
       projectedCreditAvailable: projectedCredit,

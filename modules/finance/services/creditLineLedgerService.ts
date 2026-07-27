@@ -67,12 +67,18 @@ function requireCashAccount(account: CashAccountRow | null): CashAccountRow {
 const LEDGER_ERROR_CODES = [
   "INVALID_AMOUNT",
   "INVALID_DATE",
+  "INVALID_CURRENCY",
   "NOT_FOUND",
   "MANUAL_DUE_DATE_REQUIRED",
   "INSUFFICIENT_CREDIT",
   "INSUFFICIENT_USED_AMOUNT",
   "INSUFFICIENT_CASH",
   "GROUP_MISMATCH",
+  "GROUP_CLOSED",
+  "CREDIT_LINE_INACTIVE",
+  "MISSING_CASH_ACCOUNT",
+  "MISSING_REPAYMENT_GROUP",
+  "UNAUTHORIZED",
 ] as const;
 
 function translateLedgerRpcError(error: unknown): never {
@@ -95,7 +101,7 @@ function translateLedgerRpcError(error: unknown): never {
 }
 
 export async function findOrCreateOpenRepaymentGroup(
-  input: FindOrCreateOpenRepaymentGroupInput,
+  input: FindOrCreateOpenRepaymentGroupInput & { manualDueDate?: string | null },
   supabase?: LedgerSupabaseClient,
 ): Promise<RepaymentGroupRow> {
   assertDate(input.movementDate);
@@ -105,9 +111,39 @@ export async function findOrCreateOpenRepaymentGroup(
   );
 
   if (creditLine.cycle_days == null) {
-    throw new CreditLineLedgerError(
-      "La linea requiere vencimiento manual porque no tiene cycle_days.",
-      "MANUAL_DUE_DATE_REQUIRED",
+    if (!input.manualDueDate) {
+      throw new CreditLineLedgerError(
+        "La linea requiere vencimiento manual porque no tiene cycle_days.",
+        "MANUAL_DUE_DATE_REQUIRED",
+      );
+    }
+    assertDate(input.manualDueDate);
+    if (input.manualDueDate < input.movementDate) {
+      throw new CreditLineLedgerError(
+        "La fecha de vencimiento manual debe ser igual o posterior a la disposicion.",
+        "INVALID_DATE",
+      );
+    }
+
+    const existingManual = await findOpenRepaymentGroupForDate(
+      {
+        creditLineId: input.creditLineId,
+        movementDate: input.movementDate,
+      },
+      supabase,
+    );
+    if (existingManual && existingManual.due_date === input.manualDueDate) {
+      return existingManual;
+    }
+
+    return insertRepaymentGroup(
+      {
+        creditLineId: input.creditLineId,
+        periodStart: input.movementDate,
+        periodEnd: input.manualDueDate,
+        dueDate: input.manualDueDate,
+      },
+      supabase,
     );
   }
 
@@ -138,6 +174,7 @@ export async function createCreditLineDrawdown(
 ): Promise<CreateCreditLineDrawdownResult> {
   assertPositiveAmount(input.amount);
   assertDate(input.movementDate);
+  if (input.manualDueDate) assertDate(input.manualDueDate);
 
   try {
     const rpcResult = await createCreditLineDrawdownRpc(input, supabase);
@@ -217,15 +254,30 @@ export async function createCreditLineRepayment(
   assertPositiveAmount(input.amount);
   assertDate(input.movementDate);
 
+  if (!input.repaymentGroupId) {
+    throw new CreditLineLedgerError(
+      "repaymentGroupId es obligatorio.",
+      "MISSING_REPAYMENT_GROUP",
+    );
+  }
+
+  const cashAccount = requireCashAccount(
+    await fetchCashAccountById(input.cashAccountId, supabase),
+  );
+  if (cashAccount.currency.trim().toUpperCase() !== "EUR") {
+    throw new CreditLineLedgerError(
+      "La cuenta de caja debe ser EUR.",
+      "INVALID_CURRENCY",
+    );
+  }
+
   try {
     const rpcResult = await createCreditLineRepaymentRpc(input, supabase);
-    const [movement, cashMovement, repaymentGroup, creditLine, cashAccount] =
+    const [movement, cashMovement, repaymentGroup, creditLine, cashAccountAfter] =
       await Promise.all([
         fetchCreditLineMovementById(rpcResult.movement_id, supabase),
         fetchCashMovementById(rpcResult.cash_movement_id, supabase),
-        rpcResult.repayment_group_id
-          ? fetchRepaymentGroupById(rpcResult.repayment_group_id, supabase)
-          : Promise.resolve(null),
+        fetchRepaymentGroupById(rpcResult.repayment_group_id ?? input.repaymentGroupId, supabase),
         fetchCreditLineById(rpcResult.credit_line_id, supabase),
         fetchCashAccountById(rpcResult.cash_account_id, supabase),
       ]);
@@ -242,7 +294,7 @@ export async function createCreditLineRepayment(
       cashMovement,
       repaymentGroup,
       creditLine: requireCreditLine(creditLine),
-      cashAccount: requireCashAccount(cashAccount),
+      cashAccount: requireCashAccount(cashAccountAfter),
       idempotent: rpcResult.idempotent,
     };
   } catch (error) {

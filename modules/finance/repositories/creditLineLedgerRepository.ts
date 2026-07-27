@@ -166,10 +166,11 @@ export async function createCreditLineDrawdownRpc(
     creditLineId: string;
     amount: number;
     movementDate: string;
-    sourceType: "supplier_payment" | "manual";
+    sourceType: "supplier_payment" | "manual" | "purchase_payment_batch";
     sourceId?: string | null;
     description: string;
     idempotencyKey?: string | null;
+    manualDueDate?: string | null;
   },
   supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<CreditLineDrawdownRpcResponse> {
@@ -181,6 +182,7 @@ export async function createCreditLineDrawdownRpc(
     p_source_id: input.sourceId ?? null,
     p_description: input.description,
     p_idempotency_key: input.idempotencyKey ?? null,
+    p_manual_due_date: input.manualDueDate ?? null,
   });
 
   throwIfError(error);
@@ -193,10 +195,11 @@ export async function createCreditLineRepaymentRpc(
     amount: number;
     movementDate: string;
     cashAccountId: string;
-    repaymentGroupId?: string | null;
+    repaymentGroupId: string;
     sourceType: "repayment_group" | "manual_repayment";
     sourceId?: string | null;
     notes?: string | null;
+    bankReference?: string | null;
     idempotencyKey?: string | null;
   },
   supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
@@ -206,11 +209,12 @@ export async function createCreditLineRepaymentRpc(
     p_amount: input.amount,
     p_movement_date: input.movementDate,
     p_cash_account_id: input.cashAccountId,
-    p_repayment_group_id: input.repaymentGroupId ?? null,
+    p_repayment_group_id: input.repaymentGroupId,
     p_source_type: input.sourceType,
     p_source_id: input.sourceId ?? null,
     p_notes: input.notes ?? null,
     p_idempotency_key: input.idempotencyKey ?? null,
+    p_bank_reference: input.bankReference ?? null,
   });
 
   throwIfError(error);

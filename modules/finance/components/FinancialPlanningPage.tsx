@@ -27,6 +27,7 @@ import { LOGISTICS_LABELS } from "../utils/logisticsLabels";
 import { resolveSupplierPaymentActuals } from "../utils/resolveSupplierPaymentActuals";
 import { LinkedPurchasePaymentModal } from "./LinkedPurchasePaymentModal";
 import { PurchasePaymentBatchDetailModal } from "./PurchasePaymentBatchDetailModal";
+import { CreditLineMaturitiesSection } from "./CreditLineMaturitiesSection";
 
 const FUNDING_SOURCE_OPTIONS: Array<{
   value: SupplierPaymentFundingSourceType;
@@ -123,7 +124,7 @@ function eventMatchesStatus(event: FinancePlanningEvent, estado: StatusFilter): 
   if (estado === "ALL") return true;
 
   if (estado === "proximos_30") {
-    if (event.type !== "credit_line_release" || !event.date || event.status === "pagado") {
+    if (event.type !== "credit_line_maturity" || !event.date || event.status === "pagado") {
       return false;
     }
 
@@ -181,7 +182,8 @@ function logisticsTypeLabel(type: FinancePlanningEvent["logisticsType"]): string
 function eventAccent(event: FinancePlanningEvent): string {
   if (event.type === "amazon_income") return "border-l-emerald-400";
   if (event.type === "supplier_deposit" || event.type === "supplier_balance") return "border-l-sky-400";
-  if (event.type === "credit_line_release") return "border-l-indigo-400";
+  if (event.type === "credit_line_maturity") return "border-l-indigo-500";
+  if (event.type === "credit_line_release") return "border-l-slate-300";
   if (event.status === "pagado") return "border-l-emerald-400";
   if (event.status === "vencido") return "border-l-rose-400";
   return "border-l-amber-400";
@@ -196,14 +198,6 @@ function supplierPaymentFinanceLabel(event: FinancePlanningEvent): string | null
   if (event.paymentSourceType === "cash_account") return "Financiado con caja";
   if (event.paymentSourceType === "credit_line") return "Financiado con linea";
   return null;
-}
-
-function canRepayCreditLineEvent(event: FinancePlanningEvent): boolean {
-  return event.type === "credit_line_release"
-    && event.isInformational !== true
-    && Boolean(event.creditLineId)
-    && Boolean(event.repaymentGroupId)
-    && event.plannedAmountEur > 0;
 }
 
 function PaymentModal({
@@ -633,236 +627,21 @@ function PaymentModal({
   );
 }
 
-function CreditLineRepaymentModal({
-  event,
-  cashAccounts,
-  onClose,
-  onSaved,
-}: {
-  event: FinancePlanningEvent;
-  cashAccounts: FinanceCashAccount[];
-  onClose: () => void;
-  onSaved: (message: string) => Promise<void>;
-}) {
-  const today = new Date().toISOString().slice(0, 10);
-  const maxAmount = event.plannedAmountEur;
-  const [amount, setAmount] = useState(String(maxAmount));
-  const [movementDate, setMovementDate] = useState(today);
-  const [cashAccountId, setCashAccountId] = useState(cashAccounts[0]?.id ?? "");
-  const [notes, setNotes] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError(null);
-
-    const amountNumber = Number(amount);
-    if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-      setError("El importe debe ser mayor que 0.");
-      return;
-    }
-
-    if (amountNumber > maxAmount) {
-      setError("El importe no puede superar el saldo pendiente.");
-      return;
-    }
-
-    if (!movementDate) {
-      setError("Indica la fecha de pago.");
-      return;
-    }
-
-    if (!cashAccountId) {
-      setError("Selecciona una cuenta/caja origen.");
-      return;
-    }
-
-    if (!event.creditLineId || !event.repaymentGroupId) {
-      setError("Este vencimiento no tiene linea o grupo asociado.");
-      return;
-    }
-
-    setSaving(true);
-
-    try {
-      const res = await fetch(`/api/finance/credit-lines/${event.creditLineId}/repay`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: amountNumber,
-          movementDate,
-          cashAccountId,
-          repaymentGroupId: event.repaymentGroupId,
-          notes: notes.trim() ? notes.trim() : null,
-          idempotencyKey: `credit-line-repayment:${event.creditLineId}:${event.repaymentGroupId}:${cashAccountId}:${amountNumber}:${movementDate}`,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) {
-        throw new Error(json.error ?? "No se pudo pagar la linea");
-      }
-      await onSaved("Pago de linea registrado correctamente.");
-      onClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error desconocido");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-950/40 flex items-start justify-center p-4 overflow-y-auto">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-xl bg-white rounded-xl shadow-2xl my-10 border border-slate-100"
-      >
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Pagar linea de credito</h2>
-            <p className="text-xs text-slate-500">
-              {event.creditLineBank ?? "Linea"} / {event.creditLineName ?? "Sin nombre"}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            className="text-sm text-slate-500 hover:text-slate-900 disabled:opacity-50"
-          >
-            Cerrar
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div className="rounded-lg border border-slate-200 p-3">
-              <div className="text-xs text-slate-500">Vencimiento</div>
-              <div className="font-semibold text-slate-900">{dateLabel(event.date)}</div>
-            </div>
-            <div className="rounded-lg border border-slate-200 p-3">
-              <div className="text-xs text-slate-500">Saldo pendiente</div>
-              <div className="font-semibold text-slate-900">{eur(maxAmount)}</div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-end">
-            <label className="text-xs font-medium text-slate-600">
-              Importe a pagar
-              <input
-                type="number"
-                step="0.01"
-                min="0.01"
-                max={maxAmount}
-                required
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => setAmount(String(maxAmount))}
-              disabled={saving}
-              className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Pagar total
-            </button>
-          </div>
-
-          <label className="text-xs font-medium text-slate-600 block">
-            Fecha de pago
-            <input
-              type="date"
-              required
-              value={movementDate}
-              onChange={(e) => setMovementDate(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-            />
-          </label>
-
-          <label className="text-xs font-medium text-slate-600 block">
-            Cuenta/caja origen
-            <select
-              required
-              value={cashAccountId}
-              onChange={(e) => setCashAccountId(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"
-            >
-              <option value="" disabled>
-                Selecciona cuenta
-              </option>
-              {cashAccounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.name} - {eur(account.balance)} - {account.currency}
-                </option>
-              ))}
-            </select>
-            {cashAccounts.length === 0 ? (
-              <span className="mt-1 block text-[11px] font-normal text-rose-600">
-                No hay cuentas/caja disponibles. Revisa finance_cash_accounts o permisos/RLS.
-              </span>
-            ) : null}
-          </label>
-
-          <label className="text-xs font-medium text-slate-600 block">
-            Notas
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm min-h-20"
-            />
-          </label>
-
-          {error ? (
-            <div className="rounded-lg bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">
-              {error}
-            </div>
-          ) : null}
-
-          <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-xs text-sky-800">
-            Registra un pago total o parcial del vencimiento de linea usando la RPC oficial.
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
-            >
-              {saving ? "Guardando..." : "Guardar pago"}
-            </button>
-          </div>
-        </div>
-      </form>
-    </div>
-  );
-}
-
 function EventCard({
   event,
   onMarkPaid,
-  onRepayCreditLine,
   onViewBatch,
 }: {
   event: FinancePlanningEvent;
   onMarkPaid: (event: FinancePlanningEvent) => void;
-  onRepayCreditLine: (event: FinancePlanningEvent) => void;
   onViewBatch: (batchId: string) => void;
 }) {
   const canMarkSupplierPayment =
     event.canMarkPaid && event.status !== "pagado" && isSupplierPaymentEvent(event);
   const financeLabel = supplierPaymentFinanceLabel(event);
-  const isCreditLineEvent = event.type === "credit_line_release";
-  const canRepayCreditLine = canRepayCreditLineEvent(event);
+  const isCreditLineMaturity = event.type === "credit_line_maturity";
+  const isCreditLineInfo = event.type === "credit_line_release";
+  const isCreditLineEvent = isCreditLineMaturity || isCreditLineInfo;
   const showSupplierPaymentTrace = isSupplierPaymentEvent(event);
 
   return (
@@ -934,7 +713,8 @@ function EventCard({
       {isCreditLineEvent ? (
         <div className="mt-2 text-[11px] text-slate-500">
           {event.creditLineBank} / {event.creditLineName}
-          {event.isInformational ? " - Sin vencimiento generado todavia" : ""}
+          {isCreditLineInfo ? " - Sin vencimiento generado todavia" : ""}
+          {isCreditLineMaturity ? " - Ver seccion Vencimientos de lineas para pagar" : ""}
         </div>
       ) : (
         <div className="mt-2 text-[11px] text-slate-500">
@@ -1003,15 +783,6 @@ function EventCard({
               Pagar obligación
             </button>
           ) : null}
-          {canRepayCreditLine ? (
-            <button
-              onClick={() => onRepayCreditLine(event)}
-              className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
-            >
-              <Banknote className="h-3.5 w-3.5" />
-              Pagar linea
-            </button>
-          ) : null}
         </div>
       </div>
     </article>
@@ -1024,12 +795,12 @@ export function FinancialPlanningPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedPaymentEvent, setSelectedPaymentEvent] =
     useState<FinancePlanningEvent | null>(null);
-  const [selectedRepaymentEvent, setSelectedRepaymentEvent] = useState<FinancePlanningEvent | null>(null);
   const [linkedPaymentOpen, setLinkedPaymentOpen] = useState(false);
   const [detailBatchId, setDetailBatchId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [filters, setFilters] = useState<FinanceFiltersState>(EMPTY_FILTERS);
   const [urlFiltersReady, setUrlFiltersReady] = useState(false);
+  const [maturitiesReloadKey, setMaturitiesReloadKey] = useState(0);
 
   const loadPlanning = useCallback(async () => {
     setLoading(true);
@@ -1063,13 +834,9 @@ export function FinancialPlanningPage() {
     setSelectedPaymentEvent(event);
   }, []);
 
-  const openCreditLineRepaymentModal = useCallback((event: FinancePlanningEvent) => {
-    if (!canRepayCreditLineEvent(event)) return;
-    setSelectedRepaymentEvent(event);
-  }, []);
-
   const refreshAfterCreditLineRepayment = useCallback(async (message: string) => {
     await reloadPlanning();
+    setMaturitiesReloadKey((key) => key + 1);
     setSuccessMessage(message);
   }, [reloadPlanning]);
 
@@ -1078,6 +845,7 @@ export function FinancialPlanningPage() {
     reference: string | null,
   ) => {
     await reloadPlanning();
+    setMaturitiesReloadKey((key) => key + 1);
     setSuccessMessage(
       `Pago proveedor registrado (${reference || batchId || "sin referencia"}). Planificación y saldos actualizados.`,
     );
@@ -1086,6 +854,7 @@ export function FinancialPlanningPage() {
   const refreshAfterLinkedPayment = useCallback(async (batchId: string, reference: string | null) => {
     try {
       await reloadPlanning();
+      setMaturitiesReloadKey((key) => key + 1);
       setSuccessMessage(
         `Pago vinculado registrado (${reference || batchId}). Planificación y saldos actualizados.`,
       );
@@ -1238,6 +1007,12 @@ export function FinancialPlanningPage() {
           </div>
         </header>
 
+        <CreditLineMaturitiesSection
+          key={maturitiesReloadKey}
+          cashAccounts={data.cashAccounts}
+          onRepaid={refreshAfterCreditLineRepayment}
+        />
+
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           {data.creditLines.map((line) => (
             <div key={line.id} className="rounded-lg border border-slate-200 bg-white p-4">
@@ -1379,7 +1154,6 @@ export function FinancialPlanningPage() {
                       key={event.id}
                       event={event}
                       onMarkPaid={openSupplierPaymentModal}
-                      onRepayCreditLine={openCreditLineRepaymentModal}
                       onViewBatch={setDetailBatchId}
                     />
                   ))
@@ -1401,7 +1175,6 @@ export function FinancialPlanningPage() {
                   key={event.id}
                   event={event}
                   onMarkPaid={openSupplierPaymentModal}
-                  onRepayCreditLine={openCreditLineRepaymentModal}
                   onViewBatch={setDetailBatchId}
                 />
               ))}
@@ -1429,14 +1202,6 @@ export function FinancialPlanningPage() {
           creditLines={data.creditLines}
           onClose={() => setSelectedPaymentEvent(null)}
           onSaved={refreshAfterIndividualPayment}
-        />
-      ) : null}
-      {selectedRepaymentEvent && canRepayCreditLineEvent(selectedRepaymentEvent) ? (
-        <CreditLineRepaymentModal
-          event={selectedRepaymentEvent}
-          cashAccounts={data.cashAccounts}
-          onClose={() => setSelectedRepaymentEvent(null)}
-          onSaved={refreshAfterCreditLineRepayment}
         />
       ) : null}
       {linkedPaymentOpen ? (

@@ -6,6 +6,7 @@ export type FinanceEventType =
   | "container_arrival_expense"
   | "container_transit"
   | "container_bank_fee"
+  | "credit_line_maturity"
   | "credit_line_release"
   | "amazon_income";
 
@@ -99,7 +100,15 @@ export type FinancePlanningEvent = {
   paidLineAmountEur?: number | null;
   repaymentGroupId?: string | null;
   repaymentGroupStatus?: string | null;
+  originalAmountEur?: number | null;
+  remainingAmountEur?: number | null;
+  daysUntilDue?: number | null;
+  movementCount?: number | null;
+  financedOrderCount?: number | null;
+  financedOrderCodes?: string[];
+  canRepay?: boolean;
   isInformational?: boolean;
+  isLegacyOpeningBalance?: boolean;
   sourcePaymentId?: string | null;
 };
 

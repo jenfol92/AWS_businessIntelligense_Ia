@@ -21,12 +21,18 @@ export type CashMovementDirection = "in" | "out";
 export type CreditLineLedgerErrorCode =
   | "INVALID_AMOUNT"
   | "INVALID_DATE"
+  | "INVALID_CURRENCY"
   | "NOT_FOUND"
   | "MANUAL_DUE_DATE_REQUIRED"
   | "INSUFFICIENT_CREDIT"
   | "INSUFFICIENT_USED_AMOUNT"
   | "INSUFFICIENT_CASH"
-  | "GROUP_MISMATCH";
+  | "GROUP_MISMATCH"
+  | "GROUP_CLOSED"
+  | "CREDIT_LINE_INACTIVE"
+  | "MISSING_CASH_ACCOUNT"
+  | "MISSING_REPAYMENT_GROUP"
+  | "UNAUTHORIZED";
 
 export class CreditLineLedgerError extends Error {
   constructor(
@@ -107,10 +113,12 @@ export type CreateCreditLineDrawdownInput = {
   creditLineId: string;
   amount: number;
   movementDate: string;
-  sourceType: "supplier_payment" | "manual";
+  sourceType: "supplier_payment" | "manual" | "purchase_payment_batch";
   sourceId?: string | null;
   description: string;
   idempotencyKey?: string | null;
+  /** Obligatorio cuando la linea no tiene cycle_days. */
+  manualDueDate?: string | null;
 };
 
 export type CreateCreditLineDrawdownResult = {
@@ -125,10 +133,11 @@ export type CreateCreditLineRepaymentInput = {
   amount: number;
   movementDate: string;
   cashAccountId: string;
-  repaymentGroupId?: string | null;
+  repaymentGroupId: string;
   sourceType: "repayment_group" | "manual_repayment";
   sourceId?: string | null;
   notes?: string | null;
+  bankReference?: string | null;
   idempotencyKey?: string | null;
 };
 

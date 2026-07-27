@@ -15,6 +15,7 @@ type RepayPayload = {
   cashAccountId?: unknown;
   repaymentGroupId?: unknown;
   notes?: unknown;
+  bankReference?: unknown;
   idempotencyKey?: unknown;
 };
 
@@ -32,8 +33,13 @@ function isIsoDate(value: unknown): value is string {
 }
 
 function ledgerErrorResponse(error: CreditLineLedgerError) {
-  const status = error.code === "NOT_FOUND" ? 404 : 409;
-  return NextResponse.json({ ok: false, error: error.message }, { status });
+  const status =
+    error.code === "NOT_FOUND"
+      ? 404
+      : error.code === "UNAUTHORIZED"
+        ? 401
+        : 409;
+  return NextResponse.json({ ok: false, error: error.message, code: error.code }, { status });
 }
 
 export async function POST(req: Request, { params }: Params) {
@@ -93,6 +99,7 @@ export async function POST(req: Request, { params }: Params) {
         sourceType: "repayment_group",
         sourceId: null,
         notes: requiredString(body.notes),
+        bankReference: requiredString(body.bankReference),
         idempotencyKey: requiredString(body.idempotencyKey),
       },
       supabase,

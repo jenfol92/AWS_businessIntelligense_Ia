@@ -64,9 +64,28 @@ assert.match(concurrency, /SCHEMA_MONEY_LIMIT_TOO_SMALL/);
 assert.doesNotMatch(concurrency, /WHEN unique_violation|EXCEPTION WHEN unique_violation/);
 assert.match(concurrency, /lower\(trim\(source_type\)\) = v_source/);
 assert.match(concurrency, /IDEMPOTENCY_PAYLOAD_MISMATCH: idempotency key belongs to a different movement_type/);
+
+const canonical = readFileSync(
+  new URL("../sql/migrations/20260731_enforce_canonical_drawdown_source_identity.sql", import.meta.url),
+  "utf8",
+);
+assert.match(canonical, /v_existing\.credit_line_id IS DISTINCT FROM p_credit_line_id/);
+assert.match(canonical, /IDEMPOTENCY_PAYLOAD_MISMATCH: drawdown source fallback/);
+assert.match(canonical, /\(lower\(trim\(source_type\)\)\)/);
+assert.match(canonical, /DRAWDOWN_SOURCE_INDEX_DEFINITION_MISMATCH/);
+assert.match(canonical, /v_is_legacy_unnormalized/);
+assert.match(canonical, /MANUAL_DUE_DATE_NOT_ALLOWED/);
+assert.match(canonical, /'credit_line_id', v_existing\.credit_line_id/);
+assert.doesNotMatch(
+  canonical.split("Source identity lock")[1]?.split("IF v_line.available_amount")[0] ?? "",
+  /'credit_line_id', v_line\.id/,
+);
+
 assert.match(ledgerTypes, /manualDueDate/);
+assert.match(ledgerTypes, /MANUAL_DUE_DATE_NOT_ALLOWED/);
 assert.match(ledgerTypes, /IDEMPOTENCY_PAYLOAD_MISMATCH/);
 assert.match(ledgerTypes, /DIRECT_DML_FORBIDDEN/);
+assert.match(ledgerService, /MANUAL_DUE_DATE_NOT_ALLOWED/);
 
 assert.match(ledgerRepo, /createCreditLineDrawdownRpc/);
 assert.match(ledgerRepo, /DIRECT_DML_FORBIDDEN/);

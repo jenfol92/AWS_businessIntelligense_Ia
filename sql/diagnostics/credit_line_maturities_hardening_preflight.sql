@@ -143,9 +143,35 @@ WHERE movement_type = 'drawdown'
 GROUP BY 1, 2
 HAVING count(*) > 1;
 
--- 9) Drawdown source unique index presence
-SELECT indexname, indexdef
+-- 9) Drawdown source unique index presence + exact canonical shape
+SELECT
+  indexname,
+  indexdef,
+  (
+    indexdef ~* 'lower\s*\(\s*trim'
+    AND indexdef ILIKE '%movement_type%'
+    AND indexdef ILIKE '%source_id%'
+    AND indexdef ILIKE '%supplier_payment%'
+    AND indexdef ILIKE '%purchase_payment_batch%'
+  ) AS is_canonical_normalized,
+  (
+    indexdef ILIKE '%(movement_type, source_type, source_id)%'
+    AND indexdef !~* 'lower\s*\(\s*trim'
+  ) AS is_legacy_unnormalized
 FROM pg_indexes
 WHERE schemaname = 'public'
   AND tablename = 'finance_credit_line_movements'
   AND indexname = 'ux_finance_credit_line_movements_drawdown_source';
+
+-- 10) Case/whitespace uniqueness probe (informational): same normalized identity
+SELECT
+  lower(trim(source_type)) AS source_type_normalized,
+  source_id,
+  count(DISTINCT source_type) AS distinct_raw_source_types,
+  array_agg(DISTINCT source_type) AS raw_source_types
+FROM public.finance_credit_line_movements
+WHERE movement_type = 'drawdown'
+  AND source_id IS NOT NULL
+  AND lower(trim(source_type)) IN ('supplier_payment', 'purchase_payment_batch')
+GROUP BY 1, 2
+HAVING count(DISTINCT source_type) > 1;

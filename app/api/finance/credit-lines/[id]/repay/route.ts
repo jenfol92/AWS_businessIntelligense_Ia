@@ -40,6 +40,7 @@ function ledgerErrorResponse(error: CreditLineLedgerError) {
           || error.code === "INVALID_DATE"
           || error.code === "INVALID_CURRENCY"
           || error.code === "MANUAL_DUE_DATE_REQUIRED"
+          || error.code === "MANUAL_DUE_DATE_NOT_ALLOWED"
           || error.code === "MISSING_REPAYMENT_GROUP"
           || error.code === "MISSING_CASH_ACCOUNT"
           || error.code === "DIRECT_DML_FORBIDDEN"

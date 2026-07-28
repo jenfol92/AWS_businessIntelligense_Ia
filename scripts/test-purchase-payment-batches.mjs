@@ -420,6 +420,16 @@ assert.match(hardenMigration, /manual_due_date/);
 assert.match(hardenMigration, /p_manual_due_date date DEFAULT NULL/);
 assert.match(hardenMigration, /MANUAL_DUE_DATE_REQUIRED/);
 assert.match(service, /MANUAL_DUE_DATE_REQUIRED:\s*422/);
+assert.match(service, /MANUAL_DUE_DATE_NOT_ALLOWED:\s*422/);
+assert.match(executionService, /MANUAL_DUE_DATE_NOT_ALLOWED:\s*422/);
+
+const canonicalMigration = readFileSync(
+  new URL("../sql/migrations/20260731_enforce_canonical_drawdown_source_identity.sql", import.meta.url),
+  "utf8",
+);
+assert.match(canonicalMigration, /MANUAL_DUE_DATE_NOT_ALLOWED/);
+assert.match(canonicalMigration, /v_existing\.credit_line_id IS DISTINCT FROM p_credit_line_id/);
+assert.match(canonicalMigration, /\(lower\(trim\(source_type\)\)\)/);
 
 assert.throws(
   () => normalizePurchasePaymentBatchPayload({

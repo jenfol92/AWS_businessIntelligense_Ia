@@ -27,8 +27,9 @@ const STATUS_FILTERS: CreditLineMaturityFilter[] = [
 ];
 
 export async function GET(req: Request) {
+  let access;
   try {
-    await requireTreasuryAccess();
+    access = await requireTreasuryAccess();
   } catch (error) {
     const access = getFinanceAccessErrorResponse(error);
     if (access) return NextResponse.json(access.body, { status: access.status });
@@ -81,7 +82,8 @@ export async function GET(req: Request) {
   if (creditLineId) query.creditLineId = creditLineId;
 
   try {
-    const data = await buildCreditLineMaturities(query);
+    const canManage = access.role === "admin" || access.role === "accounting";
+    const data = await buildCreditLineMaturities(query, canManage, canManage);
     return NextResponse.json(data);
   } catch (error) {
     return NextResponse.json(

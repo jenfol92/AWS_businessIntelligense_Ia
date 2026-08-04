@@ -60,6 +60,8 @@ export type CreditLineLegacyGap = {
   usedAmount: number;
   explainedRemaining: number;
   unexplainedAmount: number;
+  repaymentMode: "periodic_release" | "manual_due_dates";
+  cycleDays: number | null;
 };
 
 export type CreditLineMaturitiesQuery = {
@@ -75,4 +77,8 @@ export type CreditLineMaturitiesResponse = {
   summary: CreditLineMaturitySummary;
   maturities: CreditLineMaturity[];
   legacyGaps: CreditLineLegacyGap[];
+  permissions: {
+    canManageCreditLineRegularizations: boolean;
+    canExecuteCreditLineRepayments: boolean;
+  };
 };

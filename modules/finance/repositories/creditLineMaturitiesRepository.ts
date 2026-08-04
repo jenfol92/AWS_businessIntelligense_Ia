@@ -25,6 +25,8 @@ export type CreditLineLegacyGapRaw = {
   line_name: string;
   used_amount: number;
   explained_remaining: number;
+  repayment_mode: "periodic_release" | "manual_due_dates";
+  cycle_days: number | null;
 };
 
 function firstRelation<T>(value: T | T[] | null | undefined): T | null {
@@ -80,7 +82,7 @@ export async function findOpenCreditLineMaturities(
 
   let linesQuery = supabase
     .from("finance_credit_lines")
-    .select("id, bank_name, line_name, used_amount, status");
+    .select("id, bank_name, line_name, used_amount, status, repayment_mode, cycle_days");
   if (query.creditLineId) {
     linesQuery = linesQuery.eq("id", query.creditLineId);
   }
@@ -253,6 +255,8 @@ export async function findOpenCreditLineMaturities(
         line_name: String(row["line_name"] ?? ""),
         used_amount: used,
         explained_remaining: explained,
+        repayment_mode: String(row["repayment_mode"]) as "periodic_release" | "manual_due_dates",
+        cycle_days: row["cycle_days"] == null ? null : Number(row["cycle_days"]),
       });
     }
   }

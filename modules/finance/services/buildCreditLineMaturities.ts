@@ -134,6 +134,8 @@ function buildSummary(maturities: CreditLineMaturity[], asOf: string): CreditLin
 
 export async function buildCreditLineMaturities(
   query: CreditLineMaturitiesQuery = {},
+  canManageCreditLineRegularizations = false,
+  canExecuteCreditLineRepayments = false,
 ): Promise<CreditLineMaturitiesResponse> {
   const asOf = todayIso();
   const { groups, legacyGaps } = await findOpenCreditLineMaturities(query);
@@ -177,6 +179,8 @@ export async function buildCreditLineMaturities(
     usedAmount: gap.used_amount,
     explainedRemaining: gap.explained_remaining,
     unexplainedAmount: Math.max(0, gap.used_amount - gap.explained_remaining),
+    repaymentMode: gap.repayment_mode,
+    cycleDays: gap.cycle_days,
   }));
 
   return {
@@ -188,5 +192,6 @@ export async function buildCreditLineMaturities(
     ),
     maturities: filtered,
     legacyGaps: legacy,
+    permissions: { canManageCreditLineRegularizations, canExecuteCreditLineRepayments },
   };
 }

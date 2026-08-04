@@ -11,6 +11,8 @@ import type {
   CreditLineRepaymentRpcResponse,
   CreditLineRepaymentV2RpcResponse,
   CreateCreditLineRepaymentV2Input,
+  CreateCreditLineLegacyRegularizationInput,
+  CreditLineLegacyRegularizationRpcResponse,
   CreditLineRow,
   RepaymentGroupRow,
   RepaymentGroupStatus,
@@ -109,6 +111,7 @@ export async function findOpenRepaymentGroupForDate(
     .from("finance_credit_line_repayment_groups")
     .select("*")
     .eq("credit_line_id", input.creditLineId)
+    .eq("group_origin_type", "operational_cycle")
     .in("status", ["open", "partially_paid"])
     .lte("period_start", input.movementDate)
     .gte("period_end", input.movementDate)
@@ -228,6 +231,25 @@ export async function createCreditLineRepaymentV2Rpc(
 
   throwIfError(error);
   return data as CreditLineRepaymentV2RpcResponse;
+}
+
+export async function createCreditLineLegacyRegularizationRpc(
+  input: CreateCreditLineLegacyRegularizationInput,
+  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+): Promise<CreditLineLegacyRegularizationRpcResponse> {
+  const { data, error } = await supabase.rpc("finance_register_legacy_opening_balance_v2", {
+    p_credit_line_id: input.creditLineId,
+    p_dispositions: input.dispositions.map((item) => ({
+      principalEur: item.principalEur,
+      dispositionDate: item.dispositionDate,
+      contractualDueDate: item.contractualDueDate,
+      reference: item.reference,
+      notes: item.notes,
+    })),
+    p_idempotency_key: input.idempotencyKey,
+  });
+  throwIfError(error);
+  return data as CreditLineLegacyRegularizationRpcResponse;
 }
 
 export async function findExistingCreditLineMovement(

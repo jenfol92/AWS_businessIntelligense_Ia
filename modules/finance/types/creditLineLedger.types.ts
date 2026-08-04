@@ -37,6 +37,12 @@ export type CreditLineLedgerErrorCode =
   | "CASH_ACCOUNT_INACTIVE"
   | "ADMIN_OR_ACCOUNTING_REQUIRED"
   | "REPAYMENT_DATE_OUT_OF_SEQUENCE"
+  | "NO_LEGACY_GAP"
+  | "LEGACY_BREAKDOWN_BELOW_GAP"
+  | "LEGACY_BREAKDOWN_EXCEEDS_GAP"
+  | "EXPLAINED_PRINCIPAL_EXCEEDS_USED"
+  | "INVALID_CREDIT_LINE_CONFIGURATION"
+  | "LEGACY_PERIOD_CONFLICT"
   | "UNAUTHORIZED"
   | "IDEMPOTENCY_PAYLOAD_MISMATCH"
   | "INTERNAL_ERROR"
@@ -237,4 +243,52 @@ export type CreateCreditLineRepaymentV2Result = {
   creditAvailableEur: number;
   cashBalanceEur: number;
   status: "posted" | "reversed";
+};
+
+export type CreditLineLegacyDispositionInput = {
+  principalEur: number;
+  dispositionDate: string;
+  contractualDueDate: string;
+  reference: string | null;
+  notes: string | null;
+};
+
+export type CreateCreditLineLegacyRegularizationInput = {
+  creditLineId: string;
+  dispositions: CreditLineLegacyDispositionInput[];
+  idempotencyKey: string;
+};
+
+export type CreditLineLegacyRegularizationRpcResponse = {
+  regularization_id: string;
+  credit_line_id: string;
+  derived_gap_eur: number;
+  declared_total_eur: number;
+  groups: Array<{ repayment_group_id: string; contractual_due_date: string; principal_eur: number }>;
+  dispositions: Array<{
+    disposition_id: string;
+    repayment_group_id: string;
+    credit_line_movement_id: string;
+    principal_eur: number;
+    disposition_date: string;
+    contractual_due_date: string;
+  }>;
+  idempotent: boolean;
+};
+
+export type CreateCreditLineLegacyRegularizationResult = {
+  regularizationId: string;
+  creditLineId: string;
+  derivedGapEur: number;
+  declaredTotalEur: number;
+  groups: Array<{ repaymentGroupId: string; contractualDueDate: string; principalEur: number }>;
+  dispositions: Array<{
+    dispositionId: string;
+    repaymentGroupId: string;
+    creditLineMovementId: string;
+    principalEur: number;
+    dispositionDate: string;
+    contractualDueDate: string;
+  }>;
+  idempotent: boolean;
 };

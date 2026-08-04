@@ -2,6 +2,7 @@ import {
   createCreditLineDrawdownRpc,
   createCreditLineRepaymentRpc,
   createCreditLineRepaymentV2Rpc,
+  createCreditLineLegacyRegularizationRpc,
   fetchCashAccountById,
   fetchCashMovementById,
   fetchCreditLineById,
@@ -18,6 +19,8 @@ import type {
   CreateCreditLineRepaymentResult,
   CreateCreditLineRepaymentV2Input,
   CreateCreditLineRepaymentV2Result,
+  CreateCreditLineLegacyRegularizationInput,
+  CreateCreditLineLegacyRegularizationResult,
   CreditLineRow,
   FindOrCreateOpenRepaymentGroupInput,
   RepaymentGroupRow,
@@ -84,6 +87,12 @@ const LEDGER_ERROR_CODES = [
   "CASH_ACCOUNT_INACTIVE",
   "ADMIN_OR_ACCOUNTING_REQUIRED",
   "REPAYMENT_DATE_OUT_OF_SEQUENCE",
+  "NO_LEGACY_GAP",
+  "LEGACY_BREAKDOWN_BELOW_GAP",
+  "LEGACY_BREAKDOWN_EXCEEDS_GAP",
+  "EXPLAINED_PRINCIPAL_EXCEEDS_USED",
+  "INVALID_CREDIT_LINE_CONFIGURATION",
+  "LEGACY_PERIOD_CONFLICT",
 ] as const;
 
 const V2_PUBLIC_MESSAGES: Partial<Record<(typeof LEDGER_ERROR_CODES)[number], string>> = {
@@ -99,6 +108,27 @@ const V2_PUBLIC_MESSAGES: Partial<Record<(typeof LEDGER_ERROR_CODES)[number], st
   IDEMPOTENCY_PAYLOAD_MISMATCH: "La clave de idempotencia pertenece a otro payload.",
   ADMIN_OR_ACCOUNTING_REQUIRED: "Finance access denied",
   REPAYMENT_DATE_OUT_OF_SEQUENCE: "La fecha efectiva es anterior a la secuencia financiera del vencimiento.",
+  NO_LEGACY_GAP: "La linea no tiene saldo legacy pendiente de explicar.",
+  LEGACY_BREAKDOWN_BELOW_GAP: "El desglose es inferior al saldo pendiente de explicar.",
+  LEGACY_BREAKDOWN_EXCEEDS_GAP: "El desglose supera el saldo pendiente de explicar.",
+  EXPLAINED_PRINCIPAL_EXCEEDS_USED: "El principal explicado supera el saldo utilizado.",
+  INVALID_CREDIT_LINE_CONFIGURATION: "La configuracion de vencimiento de la linea no es valida.",
+  LEGACY_PERIOD_CONFLICT: "Ya existe un grupo legacy incompatible para ese vencimiento.",
+};
+
+const LEGACY_REGULARIZATION_PUBLIC_MESSAGES: Partial<Record<(typeof LEDGER_ERROR_CODES)[number], string>> = {
+  INVALID_AMOUNT: "Los datos de la regularización no son válidos.",
+  INVALID_DATE: "Las fechas de las disposiciones no son válidas.",
+  NOT_FOUND: "No se encontró la línea de crédito solicitada.",
+  NO_LEGACY_GAP: "La línea no tiene saldo inicial pendiente de explicar.",
+  LEGACY_BREAKDOWN_BELOW_GAP: "El desglose es inferior al saldo pendiente de explicar.",
+  LEGACY_BREAKDOWN_EXCEEDS_GAP: "El desglose supera el saldo pendiente de explicar.",
+  EXPLAINED_PRINCIPAL_EXCEEDS_USED: "El principal explicado supera el saldo utilizado de la línea.",
+  INVALID_CREDIT_LINE_CONFIGURATION: "La configuración de vencimiento de la línea no es válida.",
+  IDEMPOTENCY_PAYLOAD_MISMATCH: "La clave de idempotencia pertenece a otro desglose.",
+  CREDIT_LINE_DELETED: "La línea de crédito está eliminada y no puede regularizarse.",
+  LEGACY_PERIOD_CONFLICT: "Ya existe un vencimiento legacy incompatible.",
+  ADMIN_OR_ACCOUNTING_REQUIRED: "Finance access denied",
 };
 
 function translateLedgerRpcError(error: unknown): never {
@@ -130,6 +160,50 @@ function translateRepaymentV2RpcError(error: unknown): never {
     throw new CreditLineLedgerError(V2_PUBLIC_MESSAGES[code]!, code);
   }
   throw new CreditLineLedgerError("No se pudo registrar la devolucion.", "INTERNAL_ERROR");
+}
+
+function translateLegacyRegularizationRpcError(error: unknown): never {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (raw.includes("42501")) {
+    throw new CreditLineLedgerError("Finance access denied", "ADMIN_OR_ACCOUNTING_REQUIRED");
+  }
+  const code = LEDGER_ERROR_CODES.find((item) => raw.includes(item));
+  if (code && LEGACY_REGULARIZATION_PUBLIC_MESSAGES[code]) {
+    throw new CreditLineLedgerError(LEGACY_REGULARIZATION_PUBLIC_MESSAGES[code]!, code);
+  }
+  throw new CreditLineLedgerError("No se pudo regularizar el saldo inicial.", "INTERNAL_ERROR");
+}
+
+export async function createCreditLineLegacyRegularization(
+  input: CreateCreditLineLegacyRegularizationInput,
+  supabase?: LedgerSupabaseClient,
+): Promise<CreateCreditLineLegacyRegularizationResult> {
+  try {
+    const result = await createCreditLineLegacyRegularizationRpc(input, supabase);
+    return {
+      regularizationId: result.regularization_id,
+      creditLineId: result.credit_line_id,
+      derivedGapEur: Number(result.derived_gap_eur),
+      declaredTotalEur: Number(result.declared_total_eur),
+      groups: result.groups.map((group) => ({
+        repaymentGroupId: group.repayment_group_id,
+        contractualDueDate: group.contractual_due_date,
+        principalEur: Number(group.principal_eur),
+      })),
+      dispositions: result.dispositions.map((item) => ({
+        dispositionId: item.disposition_id,
+        repaymentGroupId: item.repayment_group_id,
+        creditLineMovementId: item.credit_line_movement_id,
+        principalEur: Number(item.principal_eur),
+        dispositionDate: item.disposition_date,
+        contractualDueDate: item.contractual_due_date,
+      })),
+      idempotent: result.idempotent,
+    };
+  } catch (error) {
+    if (error instanceof CreditLineLedgerError) throw error;
+    translateLegacyRegularizationRpcError(error);
+  }
 }
 
 export async function createCreditLineRepaymentV2(

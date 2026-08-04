@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import {
+  getFinanceAccessErrorResponse,
+  requireFinanceDetailsAccess,
+} from "@/server/auth/requireFinanceAccess";
 import {
   financeSupplierPayment,
   getSupplierPaymentFinanceErrorResponse,
@@ -14,11 +17,13 @@ type Params = {
 };
 
 export async function POST(req: Request, { params }: Params) {
-  const supabase = createSupabaseRouteClient();
-  const { data: authData, error: authError } = await supabase.auth.getUser();
-
-  if (authError || !authData.user) {
-    return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
+  let supabase;
+  try {
+    ({ supabase } = await requireFinanceDetailsAccess());
+  } catch (error) {
+    const access = getFinanceAccessErrorResponse(error);
+    if (access) return NextResponse.json(access.body, { status: access.status });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "Internal server error" }, { status: 500 });
   }
 
   let body: SupplierPaymentFinancePayload;
@@ -60,7 +65,9 @@ export async function POST(req: Request, { params }: Params) {
       );
     }
 
-    const message = error instanceof Error ? error.message : "Error inesperado";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, code: "INTERNAL_ERROR", error: "Internal server error" },
+      { status: 500 },
+    );
   }
 }

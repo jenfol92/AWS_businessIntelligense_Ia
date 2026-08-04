@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { buildFinancialPlanning } from "@/modules/finance/services/buildFinancialPlanning";
 import type { FinancePlanningQuery } from "@/modules/finance/types/planning.types";
+import {
+  getFinanceAccessErrorResponse,
+  requireTreasuryAccess,
+} from "@/server/auth/requireFinanceAccess";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -35,6 +39,7 @@ function parseQuery(req: Request): ParseResult {
 
 export async function GET(req: Request) {
   try {
+    await requireTreasuryAccess();
     const supabaseHost = (() => {
       try {
         return new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").host;
@@ -53,7 +58,11 @@ export async function GET(req: Request) {
     console.log("[finance/planning] buildFinancialPlanning done");
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Error cargando planificacion financiera";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    const access = getFinanceAccessErrorResponse(error);
+    if (access) return NextResponse.json(access.body, { status: access.status });
+    return NextResponse.json(
+      { ok: false, code: "INTERNAL_ERROR", error: "Internal server error" },
+      { status: 500 },
+    );
   }
 }

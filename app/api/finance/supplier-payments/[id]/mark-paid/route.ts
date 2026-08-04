@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import {
+  getFinanceAccessErrorResponse,
+  requireFinanceDetailsAccess,
+} from "@/server/auth/requireFinanceAccess";
 import {
   getSupplierPaymentExecutionErrorResponse,
   markSupplierPaymentPaid,
@@ -11,11 +14,13 @@ import type { MarkSupplierPaymentPaidPayload } from "@/modules/finance/types/sup
 type Params = { params: { id: string } };
 
 export async function PATCH(req: Request, { params }: Params) {
-  const supabase = createSupabaseRouteClient();
-  const { data: authData, error: authError } = await supabase.auth.getUser();
-
-  if (authError || !authData.user) {
-    return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
+  let supabase;
+  try {
+    ({ supabase } = await requireFinanceDetailsAccess());
+  } catch (error) {
+    const access = getFinanceAccessErrorResponse(error);
+    if (access) return NextResponse.json(access.body, { status: access.status });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "Internal server error" }, { status: 500 });
   }
 
   let body: MarkSupplierPaymentPaidPayload;

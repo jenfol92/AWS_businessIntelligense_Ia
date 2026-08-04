@@ -23,6 +23,15 @@ export type FinanceAccessContext = {
   role: AppRole;
 };
 
+export type FinanceAccessErrorResponse = {
+  status: 401 | 403;
+  body: {
+    ok: false;
+    code: "UNAUTHENTICATED" | "FINANCE_ACCESS_DENIED";
+    error: "Authentication required" | "Finance access denied";
+  };
+};
+
 type Capability = (user: User) => boolean;
 
 async function requireAccess(
@@ -38,6 +47,7 @@ async function requireAccess(
   return { supabase, user: data.user, role };
 }
 
+/** Operational treasury read access for admin, accounting and logistics. */
 export function requireTreasuryAccess(supabase?: SupabaseClient) {
   return requireAccess(canReadTreasury, supabase);
 }
@@ -48,4 +58,32 @@ export function requireUnlinkedDetailsAccess(supabase?: SupabaseClient) {
 
 export function requireUnlinkedManagementAccess(supabase?: SupabaseClient) {
   return requireAccess(canManageUnlinkedObligations, supabase);
+}
+
+/** Financial execution and management are restricted to admin and accounting. */
+export function requireFinanceDetailsAccess(supabase?: SupabaseClient) {
+  return requireAccess(canReadUnlinkedObligationDetails, supabase);
+}
+
+export function getFinanceAccessErrorResponse(error: unknown): FinanceAccessErrorResponse | null {
+  const code =
+    error instanceof FinanceAccessError
+      ? error.code
+      : error && typeof error === "object" && "code" in error
+        ? (error as { code?: unknown }).code
+        : null;
+
+  if (code === "UNAUTHENTICATED") {
+    return {
+      status: 401,
+      body: { ok: false, code: "UNAUTHENTICATED", error: "Authentication required" },
+    };
+  }
+  if (code === "FINANCE_ACCESS_DENIED") {
+    return {
+      status: 403,
+      body: { ok: false, code: "FINANCE_ACCESS_DENIED", error: "Finance access denied" },
+    };
+  }
+  return null;
 }

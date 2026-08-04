@@ -1,5 +1,4 @@
 import { findFinancialPlanningData } from "../repositories/financialPlanningRepository";
-import { backfillMissingSupplierPayments } from "./syncSupplierPaymentsForOrder";
 import {
   isActiveCreditLineStatus,
   isDeletedCreditLineStatus,
@@ -689,8 +688,6 @@ export async function buildFinancialPlanning(
   query: FinancePlanningQuery,
 ): Promise<FinancePlanningResponse> {
   console.log("[finance/planning] buildFinancialPlanning start");
-  const backfillResult = await backfillMissingSupplierPayments();
-  console.log("[finance/planning] backfill completed", backfillResult);
   const raw = await findFinancialPlanningData(query);
   const allCreditLines: FinanceCreditLine[] = raw.creditLines
     .filter((row) => !isDeletedCreditLineStatus(String(row["status"] ?? "")))

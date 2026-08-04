@@ -9,7 +9,10 @@ import {
   isRealIsoDate,
   isUuid,
 } from "@/modules/finance/utils/financeInputValidation";
-import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import {
+  getFinanceAccessErrorResponse,
+  requireTreasuryAccess,
+} from "@/server/auth/requireFinanceAccess";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -24,10 +27,12 @@ const STATUS_FILTERS: CreditLineMaturityFilter[] = [
 ];
 
 export async function GET(req: Request) {
-  const supabase = createSupabaseRouteClient();
-  const { data: authData, error: authError } = await supabase.auth.getUser();
-  if (authError || !authData.user) {
-    return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
+  try {
+    await requireTreasuryAccess();
+  } catch (error) {
+    const access = getFinanceAccessErrorResponse(error);
+    if (access) return NextResponse.json(access.body, { status: access.status });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "Internal server error" }, { status: 500 });
   }
 
   const url = new URL(req.url);
@@ -79,7 +84,9 @@ export async function GET(req: Request) {
     const data = await buildCreditLineMaturities(query);
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Error cargando vencimientos";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, code: "INTERNAL_ERROR", error: "Internal server error" },
+      { status: 500 },
+    );
   }
 }

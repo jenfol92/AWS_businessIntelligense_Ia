@@ -13,6 +13,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 
 const {
   FinanceAccessError,
+  getFinanceAccessErrorResponse,
+  requireFinanceDetailsAccess,
   requireTreasuryAccess,
   requireUnlinkedManagementAccess,
 } = await import("./requireFinanceAccess.ts");
@@ -32,9 +34,29 @@ test("management role matrix rejects logistics and accepts accounting/admin", as
   assert.equal((await requireUnlinkedManagementAccess(client(user("admin")))).role, "admin");
 });
 
-test("logistics can use treasury with the injected session client", async () => {
-  const sessionClient = client(user("logistics"));
-  const context = await requireTreasuryAccess(sessionClient);
-  assert.equal(context.role, "logistics");
-  assert.equal(context.supabase, sessionClient);
+test("treasury read accepts logistics, accounting and admin", async () => {
+  for (const role of ["logistics", "accounting", " ADMIN "]) {
+    const sessionClient = client(user(role));
+    const context = await requireTreasuryAccess(sessionClient);
+    assert.equal(context.role, role.trim().toLowerCase());
+    assert.equal(context.supabase, sessionClient);
+  }
+});
+
+test("detailed finance access accepts admin/accounting and rejects logistics", async () => {
+  await assert.rejects(requireFinanceDetailsAccess(client(user("logistics"))), (error) =>
+    error instanceof FinanceAccessError && error.code === "FINANCE_ACCESS_DENIED" && error.status === 403);
+  assert.equal((await requireFinanceDetailsAccess(client(user("accounting")))).role, "accounting");
+  assert.equal((await requireFinanceDetailsAccess(client(user(" ADMIN ")))).role, "admin");
+});
+
+test("finance access responses ignore external status and messages", () => {
+  assert.deepEqual(
+    getFinanceAccessErrorResponse({ code: "UNAUTHENTICATED", status: 500, message: "secret SQL" }),
+    { status: 401, body: { ok: false, code: "UNAUTHENTICATED", error: "Authentication required" } },
+  );
+  assert.deepEqual(
+    getFinanceAccessErrorResponse({ code: "FINANCE_ACCESS_DENIED", status: 200, message: "secret SQL" }),
+    { status: 403, body: { ok: false, code: "FINANCE_ACCESS_DENIED", error: "Finance access denied" } },
+  );
 });

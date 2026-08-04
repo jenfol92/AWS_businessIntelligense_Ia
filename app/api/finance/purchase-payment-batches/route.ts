@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import {
+  getFinanceAccessErrorResponse,
+  requireFinanceDetailsAccess,
+} from "@/server/auth/requireFinanceAccess";
 import { createPurchasePaymentBatchRpc } from "@/modules/finance/repositories/purchasePaymentBatchRepository";
 import {
   normalizePurchasePaymentBatchPayload,
@@ -8,9 +11,14 @@ import {
 import type { CreatePurchasePaymentBatchPayload } from "@/modules/finance/types/purchasePaymentBatch.types";
 
 export async function POST(request: Request) {
-  const supabase = createSupabaseRouteClient();
-  const { data, error } = await supabase.auth.getUser();
-  if (error || !data.user) return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
+  let supabase;
+  try {
+    ({ supabase } = await requireFinanceDetailsAccess());
+  } catch (error) {
+    const access = getFinanceAccessErrorResponse(error);
+    if (access) return NextResponse.json(access.body, { status: access.status });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "Internal server error" }, { status: 500 });
+  }
 
   try {
     const body = (await request.json()) as CreatePurchasePaymentBatchPayload;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Banknote, AlertTriangle } from "lucide-react";
 import type { FinanceCashAccount } from "../types/planning.types";
@@ -103,14 +103,16 @@ export function CreditLineRepaymentModal({
     (account) => account.currency.trim().toUpperCase() === "EUR",
   );
   const maxAmount = maturity.remainingAmountEur;
-  const [amount, setAmount] = useState(String(maxAmount));
-  const [movementDate, setMovementDate] = useState(today);
+  const [principalPaidEur, setPrincipalPaidEur] = useState(String(maxAmount));
+  const [interestPaidEur, setInterestPaidEur] = useState("0");
+  const [feesPaidEur, setFeesPaidEur] = useState("0");
+  const [effectiveDate, setEffectiveDate] = useState(today);
   const [cashAccountId, setCashAccountId] = useState("");
   const [bankReference, setBankReference] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const lastAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
 
   const selectedAccount = eurAccounts.find((account) => account.id === cashAccountId) ?? null;
 
@@ -118,16 +120,24 @@ export function CreditLineRepaymentModal({
     e.preventDefault();
     setError(null);
 
-    const amountNumber = mode === "full" ? maxAmount : Number(amount);
-    if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-      setError("El importe debe ser mayor que 0.");
+    const principal = mode === "full" ? maxAmount : Number(principalPaidEur);
+    const interest = Number(interestPaidEur);
+    const fees = Number(feesPaidEur);
+    const components = [principal, interest, fees];
+    if (components.some((value) => !Number.isFinite(value) || value < 0
+      || Math.abs(Math.round(value * 100) - value * 100) > Number.EPSILON * Math.max(1, Math.abs(value * 100)) * 4)) {
+      setError("Los importes deben ser positivos o cero y tener como maximo dos decimales.");
       return;
     }
-    if (amountNumber > maxAmount) {
-      setError("El importe no puede superar el saldo pendiente.");
+    if (principal + interest + fees <= 0) {
+      setError("Indica al menos un componente mayor que cero.");
       return;
     }
-    if (!movementDate || !/^\d{4}-\d{2}-\d{2}$/.test(movementDate)) {
+    if (principal > maxAmount) {
+      setError("El principal no puede superar el saldo pendiente.");
+      return;
+    }
+    if (!effectiveDate || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) {
       setError("Indica una fecha de pago valida.");
       return;
     }
@@ -139,23 +149,33 @@ export function CreditLineRepaymentModal({
       setError("Solo se permiten cuentas EUR.");
       return;
     }
-    if (selectedAccount.balance < amountNumber) {
+    if (selectedAccount.balance < principal + interest + fees) {
       setError("Saldo de caja insuficiente.");
       return;
     }
 
     setSaving(true);
     try {
+      const attemptPayload = {
+        repaymentGroupId: maturity.repaymentGroupId,
+        cashAccountId,
+        principalPaidEur: principal,
+        interestPaidEur: interest,
+        feesPaidEur: fees,
+        effectiveDate,
+        bankReference: bankReference.trim() ? bankReference.trim() : null,
+        notes: notes.trim() ? notes.trim() : null,
+      };
+      const fingerprint = JSON.stringify(attemptPayload);
+      const idempotencyKey = lastAttempt.current?.fingerprint === fingerprint
+        ? lastAttempt.current.key
+        : crypto.randomUUID();
+      lastAttempt.current = { fingerprint, key: idempotencyKey };
       const res = await fetch(`/api/finance/credit-lines/${maturity.creditLineId}/repay`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          amount: amountNumber,
-          movementDate,
-          cashAccountId,
-          repaymentGroupId: maturity.repaymentGroupId,
-          bankReference: bankReference.trim() ? bankReference.trim() : null,
-          notes: notes.trim() ? notes.trim() : null,
+          ...attemptPayload,
           idempotencyKey,
         }),
       });
@@ -212,17 +232,43 @@ export function CreditLineRepaymentModal({
           </div>
 
           <label className="text-xs font-medium text-slate-600 block">
-            Importe a devolver
+            Principal a devolver
             <input
               type="number"
-              min="0.01"
+              min="0"
               step="0.01"
               required
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              value={principalPaidEur}
+              onChange={(e) => setPrincipalPaidEur(e.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
             />
           </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-xs font-medium text-slate-600 block">
+              Intereses
+              <input type="number" min="0" step="0.01" required value={interestPaidEur}
+                onChange={(e) => setInterestPaidEur(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 block">
+              Comisiones
+              <input type="number" min="0" step="0.01" required value={feesPaidEur}
+                onChange={(e) => setFeesPaidEur(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="rounded-lg bg-slate-50 p-3">
+              <div className="text-slate-500">Salida total de caja</div>
+              <div className="font-semibold text-slate-900">{eur((Number(principalPaidEur) || 0) + (Number(interestPaidEur) || 0) + (Number(feesPaidEur) || 0))}</div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3">
+              <div className="text-slate-500">Credito que se libera</div>
+              <div className="font-semibold text-slate-900">{eur(Number(principalPaidEur) || 0)}</div>
+            </div>
+          </div>
 
           <label className="text-xs font-medium text-slate-600 block">
             Cuenta EUR
@@ -246,8 +292,8 @@ export function CreditLineRepaymentModal({
             <input
               type="date"
               required
-              value={movementDate}
-              onChange={(e) => setMovementDate(e.target.value)}
+              value={effectiveDate}
+              onChange={(e) => setEffectiveDate(e.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
             />
           </label>
@@ -296,10 +342,13 @@ export function CreditLineRepaymentModal({
             <button
               type="button"
               disabled={saving}
-              onClick={(e) => submit(e as unknown as FormEvent<HTMLFormElement>, "full")}
+              onClick={(e) => {
+                setPrincipalPaidEur(String(maxAmount));
+                void submit(e as unknown as FormEvent<HTMLFormElement>, "full");
+              }}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
             >
-              {saving ? "Guardando..." : "Pagar saldo completo"}
+              {saving ? "Guardando..." : "Pagar total"}
             </button>
           </div>
         </div>

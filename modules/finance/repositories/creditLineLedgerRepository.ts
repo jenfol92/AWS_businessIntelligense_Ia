@@ -9,6 +9,8 @@ import type {
   CreditLineMovementRow,
   CreditLineMovementType,
   CreditLineRepaymentRpcResponse,
+  CreditLineRepaymentV2RpcResponse,
+  CreateCreditLineRepaymentV2Input,
   CreditLineRow,
   RepaymentGroupRow,
   RepaymentGroupStatus,
@@ -189,6 +191,7 @@ export async function createCreditLineRepaymentRpc(
   },
   supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
 ): Promise<CreditLineRepaymentRpcResponse> {
+  // Legacy compatibility helper only. User-facing repayment routes must use V2.
   const { data, error } = await supabase.rpc("finance_create_credit_line_repayment", {
     p_credit_line_id: input.creditLineId,
     p_amount: input.amount,
@@ -204,6 +207,27 @@ export async function createCreditLineRepaymentRpc(
 
   throwIfError(error);
   return data as CreditLineRepaymentRpcResponse;
+}
+
+export async function createCreditLineRepaymentV2Rpc(
+  input: CreateCreditLineRepaymentV2Input,
+  supabase: LedgerSupabaseClient = createLedgerSupabaseClient(),
+): Promise<CreditLineRepaymentV2RpcResponse> {
+  const { data, error } = await supabase.rpc("finance_create_credit_line_repayment_v2", {
+    p_credit_line_id: input.creditLineId,
+    p_repayment_group_id: input.repaymentGroupId,
+    p_cash_account_id: input.cashAccountId,
+    p_principal_paid_eur: input.principalPaidEur,
+    p_interest_paid_eur: input.interestPaidEur,
+    p_fees_paid_eur: input.feesPaidEur,
+    p_effective_date: input.effectiveDate,
+    p_bank_reference: input.bankReference,
+    p_notes: input.notes,
+    p_idempotency_key: input.idempotencyKey,
+  });
+
+  throwIfError(error);
+  return data as CreditLineRepaymentV2RpcResponse;
 }
 
 export async function findExistingCreditLineMovement(

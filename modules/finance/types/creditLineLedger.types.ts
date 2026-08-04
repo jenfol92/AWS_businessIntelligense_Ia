@@ -34,8 +34,12 @@ export type CreditLineLedgerErrorCode =
   | "CREDIT_LINE_DELETED"
   | "MISSING_CASH_ACCOUNT"
   | "MISSING_REPAYMENT_GROUP"
+  | "CASH_ACCOUNT_INACTIVE"
+  | "ADMIN_OR_ACCOUNTING_REQUIRED"
+  | "REPAYMENT_DATE_OUT_OF_SEQUENCE"
   | "UNAUTHORIZED"
   | "IDEMPOTENCY_PAYLOAD_MISMATCH"
+  | "INTERNAL_ERROR"
   | "DIRECT_DML_FORBIDDEN";
 
 export class CreditLineLedgerError extends Error {
@@ -189,4 +193,48 @@ export type CreditLineRepaymentRpcResponse = {
   available_amount: number;
   cash_balance: number;
   idempotent: boolean;
+};
+
+export type CreateCreditLineRepaymentV2Input = {
+  creditLineId: string;
+  repaymentGroupId: string;
+  cashAccountId: string;
+  principalPaidEur: number;
+  interestPaidEur: number;
+  feesPaidEur: number;
+  effectiveDate: string;
+  bankReference: string | null;
+  notes: string | null;
+  idempotencyKey: string;
+};
+
+export type CreditLineRepaymentV2RpcResponse = {
+  repayment_id: string;
+  credit_line_id: string;
+  repayment_group_id: string;
+  principal_paid_eur: number;
+  interest_paid_eur: number;
+  fees_paid_eur: number;
+  total_cash_out_eur: number;
+  principal_outstanding_eur: number;
+  credit_used_eur: number;
+  credit_available_eur: number;
+  cash_balance_eur: number;
+  status: "posted" | "reversed";
+  idempotent: boolean;
+};
+
+export type CreateCreditLineRepaymentV2Result = {
+  repaymentId: string;
+  creditLineId: string;
+  repaymentGroupId: string;
+  principalPaidEur: number;
+  interestPaidEur: number;
+  feesPaidEur: number;
+  totalCashOutEur: number;
+  principalOutstandingEur: number;
+  creditUsedEur: number;
+  creditAvailableEur: number;
+  cashBalanceEur: number;
+  status: "posted" | "reversed";
 };

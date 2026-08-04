@@ -171,3 +171,80 @@ export type UnlinkedObligationTemplateDetail = {
   template: UnlinkedObligationTemplate;
   occurrences: UnlinkedObligationOccurrenceSummary[];
 };
+
+export type UnlinkedInstallmentInput = {
+  sequence_number?: number;
+  due_date: string;
+  planned_principal_eur?: number | null;
+  planned_interest_eur?: number | null;
+  planned_other_fees_eur?: number | null;
+  planned_total_eur: number;
+};
+
+export type UnlinkedAmountInput = {
+  amount_breakdown_mode?: UnlinkedAmountBreakdownMode;
+  planned_principal_eur?: number | null;
+  planned_interest_eur?: number | null;
+  planned_other_fees_eur?: number | null;
+  planned_total_eur: number;
+};
+
+export type UnlinkedInstallmentPlanInput = {
+  installments?: UnlinkedInstallmentInput[];
+  installment_dates?: string[];
+};
+
+export type CreateUnlinkedObligationInput = UnlinkedAmountInput & UnlinkedInstallmentPlanInput & {
+  concept: string;
+  category: UnlinkedObligationCategory;
+  counterparty_name?: string | null;
+  description?: string | null;
+};
+
+export type UpdateUnlinkedObligationMetadataInput = {
+  concept?: string;
+  category?: UnlinkedObligationCategory;
+  counterparty_name?: string | null;
+  description?: string | null;
+};
+
+export type ReplaceUnlinkedInstallmentPlanInput = UnlinkedAmountInput & UnlinkedInstallmentPlanInput & {
+  amount_breakdown_mode: UnlinkedAmountBreakdownMode;
+};
+
+export type CreateUnlinkedObligationTemplateInput = UnlinkedAmountInput & {
+  concept: string;
+  category: UnlinkedObligationCategory;
+  counterparty_name?: string | null;
+  description?: string | null;
+  start_date: string;
+  end_date: string;
+  frequency_unit?: "month";
+  frequency_interval: UnlinkedFrequencyInterval;
+};
+
+export type UpdateUnlinkedObligationTemplateInput = Partial<UnlinkedAmountInput> & {
+  concept?: string;
+  category?: UnlinkedObligationCategory;
+  counterparty_name?: string | null;
+  description?: string | null;
+  end_date?: string;
+  frequency_interval?: UnlinkedFrequencyInterval;
+  status?: UnlinkedTemplateStatus;
+};
+
+export type UnlinkedTreasuryCommitment = {
+  obligationId: string;
+  installmentId: string;
+  templateId: string | null;
+  originType: UnlinkedObligationOriginType;
+  concept: string;
+  category: UnlinkedObligationCategory;
+  dueDate: string;
+  plannedTotalEur: number;
+  allocatedTotalEur: number;
+  outstandingTotalEur: number;
+  financialStatus: UnlinkedInstallmentFinancialStatus;
+  temporalCondition: UnlinkedInstallmentTemporalCondition;
+  hasOverdueInstallment: boolean;
+};

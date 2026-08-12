@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CheckCircle, Clock, Ship } from "lucide-react";
+import { CheckCircle, Clock } from "lucide-react";
 
 import { ArrivalProductSummary } from "@/modules/planner/components/ArrivalProductSummary";
 import type { ArrivalDateSource, ArrivalOrder } from "@/modules/planner/types/arrivals.types";
@@ -9,6 +9,7 @@ import {
   type ArrivalVisualCategory,
 } from "@/modules/planner/utils/arrivalVisualUtils";
 import { ResponsiveDataCard } from "@/shared/ui/ResponsiveDataCard";
+import { formatCurrency, formatEur } from "@/shared/utils/currency";
 
 const SOURCE_LABEL: Record<ArrivalDateSource, string> = {
   container_eta: "ETA contenedor",
@@ -47,16 +48,31 @@ const VISUAL_CATEGORY_STYLE: Record<
 };
 
 const DESTINATION_BADGE: Record<string, string> = {
-  "Amazon AGL": "bg-orange-100 text-orange-800 ring-1 ring-orange-300",
-  FBA: "bg-orange-600 text-white",
   ES: "bg-emerald-600 text-white",
   EU: "bg-blue-600 text-white",
   UK: "bg-violet-600 text-white",
+  GB: "bg-violet-600 text-white",
   IT: "bg-red-500 text-white",
   FR: "bg-sky-600 text-white",
   DE: "bg-slate-700 text-white",
-  "Sin destino definido": "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
+  PL: "bg-indigo-600 text-white",
+  NL: "bg-teal-600 text-white",
+  BE: "bg-cyan-600 text-white",
+  US: "bg-blue-800 text-white",
+  "Destino pendiente": "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
 };
+
+const LEGACY_INVALID_DESTINATION = /^(FBA|FBM|Amazon AGL|Sin destino|Sin destino definido)$/i;
+
+function displayDestination(order: ArrivalOrder): string {
+  if (order.destinationLabel?.trim()) return order.destinationLabel;
+  if (order.destinationCountry?.trim()) return order.destinationCountry;
+  const badge = order.destinationBadge?.trim();
+  if (badge && !LEGACY_INVALID_DESTINATION.test(badge) && !badge.toLowerCase().includes("amazon")) {
+    return badge;
+  }
+  return "Destino pendiente";
+}
 
 function formatEta(iso: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
@@ -83,14 +99,27 @@ function buildDetailHref(locale: string, order: ArrivalOrder): string {
   return `/${locale}/pedidos?orderId=${encodeURIComponent(order.orderId)}`;
 }
 
-function logisticsSummaryValue(order: ArrivalOrder): string {
-  if (order.logisticsKind === "contenedor_propio") {
-    return order.containerNumber ?? "Contenedor propio";
-  }
-  if (order.logisticsKind === "amazon_inbound") {
-    return order.amazonInbound?.shipment_id ?? "Amazon inbound";
-  }
-  return arrivalLogisticsLabel(order);
+function CostSummary({ order }: { order: ArrivalOrder }) {
+  const cost = order.costSummary;
+  if (!cost) return null;
+
+  const currency = cost.originalCurrency?.trim().toUpperCase() || "USD";
+  const showOriginal = currency !== "EUR" && cost.originalTotal != null;
+
+  return (
+    <div className="mt-2 rounded-lg bg-slate-50 px-2 py-1.5 text-xs text-slate-600 ring-1 ring-slate-100">
+      <span className="font-semibold text-slate-500">Coste total proveedor: </span>
+      {showOriginal ? (
+        <span className="font-semibold text-slate-800">
+          {formatCurrency(cost.originalTotal, currency)}
+          {" · "}
+        </span>
+      ) : null}
+      <span className="font-semibold text-slate-800">
+        {cost.eurTotal != null ? formatEur(cost.eurTotal) : cost.eurPendingReason ?? "-"}
+      </span>
+    </div>
+  );
 }
 
 function EtaBadge({ order }: { order: ArrivalOrder }) {
@@ -109,35 +138,9 @@ function EtaBadge({ order }: { order: ArrivalOrder }) {
 }
 
 function LogisticsBadge({ order }: { order: ArrivalOrder }) {
-  if (order.logisticsKind === "contenedor_propio") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 ring-1 ring-indigo-200">
-        <Ship className="h-3 w-3" aria-hidden />
-        {order.containerNumber ?? "Contenedor propio"}
-      </span>
-    );
-  }
-
-  if (order.logisticsKind === "amazon_inbound") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-semibold text-orange-700 ring-1 ring-orange-200">
-        <Ship className="h-3 w-3" aria-hidden />
-        {arrivalLogisticsLabel(order)}
-      </span>
-    );
-  }
-
-  if (order.tipoEnvio === "amazon_agl") {
-    return (
-      <span className="inline-flex rounded-full bg-purple-50 px-2 py-0.5 text-[10px] font-semibold text-purple-700 ring-1 ring-purple-200">
-        Amazon AGL pendiente vínculo
-      </span>
-    );
-  }
-
   return (
-    <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 ring-1 ring-slate-200">
-      Sin logística vinculada
+    <span className="inline-flex rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-700 ring-1 ring-slate-200">
+      {order.logisticsLabel}
     </span>
   );
 }
@@ -219,6 +222,8 @@ export function ArrivalEventCard({
       ? `Mes est. ${formatEta(order.estimatedMonthDate)}`
       : "ETA sin definir";
 
+  const destinationText = displayDestination(order);
+
   if (compact) {
     return (
       <ResponsiveDataCard
@@ -236,19 +241,29 @@ export function ArrivalEventCard({
           <div className="flex flex-wrap justify-end gap-1">
             <EtaBadge order={order} />
             <span
-              className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${destinationBadgeClass(order.destinationBadge)}`}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${destinationBadgeClass(destinationText)}`}
             >
-              {order.destinationBadge}
+              {destinationText}
             </span>
           </div>
         }
         fields={[
           { label: "Fecha", value: dateLabel },
-          { label: "Destino", value: order.amazonInbound?.destination_center ?? order.destination ?? "—" },
+          { label: "Destino", value: destinationText },
+          { label: "Logística", value: order.logisticsLabel },
           { label: "Origen fecha", value: SOURCE_LABEL[order.dateSource] },
           {
-            label: "Logistica",
-            value: logisticsSummaryValue(order),
+            label: "Coste total proveedor",
+            value: order.costSummary
+              ? [
+                  order.costSummary.originalCurrency !== "EUR" && order.costSummary.originalTotal != null
+                    ? formatCurrency(order.costSummary.originalTotal, order.costSummary.originalCurrency)
+                    : null,
+                  order.costSummary.eurTotal != null
+                    ? formatEur(order.costSummary.eurTotal)
+                    : order.costSummary.eurPendingReason,
+                ].filter(Boolean).join(" · ") || "-"
+              : "-",
             className: "col-span-2",
           },
         ]}
@@ -270,10 +285,21 @@ export function ArrivalEventCard({
           ) : null}
         </div>
         <span
-          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${destinationBadgeClass(order.destinationBadge)}`}
+          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${destinationBadgeClass(destinationText)}`}
         >
-          {order.destinationBadge}
+          {destinationText}
         </span>
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Destino</p>
+          <p className="font-medium text-slate-800">{destinationText}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Logística</p>
+          <p className="font-medium text-slate-800">{order.logisticsLabel}</p>
+        </div>
       </div>
 
       <ArrivalProductSummary
@@ -281,6 +307,8 @@ export function ArrivalEventCard({
         fallbackText={order.productSummary}
         className="mt-1"
       />
+
+      <CostSummary order={order} />
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         <EtaBadge order={order} />
@@ -320,7 +348,7 @@ export function sortOrdersByDate(orders: ArrivalOrder[]): ArrivalOrder[] {
 export function groupOrdersByDestination(orders: ArrivalOrder[]): Map<string, ArrivalOrder[]> {
   const map = new Map<string, ArrivalOrder[]>();
   for (const order of orders) {
-    const key = order.destinationBadge;
+    const key = order.destinationLabel || displayDestination(order);
     const list = map.get(key) ?? [];
     list.push(order);
     map.set(key, list);

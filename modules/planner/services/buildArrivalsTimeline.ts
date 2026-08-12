@@ -21,7 +21,8 @@ import {
   normalizeDateOnly,
 } from "@/modules/planner/utils/arrivalsDateUtils";
 import { computeArrivalFlags, matchesArrivalStatusFilter } from "@/modules/planner/utils/arrivalVisualUtils";
-import { resolveArrivalDestination } from "@/modules/planner/utils/resolveArrivalDestination";
+import { resolveArrivalDestination, resolveDestinationLabel } from "@/modules/planner/utils/resolveArrivalDestination";
+import { resolveLogisticsLabelFromArrivalOrder } from "@/modules/planner/utils/arrivalLogisticsLabel";
 
 type OrderRow = {
   id: string;
@@ -35,6 +36,10 @@ type OrderRow = {
   eta: string | null;
   lead_time_produccion: number | null;
   lead_time_transito: number | null;
+  moneda_compra: string | null;
+  tipo_cambio_moneda_eur: number | null;
+  coste_total_eur: number | null;
+  deposito_porcentaje: number | null;
 };
 
 type ProductRelation =
@@ -72,6 +77,7 @@ type ItemRow = {
   producto_id: string;
   proveedor_id: string | null;
   cantidad: number | null;
+  coste_unitario_moneda: number | null;
   productos: ProductRelation;
   proveedores: SupplierRelation;
 };
@@ -283,6 +289,45 @@ function toPositiveInt(value: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildArrivalCostSummary(
+  order: OrderRow,
+  items: ItemRow[],
+): ArrivalOrder["costSummary"] {
+  const originalCurrency = (order.moneda_compra ?? "USD").trim().toUpperCase() || "USD";
+  const originalTotalFromItems = items.reduce(
+    (sum, item) =>
+      sum + (toFiniteNumber(item.cantidad) ?? 0) * (toFiniteNumber(item.coste_unitario_moneda) ?? 0),
+    0,
+  );
+  const originalTotal = originalTotalFromItems > 0 ? originalTotalFromItems : null;
+  const storedEur = toFiniteNumber(order.coste_total_eur);
+  const fx = toFiniteNumber(order.tipo_cambio_moneda_eur);
+  const eurTotal =
+    storedEur != null && storedEur > 0
+      ? storedEur
+      : originalCurrency === "EUR" && originalTotal != null
+        ? originalTotal
+        : originalTotal != null && fx != null && fx > 0
+          ? originalTotal * fx
+          : null;
+  const depositPercent = toFiniteNumber(order.deposito_porcentaje) ?? 30;
+
+  return {
+    originalTotal,
+    originalCurrency,
+    eurTotal,
+    eurPendingReason:
+      eurTotal == null && originalCurrency !== "EUR" ? "EUR pendiente: falta tipo de cambio" : null,
+    depositPercent,
+    balancePercent: 100 - depositPercent,
+  };
+}
+
 function resolveSupplierLeadTime(items: ItemRow[]): number | null {
   let maxDays: number | null = null;
 
@@ -424,25 +469,34 @@ function resolveStatus(
 
 function formatDestinationFields(
   resolved: ReturnType<typeof resolveArrivalDestination>,
-  containerType: string | null,
-): Pick<ArrivalOrder, "destination" | "destinationBadge" | "destinationCountry" | "destinationChannel"> {
-  const hasDestination = Boolean(resolved.destination);
-  const isAmazonAgl = containerType?.trim().toLowerCase() === "amazon_agl";
-
-  if (!hasDestination && isAmazonAgl) {
-    return {
-      destination: "Amazon AGL",
-      destinationBadge: "Amazon AGL",
-      destinationCountry: null,
-      destinationChannel: "FBA",
-    };
-  }
+  amazonDestinationCountry?: string | null,
+): Pick<ArrivalOrder, "destination" | "destinationBadge" | "destinationCountry" | "destinationChannel" | "destinationLabel"> {
+  const destinationLabel = resolveDestinationLabel(resolved, amazonDestinationCountry);
+  const legacyBadge =
+    resolved.destinationBadge === "FBA" && resolved.destinationCountry
+      ? resolved.destinationCountry
+      : resolved.destinationBadge;
 
   return {
-    destination: resolved.destination ?? "Sin destino definido",
-    destinationBadge: hasDestination ? resolved.destinationBadge : "Sin destino definido",
+    destination: resolved.destination,
+    destinationBadge: destinationLabel !== "Destino pendiente" ? destinationLabel : legacyBadge,
     destinationCountry: resolved.destinationCountry,
     destinationChannel: resolved.destinationChannel,
+    destinationLabel,
+  };
+}
+
+function withArrivalDisplayFields(
+  destinationFields: ReturnType<typeof formatDestinationFields>,
+  logisticsKind: ArrivalOrder["logisticsKind"],
+  tipoEnvio: string | null,
+): Pick<
+  ArrivalOrder,
+  "destination" | "destinationBadge" | "destinationCountry" | "destinationChannel" | "destinationLabel" | "logisticsLabel"
+> {
+  return {
+    ...destinationFields,
+    logisticsLabel: resolveLogisticsLabelFromArrivalOrder({ logisticsKind, tipoEnvio }),
   };
 }
 
@@ -472,7 +526,7 @@ function pushArrivalToMonth(
   if (!month) return;
 
   month.total += 1;
-  byDestination[orderDto.destinationBadge] = (byDestination[orderDto.destinationBadge] ?? 0) + 1;
+  byDestination[orderDto.destinationLabel] = (byDestination[orderDto.destinationLabel] ?? 0) + 1;
 
   if (orderDto.hasDefinedEta) {
     month.confirmedEtaOrders.push(orderDto);
@@ -657,7 +711,12 @@ function buildStandaloneArrivalOrder(
     displayCode: identificador,
     productLines: [],
     productSummary: "Sin orden vinculada",
-    ...formatDestinationFields(resolved, container.tipo_contenedor),
+    costSummary: null,
+    ...withArrivalDisplayFields(
+      formatDestinationFields(resolved, null),
+      "contenedor_propio",
+      null,
+    ),
     etaVisible: etaDate,
     estimatedMonthDate: etaDate,
     hasDefinedEta: true,
@@ -693,7 +752,7 @@ export async function buildArrivalsTimeline(
   const { data: rawOrders, error: orderError } = await supabase
     .from("ordenes_compra")
     .select(
-      "id, numero_orden, numero_pedido_agente, estado, tipo_envio, destino, fecha_orden, etd, eta, lead_time_produccion, lead_time_transito",
+      "id, numero_orden, numero_pedido_agente, estado, tipo_envio, destino, fecha_orden, etd, eta, lead_time_produccion, lead_time_transito, moneda_compra, tipo_cambio_moneda_eur, coste_total_eur, deposito_porcentaje",
     )
     .eq("estado", "confirmado")
     .order("fecha_orden", { ascending: true })
@@ -708,7 +767,7 @@ export async function buildArrivalsTimeline(
     const { data: rawItems, error: itemError } = await supabase
       .from("orden_items")
       .select(
-        `orden_id, producto_id, proveedor_id, cantidad,
+        `orden_id, producto_id, proveedor_id, cantidad, coste_unitario_moneda,
          productos(id, sku, nombre, proveedor_id),
          proveedores(id, nombre, dias_produccion_estandar, dias_transito_estandar)`,
       )
@@ -786,6 +845,7 @@ export async function buildArrivalsTimeline(
         status,
       });
       const productLines = buildArrivalProductLines(orderItems);
+      const costSummary = buildArrivalCostSummary(order, orderItems);
       const proveedor =
         orderItems
           .map((item) => firstRelation(item.proveedores)?.nombre ?? null)
@@ -800,7 +860,12 @@ export async function buildArrivalsTimeline(
         displayCode: order.numero_pedido_agente || order.numero_orden || order.id.slice(0, 8),
         productLines,
         productSummary: buildArrivalProductSummary(productLines),
-        ...formatDestinationFields(resolved, containerRow?.tipo_contenedor ?? null),
+        costSummary,
+        ...withArrivalDisplayFields(
+          formatDestinationFields(resolved, amazonInboundDto?.destination_country ?? null),
+          logisticsKind,
+          order.tipo_envio,
+        ),
         etaVisible: dateState.etaVisible,
         estimatedMonthDate: dateState.estimatedMonthDate,
         hasDefinedEta: dateState.hasDefinedEta,

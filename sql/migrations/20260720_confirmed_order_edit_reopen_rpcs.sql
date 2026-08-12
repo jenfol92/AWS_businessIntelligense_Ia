@@ -4,6 +4,7 @@
 BEGIN;
 
 DROP FUNCTION IF EXISTS public.update_confirmed_purchase_order_costs(uuid, jsonb);
+DROP FUNCTION IF EXISTS public.reopen_confirmed_purchase_order(uuid);
 
 CREATE OR REPLACE FUNCTION public.reopen_confirmed_purchase_order(
   p_order_id uuid,

@@ -22,6 +22,15 @@ export type ArrivalProductLine = {
   quantity: number | null;
 };
 
+export type ArrivalCostSummary = {
+  originalTotal: number | null;
+  originalCurrency: string | null;
+  eurTotal: number | null;
+  eurPendingReason: string | null;
+  depositPercent: number | null;
+  balancePercent: number | null;
+};
+
 export type ArrivalOrder = {
   orderId: string;
   numeroOrden: string | null;
@@ -31,10 +40,17 @@ export type ArrivalOrder = {
   displayCode: string;
   productSummary: string;
   productLines: ArrivalProductLine[];
+  costSummary: ArrivalCostSummary | null;
   destination: string | null;
+  /** Legacy — filtros/agrupación; no usar en UI si contiene FBA/AGL. */
   destinationBadge: string;
   destinationCountry: string | null;
+  /** Solo filtros internos; no mostrar en card. */
   destinationChannel: string | null;
+  /** Código país o texto destino visible (ES, FR, DE…). */
+  destinationLabel: string;
+  /** Amazon AGL | Envío propio | Sin logística vinculada */
+  logisticsLabel: string;
   etaVisible: string;
   estimatedMonthDate: string | null;
   hasDefinedEta: boolean;

@@ -2,6 +2,8 @@
 
 export type GlobalFilters = {
     windowDays: number;
+    periodFrom?: string | null;
+    periodTo?: string | null;
     pais: string;
     canal: string;
   };

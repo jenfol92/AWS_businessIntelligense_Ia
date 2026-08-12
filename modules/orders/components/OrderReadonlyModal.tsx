@@ -23,6 +23,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { formatCurrency, formatEur } from "@/shared/utils/currency";
+import { resolveLogisticsLabelFromOrder } from "@/modules/planner/utils/arrivalLogisticsLabel";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -110,9 +111,6 @@ function orderEurTotal(orden: OrdenDetalle, totalOriginal: number): number | nul
   const fx = orden.tipo_cambio_moneda_eur ?? orden.tipo_cambio_usd_eur;
   return fx != null ? totalOriginal * Number(fx) : null;
 }
-function tipoEnvioLabel(tipoEnvio: string | null | undefined): string {
-  return tipoEnvio === "amazon_agl" ? "Amazon AGL" : "Envio propio";
-}
 
 // ─── Componente ───────────────────────────────────────────────────────────────
 
@@ -198,7 +196,7 @@ export default function OrderReadonlyModal({ ordenId, onClose }: OrderReadonlyMo
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 text-xs">
                 {[
                   { label: "Fecha orden",  value: fmtDate(orden.fecha_orden) },
-                  { label: "Tipo envio",   value: tipoEnvioLabel(orden.tipo_envio) },
+                  { label: "Logística", value: resolveLogisticsLabelFromOrder({ tipoEnvio: orden.tipo_envio }) },
                   { label: "FOB Puerto",   value: orden.fob_puerto  ?? "—" },
                   { label: "Destino",      value: orden.destino     ?? "—" },
                   { label: "ETA",          value: fmtDate(orden.eta) },

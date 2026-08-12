@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 import { linkOrdersToContainer } from "@/modules/containers/repositories/containerOrdersRepository";
 import { propagateOrderFieldsToContainer } from "@/modules/containers/services/propagateOrderFieldsToContainer";
 import { refreshSupplierPaymentsFromContainer } from "@/modules/finance/services/syncSupplierPaymentsForOrder";
+import { supabaseAdmin } from "@/server/supabase/adminClient";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 
 type Params = { params: { id: string } };
@@ -62,7 +63,7 @@ export async function DELETE(req: Request, { params }: Params) {
     .from("contenedor_ordenes").delete().eq("contenedor_id", params.id).eq("orden_id", orden_id);
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
 
-  const { error: assignmentError } = await supabase
+  const { error: assignmentError } = await supabaseAdmin
     .from("orden_logistics_assignments")
     .update({ status: "inactive" })
     .eq("orden_id", orden_id)

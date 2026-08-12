@@ -40,9 +40,10 @@ export async function confirmOrderWithCurrentFactoryCostsRpc(
   const supabase = createSupabaseRouteClient();
 
   const { data, error } = await supabase.rpc(
-    "confirm_order_with_current_factory_costs",
+    "confirm_order_with_planned_fx",
     {
       p_order_id: orderId,
+      p_confirmation_date: input.confirmationDate,
       p_eta: input.eta,
       p_etd: input.etd ?? null,
       p_eta_real: input.eta_real ?? null,
@@ -51,6 +52,7 @@ export async function confirmOrderWithCurrentFactoryCostsRpc(
       p_numero_pedido_agente: input.numero_pedido_agente ?? null,
       p_agente_id: input.agente_id ?? null,
       p_moneda_compra: input.moneda_compra ?? null,
+      p_planned_fx_foreign_per_eur: input.planned_fx_foreign_per_eur ?? null,
       // Parámetros legacy conservados por compatibilidad de firma de la RPC.
       // El flujo nuevo no recoge ni propaga FX de orden.
       p_tipo_cambio_moneda_eur: null,
@@ -68,6 +70,6 @@ export async function confirmOrderWithCurrentFactoryCostsRpc(
 
   return requireSingleRpcRow(
     data as OrdenCompraRow | OrdenCompraRow[] | null,
-    "confirm_order_with_current_factory_costs",
+    "confirm_order_with_planned_fx",
   );
 }

@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 
-import { arrivalLogisticsLabel } from "@/modules/planner/utils/arrivalLogisticsLabel";
+import { arrivalLogisticsDetailLabel } from "@/modules/planner/utils/arrivalLogisticsLabel";
 import type { ArrivalOrder } from "@/modules/planner/types/arrivals.types";
+import { formatCurrency, formatEur } from "@/shared/utils/currency";
 
 function valueOrDash(value: string | null | undefined): string {
   return value?.trim() || "—";
@@ -20,8 +21,8 @@ function formatDate(iso: string | null | undefined): string {
   });
 }
 
-function tipoEnvioLabel(tipoEnvio: string | null | undefined): string {
-  return tipoEnvio === "amazon_agl" ? "Amazon AGL" : "Envío propio";
+function displayDestination(order: ArrivalOrder): string {
+  return order.destinationLabel ?? order.destinationCountry ?? "—";
 }
 
 export type ArrivalLogisticsDetailModalProps = {
@@ -31,6 +32,19 @@ export type ArrivalLogisticsDetailModalProps = {
   onOpenOrder: (orderId: string) => void;
 };
 
+function costSummaryValue(order: ArrivalOrder): string {
+  const cost = order.costSummary;
+  if (!cost) return "—";
+  const currency = cost.originalCurrency?.trim().toUpperCase() || "USD";
+  const parts = [
+    currency !== "EUR" && cost.originalTotal != null
+      ? formatCurrency(cost.originalTotal, currency)
+      : null,
+    cost.eurTotal != null ? formatEur(cost.eurTotal) : cost.eurPendingReason,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(" · ") : "—";
+}
+
 export function ArrivalLogisticsDetailModal({
   order,
   locale,
@@ -38,7 +52,7 @@ export function ArrivalLogisticsDetailModal({
   onOpenOrder,
 }: ArrivalLogisticsDetailModalProps) {
   const amazon = order.amazonInbound;
-  const logisticsLabel = arrivalLogisticsLabel(order);
+  const operationalLogistics = arrivalLogisticsDetailLabel(order);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
@@ -65,6 +79,22 @@ export function ArrivalLogisticsDetailModal({
           </button>
         </div>
 
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+          {[
+            { label: "Destino", value: displayDestination(order) },
+            { label: "Logística", value: order.logisticsLabel },
+            ...(amazon?.destination_center
+              ? [{ label: "Centro Amazon", value: amazon.destination_center }]
+              : []),
+            ...(amazon?.shipment_id ? [{ label: "Shipment ID", value: amazon.shipment_id }] : []),
+          ].map((item) => (
+            <div key={item.label}>
+              <p className="text-[10px] font-medium uppercase text-slate-400">{item.label}</p>
+              <p className="mt-0.5 text-slate-800">{item.value}</p>
+            </div>
+          ))}
+        </div>
+
         {order.logisticsKind === "amazon_inbound" && amazon ? (
           <div className="mt-4 rounded-xl border border-orange-100 bg-orange-50/40 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-orange-700">
@@ -72,11 +102,9 @@ export function ArrivalLogisticsDetailModal({
             </p>
             <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
               {[
-                { label: "Shipment ID", value: amazon.shipment_id },
                 { label: "Shipment name", value: valueOrDash(amazon.shipment_name) },
-                { label: "Ruta + transporte", value: logisticsLabel },
+                { label: "Ruta + transporte", value: operationalLogistics },
                 { label: "Estado Amazon", value: valueOrDash(amazon.estado_amazon) },
-                { label: "Centro destino", value: valueOrDash(amazon.destination_center) },
                 {
                   label: "País destino",
                   value: valueOrDash(amazon.destination_country),
@@ -114,7 +142,6 @@ export function ArrivalLogisticsDetailModal({
               {[
                 { label: "Identificador", value: valueOrDash(order.containerNumber) },
                 { label: "Contenedor ID", value: valueOrDash(order.containerId) },
-                { label: "Destino", value: valueOrDash(order.destination) },
                 { label: "ETA", value: formatDate(order.etaVisible) },
               ].map((item) => (
                 <div key={item.label}>
@@ -128,10 +155,7 @@ export function ArrivalLogisticsDetailModal({
 
         {order.logisticsKind === "none" ? (
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-            Sin logística vinculada
-            {order.tipoEnvio === "amazon_agl" ? (
-              <p className="mt-2 text-xs text-slate-500">Amazon AGL pendiente vínculo</p>
-            ) : null}
+            {order.logisticsLabel}
           </div>
         ) : null}
 
@@ -140,7 +164,7 @@ export function ArrivalLogisticsDetailModal({
             { label: "Número orden", value: valueOrDash(order.numeroOrden) },
             { label: "Pedido agente", value: valueOrDash(order.numeroPedidoAgente) },
             { label: "Proveedor", value: valueOrDash(order.proveedor) },
-            { label: "Tipo envío", value: tipoEnvioLabel(order.tipoEnvio) },
+            { label: "Coste total proveedor", value: costSummaryValue(order) },
           ].map((item) => (
             <div key={item.label}>
               <p className="text-[10px] font-medium uppercase text-slate-400">{item.label}</p>

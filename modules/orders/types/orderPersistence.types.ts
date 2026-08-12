@@ -130,6 +130,7 @@ export type InsertOrderHeaderInput = {
 
   // Currency / agent reference
   moneda_compra?: string | null;
+  planned_fx_foreign_per_eur?: number | null;
   tipo_cambio_moneda_eur?: number | null;
   tipo_cambio_usd_eur?: number | null;
   numero_pedido_agente?: string | null;
@@ -221,7 +222,8 @@ export type UpdateOrderDraftInput = {
 
 /** Datos necesarios para confirmar una orden de compra. */
 export type ConfirmOrderInput = {
-  eta: string;                              // ISO date 'YYYY-MM-DD'
+  confirmationDate: string;                 // ISO date 'YYYY-MM-DD'
+  eta?: string | null;                      // ISO date; null => cálculo automático
   etd?: string | null;
   eta_real?: string | null;
   lead_time_produccion?: number | null;
@@ -229,6 +231,7 @@ export type ConfirmOrderInput = {
   numero_pedido_agente?: string | null;
   agente_id?: string | null;
   moneda_compra?: string | null;
+  planned_fx_foreign_per_eur?: number | null;
   deposito_porcentaje?: number;
   balance_dias_antes_eta?: number;
   balance_condiciones_texto?: string;

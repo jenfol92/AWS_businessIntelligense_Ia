@@ -18,7 +18,7 @@ type Params = { params: { id: string } };
  * POST /api/orders/[id]/confirm
  *
  * Body:
- * @param eta                       - Fecha ETA calculada 'YYYY-MM-DD' (requerido)
+ * @param eta                       - Fecha ETA explícita; si falta, se calcula en la RPC
  * @param etd                       - Fecha ETD (opcional)
  * @param eta_real                  - ETA real actualizada (opcional)
  * @param lead_time_produccion      - Dias de produccion
@@ -39,7 +39,8 @@ export async function POST(req: Request, { params }: Params) {
   }
 
   let body: {
-    eta?: string;
+    confirmationDate?: string;
+    eta?: string | null;
     etd?: string | null;
     eta_real?: string | null;
     lead_time_produccion?: number | null;
@@ -47,6 +48,7 @@ export async function POST(req: Request, { params }: Params) {
     numero_pedido_agente?: string | null;
     agente_id?: string | null;
     moneda_compra?: string | null;
+    planned_fx_foreign_per_eur?: number | null;
     deposito_porcentaje?: number;
     balance_dias_antes_eta?: number;
     balance_condiciones_texto?: string;
@@ -65,20 +67,36 @@ export async function POST(req: Request, { params }: Params) {
     return NextResponse.json({ ok: false, error: "JSON invalido" }, { status: 400 });
   }
 
-  if (!body.eta) {
-    return NextResponse.json({ ok: false, error: "El campo eta es obligatorio." }, { status: 400 });
+  const confirmationDate = body.confirmationDate?.trim()
+    || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(confirmationDate)) {
+    return NextResponse.json(
+      { ok: false, error: "confirmationDate debe tener formato YYYY-MM-DD." },
+      { status: 400 },
+    );
+  }
+
+  const eta = body.eta?.trim() || null;
+  const etd = body.etd?.trim() || null;
+  if (eta && !/^\d{4}-\d{2}-\d{2}$/.test(eta)) {
+    return NextResponse.json({ ok: false, error: "eta debe tener formato YYYY-MM-DD." }, { status: 400 });
+  }
+  if (etd && !/^\d{4}-\d{2}-\d{2}$/.test(etd)) {
+    return NextResponse.json({ ok: false, error: "etd debe tener formato YYYY-MM-DD." }, { status: 400 });
   }
 
   try {
     const result = await confirmOrder(params.id, {
-      eta: body.eta,
-      etd: body.etd,
+      confirmationDate,
+      eta,
+      etd,
       eta_real: body.eta_real,
       lead_time_produccion: body.lead_time_produccion,
       lead_time_transito: body.lead_time_transito,
       numero_pedido_agente: body.numero_pedido_agente,
       agente_id: body.agente_id,
       moneda_compra: body.moneda_compra,
+      planned_fx_foreign_per_eur: body.planned_fx_foreign_per_eur,
       deposito_porcentaje: body.deposito_porcentaje ?? 30,
       balance_dias_antes_eta: body.balance_dias_antes_eta ?? 10,
       balance_condiciones_texto: body.balance_condiciones_texto,

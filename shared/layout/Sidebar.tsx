@@ -132,8 +132,7 @@ const NAV_GROUPS: NavGroup[] = [
             label: "Planificador anual",
             path: "/planificador/anual",
             icon: CalendarDays,
-            disabled: true,
-            badge: "Próximamente",
+            badge: "Nuevo",
           },
           {
             label: "Calendario logístico",

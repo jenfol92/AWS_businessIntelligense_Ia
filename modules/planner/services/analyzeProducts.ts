@@ -334,6 +334,7 @@ export async function analyzeProducts(params: PlannerParams) {
   );
 
   return {
+    products,
     analyses,
     forecasts,
     simulations,

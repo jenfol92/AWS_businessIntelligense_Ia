@@ -11,6 +11,7 @@ import {
 } from "@/modules/containers/types/containerOrderLink.types";
 
 import { fetchOrderContainerAssignments } from "@/modules/orders/repositories/orderContainerRepository";
+import { supabaseAdmin } from "@/server/supabase/adminClient";
 
 
 
@@ -23,6 +24,119 @@ type OrderLinkRow = {
   ordenes_compra: Record<string, unknown> | Record<string, unknown>[] | null;
 
 };
+
+type LogisticsAssignmentRow = {
+  orden_id: string;
+  assignment_type: string | null;
+  contenedor_id: string | null;
+  shipment_id: string | null;
+};
+
+type LinkOrdersToContainerResult =
+  | { ok: true }
+  | { ok: false; code: string; error: string; status: number };
+
+function isUniqueViolation(error: { code?: string; message: string }) {
+  return error.code === "23505" || error.message.toLowerCase().includes("unique");
+}
+
+async function ensureActiveContainerLogisticsAssignments(
+  contenedorId: string,
+  ordenIds: string[],
+): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+  if (ordenIds.length === 0) return { ok: true };
+
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from("orden_logistics_assignments")
+    .select("orden_id, assignment_type, shipment_id, contenedor_id")
+    .in("orden_id", ordenIds)
+    .eq("status", "active");
+
+  if (existingError) {
+    return {
+      ok: false,
+      error: `No se pudo validar la logistica activa con service role: ${existingError.message}`,
+      status: 400,
+    };
+  }
+
+  const existingRows = (existing ?? []) as LogisticsAssignmentRow[];
+  const alreadyAssigned = new Set<string>();
+
+  for (const row of existingRows) {
+    if (row.assignment_type === "contenedor_propio" && row.contenedor_id === contenedorId) {
+      alreadyAssigned.add(row.orden_id);
+      continue;
+    }
+
+    return {
+      ok: false,
+      error:
+        `La orden ${row.orden_id} ya tiene una logistica activa ` +
+        `(${row.assignment_type ?? "sin tipo"}). No se registro otra activa.`,
+      status: 409,
+    };
+  }
+
+  const rowsToInsert = ordenIds
+    .filter((ordenId) => !alreadyAssigned.has(ordenId))
+    .map((ordenId) => ({
+      orden_id: ordenId,
+      assignment_type: "contenedor_propio",
+      contenedor_id: contenedorId,
+      shipment_id: null,
+      status: "active",
+    }));
+
+  if (rowsToInsert.length === 0) return { ok: true };
+
+  const { error: insertError } = await supabaseAdmin
+    .from("orden_logistics_assignments")
+    .insert(rowsToInsert);
+
+  if (!insertError) return { ok: true };
+
+  if (isUniqueViolation(insertError)) {
+    const { data: afterConflict, error: conflictReadError } = await supabaseAdmin
+      .from("orden_logistics_assignments")
+      .select("orden_id, assignment_type, shipment_id, contenedor_id")
+      .in("orden_id", ordenIds)
+      .eq("status", "active");
+
+    if (!conflictReadError) {
+      const rows = (afterConflict ?? []) as LogisticsAssignmentRow[];
+      const allNowAssigned = ordenIds.every((ordenId) =>
+        rows.some(
+          (row) =>
+            row.orden_id === ordenId &&
+            row.assignment_type === "contenedor_propio" &&
+            row.contenedor_id === contenedorId,
+        ),
+      );
+
+      if (allNowAssigned) return { ok: true };
+    }
+  }
+
+  return {
+    ok: false,
+    error: insertError.message,
+    status: isUniqueViolation(insertError) ? 409 : 400,
+  };
+}
+
+async function rollbackContainerOrderLinks(contenedorId: string, ordenIds: string[]) {
+  if (ordenIds.length === 0) return { ok: true as const };
+
+  const { error } = await supabaseAdmin
+    .from("contenedor_ordenes")
+    .delete()
+    .eq("contenedor_id", contenedorId)
+    .in("orden_id", ordenIds);
+
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const };
+}
 
 
 
@@ -292,7 +406,7 @@ export async function linkOrdersToContainer(
 
   ordenIds: string[],
 
-): Promise<{ ok: true } | { ok: false; code: string; error: string; status: number }> {
+): Promise<LinkOrdersToContainerResult> {
 
   const validation = await validateOrdersForContainerLink(supabase, ordenIds, {
 
@@ -309,9 +423,24 @@ export async function linkOrdersToContainer(
 
 
   if (validation.ordenIdsToLink.length === 0) {
+    const assignmentResult = await ensureActiveContainerLogisticsAssignments(
+      contenedorId,
+      ordenIds,
+    );
+
+    if (assignmentResult.ok === false) {
+      return {
+        ok: false,
+        code: ORDER_ALREADY_HAS_CONTAINER,
+        error:
+          `La orden ya estaba vinculada al contenedor, pero no se pudo registrar ` +
+          `la logistica activa para contenedor ${contenedorId} y orden(es) ${ordenIds.join(", ")}: ` +
+          assignmentResult.error,
+        status: assignmentResult.status,
+      };
+    }
 
     return { ok: true };
-
   }
 
 
@@ -352,24 +481,26 @@ export async function linkOrdersToContainer(
 
   }
 
-  const assignmentRows = validation.ordenIdsToLink.map((ordenId) => ({
-    orden_id: ordenId,
-    assignment_type: "contenedor_propio",
-    contenedor_id: contenedorId,
-    shipment_id: null,
-    status: "active",
-  }));
+  const assignmentResult = await ensureActiveContainerLogisticsAssignments(
+    contenedorId,
+    validation.ordenIdsToLink,
+  );
 
-  const { error: assignmentError } = await supabase
-    .from("orden_logistics_assignments")
-    .insert(assignmentRows);
+  if (assignmentResult.ok === false) {
+    const rollback = await rollbackContainerOrderLinks(contenedorId, validation.ordenIdsToLink);
+    const rollbackSuffix =
+      rollback.ok === false
+        ? ` No se pudo revertir el vinculo contenedor_ordenes: ${rollback.error}.`
+        : " Se revirtio el vinculo contenedor_ordenes creado en este intento.";
 
-  if (assignmentError) {
     return {
       ok: false,
       code: ORDER_ALREADY_HAS_CONTAINER,
-      error: `El contenedor se vinculo, pero no se pudo registrar la logistica activa: ${assignmentError.message}`,
-      status: 400,
+      error:
+        `El contenedor se vinculo, pero no se pudo registrar la logistica activa ` +
+        `para contenedor ${contenedorId} y orden(es) ${validation.ordenIdsToLink.join(", ")}: ` +
+        `${assignmentResult.error}.${rollbackSuffix}`,
+      status: assignmentResult.status,
     };
   }
 

@@ -39,7 +39,11 @@ export async function POST(req: Request, { params }: Params) {
     return NextResponse.json({ ok: true, orden });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "No se pudo reabrir la orden.";
-    const status = msg.includes("no encontrada") ? 404 : 400;
+    const status = msg.includes("ADMIN_OR_ACCOUNTING_REQUIRED")
+      ? 403
+      : msg.includes("ORDER_NOT_FOUND") || msg.includes("no encontrada")
+        ? 404
+        : 400;
     return NextResponse.json({ ok: false, error: msg }, { status });
   }
 }

@@ -61,6 +61,7 @@ import { DEFAULT_LOCALE, isLocale }  from "@/config/i18n";
 import { ResponsiveDataCard }        from "@/shared/ui/ResponsiveDataCard";
 import { ResponsiveTable }           from "@/shared/ui/ResponsiveTable";
 import { formatCurrency, formatEur } from "@/shared/utils/currency";
+import { resolveLogisticsLabelFromOrder } from "@/modules/planner/utils/arrivalLogisticsLabel";
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
 
@@ -89,8 +90,14 @@ function EstadoBadge({ estado }: { estado: string }) {
   );
 }
 
-function tipoEnvioLabel(tipoEnvio: string | null | undefined): string {
-  return tipoEnvio === "amazon_agl" ? "Amazon AGL" : "Envio propio";
+function orderLogisticsLabel(
+  orden: Pick<OrderListRow, "tipo_envio" | "amazon_inbound" | "contenedor">,
+): string {
+  return resolveLogisticsLabelFromOrder({
+    tipoEnvio: orden.tipo_envio,
+    hasAmazonInbound: Boolean(orden.amazon_inbound),
+    hasContainer: Boolean(orden.contenedor),
+  });
 }
 
 function amazonInboundRouteLabel(value: string | null | undefined): string {
@@ -174,6 +181,7 @@ function CosteProveedorCell({ orden }: { orden: OrderListRow }) {
     </div>
   );
 }
+
 function OrderLogisticsSummary({
   orden,
   locale,
@@ -194,15 +202,13 @@ function OrderLogisticsSummary({
             {inbound.destination_center ?? "Sin centro"}
           </p>
         ) : null}
-        {!compact ? (
-          <p className="text-slate-500">
-            ETA Amazon {inbound.eta_estimada ?? "—"} · Tracking{" "}
-            {inbound.tracking_number ??
-              inbound.agl_tracking_number ??
-              inbound.amazon_container_number ??
-              "—"}
-          </p>
-        ) : null}
+        <p className="text-slate-500">
+          ETA {inbound.eta_estimada ?? "—"} · Tracking{" "}
+          {inbound.tracking_number ??
+            inbound.agl_tracking_number ??
+            inbound.amazon_container_number ??
+            "—"}
+        </p>
         {!compact ? (
           <p className="text-slate-400">
             Docs {inbound.documents_count} · Costes {inbound.costs_count}
@@ -210,10 +216,6 @@ function OrderLogisticsSummary({
         ) : null}
       </div>
     );
-  }
-
-  if (orden.tipo_envio === "amazon_agl") {
-    return <span className="text-purple-600">Amazon AGL pendiente vínculo</span>;
   }
 
   if (orden.contenedor) {
@@ -358,13 +360,12 @@ function OrdenAcciones({
           {mobile ? <span className="sr-only">Ver</span> : null}
         </button>
         {orden.amazon_inbound ? (
-          <a
-            href={`/${locale}/amazon/envios?shipmentId=${encodeURIComponent(orden.amazon_inbound.shipment_id)}`}
-            title="Abrir Amazon Envíos"
-            className={`${iconBtn} bg-blue-50 text-blue-600 hover:bg-blue-100`}
+          <span
+            title="La orden ya tiene Amazon inbound vinculado"
+            className={`${iconBtn} bg-blue-50 text-blue-500`}
           >
             <Package className="h-3.5 w-3.5" />
-          </a>
+          </span>
         ) : orden.tipo_envio === "amazon_agl" ? (
           <span
             title="Amazon AGL: se vinculara desde Amazon Envios"
@@ -444,7 +445,7 @@ function OrdenMobileCard({
       fields={[
         { label: "Fecha", value: fmtDate(orden.fecha_orden) },
         { label: "Puerto FOB", value: orden.fob_puerto ?? "—" },
-        { label: "Tipo envio", value: tipoEnvioLabel(orden.tipo_envio) },
+        { label: "Logística", value: orderLogisticsLabel(orden) },
         { label: "Destino", value: orden.destino ?? "—" },
         {
           label: "ETA",
@@ -459,7 +460,7 @@ function OrdenMobileCard({
           label: "Coste proveedor",
           value: <CosteProveedorCell orden={orden} />,
         },
-        ...(orden.contenedor || orden.amazon_inbound || orden.tipo_envio === "amazon_agl"
+        ...(orden.contenedor || orden.amazon_inbound
           ? [{
               label: "Logistica vinculada",
               value: <OrderLogisticsSummary orden={orden} locale={locale} compact />,
@@ -857,7 +858,7 @@ export default function PedidosPage() {
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Nº Orden</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Estado</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Logistica vinculada</th>
-                      <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Tipo envio</th>
+                      <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Logística</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Fecha</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Puerto FOB</th>
                       <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">Destino</th>
@@ -883,7 +884,7 @@ export default function PedidosPage() {
                           <OrderLogisticsSummary orden={o} locale={locale} compact />
                         </td>
                         <td className="px-4 py-2.5 text-slate-700 text-xs">
-                          {tipoEnvioLabel(o.tipo_envio)}
+                          {orderLogisticsLabel(o)}
                         </td>
                         <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap text-xs">
                           {fmtDate(o.fecha_orden)}

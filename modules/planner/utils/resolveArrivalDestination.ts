@@ -48,8 +48,8 @@ export function resolveArrivalDestination(params: {
 
   if (scope.channel === "FBA" && scope.country) {
     return {
-      destination: destination ?? `FBA · ${scope.country}`,
-      destinationBadge: "FBA",
+      destination: destination ?? scope.country,
+      destinationBadge: scope.country,
       destinationCountry: scope.country,
       destinationChannel: "FBA",
     };
@@ -97,4 +97,56 @@ export function resolveArrivalDestination(params: {
     destinationCountry: null,
     destinationChannel: null,
   };
+}
+
+const INVALID_DESTINATION_LABELS = new Set([
+  "FBA",
+  "FBM",
+  "Amazon AGL",
+  "Sin destino",
+  "Sin destino definido",
+]);
+
+function normalizeCountryCode(value: string | null | undefined): string | null {
+  const code = String(value ?? "").trim().toUpperCase();
+  if (!code) return null;
+  if (code === "UK") return "GB";
+  if (/^[A-Z]{2,3}$/.test(code)) return code;
+  return null;
+}
+
+/**
+ * Etiqueta visible de destino: código país o texto limpio. Nunca FBA ni Amazon AGL.
+ */
+export function resolveDestinationLabel(
+  resolved: ResolvedArrivalDestination,
+  amazonDestinationCountry?: string | null,
+): string {
+  const fromCountry =
+    normalizeCountryCode(resolved.destinationCountry)
+    ?? normalizeCountryCode(amazonDestinationCountry);
+  if (fromCountry) return fromCountry;
+
+  const badge = resolved.destinationBadge?.trim() ?? "";
+  if (badge && !INVALID_DESTINATION_LABELS.has(badge) && !badge.toLowerCase().includes("amazon")) {
+    const badgeCode = normalizeCountryCode(badge);
+    if (badgeCode) return badgeCode;
+  }
+
+  const destText = resolved.destination?.trim();
+  if (destText) {
+    const scope = resolveInboundScope({
+      destinoOrden: destText,
+      tipoContenedor: null,
+    });
+    const inferred = normalizeCountryCode(scope.country);
+    if (inferred) return inferred;
+
+    const upper = destText.toUpperCase();
+    if (!upper.includes("FBA") && !upper.includes("AMAZON AGL")) {
+      return destText;
+    }
+  }
+
+  return "Destino pendiente";
 }

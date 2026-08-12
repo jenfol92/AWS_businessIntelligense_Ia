@@ -11,7 +11,7 @@
 
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle, X, FileText } from "lucide-react";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
@@ -106,6 +106,12 @@ function firstRelation<T>(value: T | T[] | null | undefined): T | null {
 
 function normalizeDate(value: unknown): string {
   return typeof value === "string" && value.trim() ? value.slice(0, 10) : "";
+}
+
+function todayIsoDate(): string {
+  const now = new Date();
+  const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+  return localDate.toISOString().slice(0, 10);
 }
 
 function addDaysToIsoDate(isoDate: string, days: number): string {
@@ -216,6 +222,9 @@ export default function ConfirmOrderModal({
 
           const monedaOrden = (ordenData.moneda_compra ?? "USD").toString().toUpperCase();
           setMoneda(monedaOrden);
+          setPlannedFxForeignPerEur(
+            monedaOrden === "EUR" ? "1" : String(ordenData.planned_fx_foreign_per_eur ?? ""),
+          );
           setAgenteId(
             (ordenData.agente_id as string | null | undefined) ??
               orden.agente_id ??
@@ -235,11 +244,9 @@ export default function ConfirmOrderModal({
           const savedEtd = normalizeDate(ordenData.etd ?? orden.etd);
           const savedEta = normalizeDate(ordenData.eta ?? orden.eta);
           const fechaBase = normalizeDate(ordenData.fecha_orden ?? orden.fecha_orden);
-          const initialEtd = savedEtd || (fechaBase ? addDaysToIsoDate(fechaBase, prod) : "");
-          const initialEta = savedEta || (initialEtd ? addDaysToIsoDate(initialEtd, trans) : "");
-          setEtd(initialEtd);
-          setEta(initialEta);
-          setEtaTouched(Boolean(savedEta));
+          setOrderDate(fechaBase);
+          if (!etdEditedRef.current) setEtd(savedEtd);
+          if (!etaEditedRef.current) setEta(savedEta);
           if (ordenData.deposito_porcentaje != null) {
             setDepositoPct(Number(ordenData.deposito_porcentaje));
           }
@@ -300,9 +307,13 @@ export default function ConfirmOrderModal({
   const [numeroPedidoAgente, setNumeroPedidoAgente] = useState("");
   const [agenteId, setAgenteId] = useState(orden.agente_id ?? "");
   const [moneda,  setMoneda]  = useState("USD");
+  const [plannedFxForeignPerEur,setPlannedFxForeignPerEur]=useState("");
+  const [confirmationDate, setConfirmationDate] = useState(todayIsoDate);
+  const [orderDate, setOrderDate] = useState(normalizeDate(orden.fecha_orden));
   const [etd,     setEtd]     = useState("");
   const [eta,     setEta]     = useState("");
-  const [etaTouched, setEtaTouched] = useState(false);
+  const etdEditedRef = useRef(false);
+  const etaEditedRef = useRef(false);
   const [saving,  setSaving]  = useState(false);
   const [error,   setError]   = useState<string | null>(null);
 
@@ -313,16 +324,16 @@ export default function ConfirmOrderModal({
     "The balance will be paid 10 days before the vessel arrives at the port",
   );
 
-  const suggestedEta = useMemo(() => {
-    if (!etd) return "";
-    return addDaysToIsoDate(etd, Math.max(0, diasTransito));
-  }, [etd, diasTransito]);
+  const suggestedEtd = useMemo(() => {
+    if (!orderDate) return "";
+    return addDaysToIsoDate(orderDate, Math.max(0, diasProduccion));
+  }, [orderDate, diasProduccion]);
 
-  useEffect(() => {
-    if (!etaTouched && eta === "" && suggestedEta) {
-      setEta(suggestedEta);
-    }
-  }, [eta, etaTouched, suggestedEta]);
+  const suggestedEta = useMemo(() => {
+    const effectiveEtd = etd || suggestedEtd;
+    if (!effectiveEtd) return "";
+    return addDaysToIsoDate(effectiveEtd, Math.max(0, diasTransito));
+  }, [etd, suggestedEtd, diasTransito]);
 
   /** Fecha de pago del balance (ETA real o calculada - balanceDiasAntesEta días). */
   function calcBalanceDate(): string {
@@ -377,17 +388,23 @@ export default function ConfirmOrderModal({
     setSaving(true);
     setError(null);
     try {
+      const plannedFx = moneda === "EUR" ? 1 : Number(plannedFxForeignPerEur);
+      if (!Number.isFinite(plannedFx) || plannedFx <= 0) {
+        throw new Error("Introduce un tipo de cambio estimado válido para planificación.");
+      }
       const r = await fetch(`/api/orders/${orden.id}/confirm`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          eta:                       eta || suggestedEta,
+          confirmationDate,
+          eta:                       eta || null,
           etd:                       etd || null,
           lead_time_produccion:      diasProduccion,
           lead_time_transito:        diasTransito,
           numero_pedido_agente:      numeroPedidoAgente || null,
           agente_id:                 agenteId || null,
           moneda_compra:             moneda,
+          planned_fx_foreign_per_eur: plannedFx,
           deposito_porcentaje:       depositoPct,
           balance_dias_antes_eta:    balanceDiasAntesEta,
           balance_condiciones_texto: balanceCondiciones,
@@ -508,12 +525,12 @@ export default function ConfirmOrderModal({
                   type="date"
                   value={eta}
                   onChange={(e) => {
-                    setEtaTouched(true);
+                    etaEditedRef.current = true;
                     setEta(e.target.value);
                   }}
                   className="w-full border border-emerald-200 bg-emerald-50 rounded-lg px-3 py-2 text-sm font-semibold text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-400"
                 />
-                {!etaTouched && suggestedEta ? (
+                {!eta && suggestedEta ? (
                   <p className="mt-0.5 text-[10px] text-slate-400">
                     Sugerida: {new Date(suggestedEta).toLocaleDateString("es-ES")}
                   </p>
@@ -572,9 +589,17 @@ export default function ConfirmOrderModal({
                 <input
                   type="date"
                   value={etd}
-                  onChange={(e) => setEtd(e.target.value)}
+                  onChange={(e) => {
+                    etdEditedRef.current = true;
+                    setEtd(e.target.value);
+                  }}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+                {!etd && suggestedEtd ? (
+                  <p className="mt-0.5 text-[10px] text-slate-400">
+                    Sugerida: {new Date(suggestedEtd).toLocaleDateString("es-ES")}
+                  </p>
+                ) : null}
               </div>
             </div>
           </section>
@@ -584,7 +609,19 @@ export default function ConfirmOrderModal({
             <h3 className="text-sm font-semibold text-slate-700 mb-3">
               Condiciones de pago
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">
+                  Fecha de confirmaciÃ³n
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={confirmationDate}
+                  onChange={(event) => setConfirmationDate(event.target.value)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
                   Depósito (%)
@@ -618,6 +655,28 @@ export default function ConfirmOrderModal({
                   {calcBalanceDate()}
                 </div>
               </div>
+            </div>
+            <div className="mt-4">
+              <label className="block text-xs font-medium text-slate-500 mb-1">
+                Tipo de cambio estimado para planificación
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-600">1 EUR =</span>
+                <input
+                  type="number"
+                  min="0.000001"
+                  step="0.000001"
+                  required={moneda !== "EUR"}
+                  disabled={moneda === "EUR"}
+                  value={moneda === "EUR" ? "1" : plannedFxForeignPerEur}
+                  onChange={(e) => setPlannedFxForeignPerEur(e.target.value)}
+                  className="w-40 border border-slate-200 rounded-lg px-3 py-2 text-sm disabled:bg-slate-50"
+                />
+                <span className="text-sm font-medium text-slate-700">{moneda}</span>
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Referencia para planificación. El coste real se calculará con el tipo de cambio efectivo de cada pago.
+              </p>
             </div>
             <div className="mt-4">
               <label className="block text-xs font-medium text-slate-500 mb-1">

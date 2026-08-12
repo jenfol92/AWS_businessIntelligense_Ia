@@ -4,6 +4,31 @@ import type {
   SpApiReportJobStatus,
 } from "./types";
 
+const FBA_LEDGER_REPORT_TYPE = "GET_LEDGER_SUMMARY_VIEW_DATA";
+
+function numberFromPreviewSummary(
+  summary: Record<string, unknown>,
+  key: string,
+): number {
+  const value = Number(summary[key]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function reportJobPassesCommitGate(job: AmazonSpApiReportJobRow): boolean {
+  const summary = job.raw?.lastPreviewSummary;
+  if (!summary || typeof summary !== "object") return false;
+  const record = summary as Record<string, unknown>;
+  const warnings = numberFromPreviewSummary(record, "warnings");
+  if (job.report_type === FBA_LEDGER_REPORT_TYPE) {
+    return warnings === 0 && numberFromPreviewSummary(record, "conflictRows") === 0;
+  }
+
+  return (
+    warnings === 0 &&
+    numberFromPreviewSummary(record, "productsUnmatched") === 0
+  );
+}
+
 export async function createReportJob(params: {
   reportType: string;
   marketplaceIds: string[];
@@ -172,13 +197,7 @@ export async function listAmazonReportJobsReadyToCommit(params: {
     if (job.raw?.importedAt || job.raw?.importSummary) return false;
     if (job.raw?.supersededAt) return false;
     if (!getReportContentFromJob(job)) return false;
-    const summary = job.raw?.lastPreviewSummary;
-    if (!summary || typeof summary !== "object") return false;
-    const record = summary as Record<string, unknown>;
-    return (
-      Number(record.productsUnmatched) === 0 &&
-      Number(record.warnings) === 0
-    );
+    return reportJobPassesCommitGate(job);
   });
 }
 

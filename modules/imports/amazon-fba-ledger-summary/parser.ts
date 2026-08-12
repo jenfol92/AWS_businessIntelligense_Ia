@@ -1,5 +1,5 @@
 import Papa from "papaparse";
-import { extractTwinlySkuFromMsku, isTwinlyMsku } from "@/modules/imports/shared/twinlySku";
+import { extractTwinlySkuFromMsku } from "@/modules/imports/shared/twinlySku";
 import type {
   AmazonFbaLedgerParseResult,
   AmazonFbaLedgerParseWarning,
@@ -43,6 +43,49 @@ function parseInteger(value: unknown): number {
   return Math.round(n);
 }
 
+function parseLedgerText(text: string): Promise<Papa.ParseResult<RawRow>> {
+  const delimiter = text.includes("\t") ? "\t" : ",";
+  return new Promise<Papa.ParseResult<RawRow>>((resolve, reject) => {
+    Papa.parse<RawRow>(text, {
+      header: true,
+      delimiter,
+      skipEmptyLines: "greedy",
+      complete: resolve,
+      error: reject,
+    });
+  });
+}
+
+function splitMskuAliases(value: string): string[] {
+  const raw = cleanText(value);
+  if (!raw) return [];
+
+  return Array.from(
+    new Set(
+      raw
+        .split(/\r?\n|[;,|]+|\s+\/\s+|\s{2,}/g)
+        .map((part) => part.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function resolveCleanSkuFromAliases(aliases: string[]): {
+  skuLimpio: string | null;
+  conflictingSkus: string[];
+} {
+  const skuSet = new Set<string>();
+  for (const alias of aliases) {
+    const sku = extractTwinlySkuFromMsku(alias);
+    if (sku) skuSet.add(sku);
+  }
+  const skus = Array.from(skuSet);
+  return {
+    skuLimpio: skus[0] ?? null,
+    conflictingSkus: skus.length > 1 ? skus : [],
+  };
+}
+
 /**
  * Fecha del informe Amazon: MM/DD/YYYY → YYYY-MM-DD
  */
@@ -76,16 +119,13 @@ export async function parseAmazonFbaLedgerSummaryCsv(
   file: File,
 ): Promise<AmazonFbaLedgerParseResult> {
   const text = await file.text();
+  return parseAmazonFbaLedgerSummaryText(text);
+}
 
-  const parsed = await new Promise<Papa.ParseResult<RawRow>>((resolve, reject) => {
-    Papa.parse<RawRow>(text, {
-      header: true,
-      skipEmptyLines: "greedy",
-      complete: resolve,
-      error: reject,
-    });
-  });
-
+export async function parseAmazonFbaLedgerSummaryText(
+  text: string,
+): Promise<AmazonFbaLedgerParseResult> {
+  const parsed = await parseLedgerText(text);
   const warnings: AmazonFbaLedgerParseWarning[] = [];
   const validRows: ParsedAmazonFbaLedgerRow[] = [];
 
@@ -108,24 +148,36 @@ export async function parseAmazonFbaLedgerSummaryCsv(
     totalRows++;
 
     const msku = getValue(row, ["MSKU", "Seller SKU", "SKU"]);
+    const asin = getValue(row, ["ASIN"]);
+    const mskuAliases = splitMskuAliases(msku);
     if (!msku) {
       skippedRows++;
       continue;
     }
 
-    if (!isTwinlyMsku(msku)) {
+    const resolvedSku = resolveCleanSkuFromAliases(mskuAliases.length > 0 ? mskuAliases : [msku]);
+    if (!resolvedSku.skuLimpio && !asin) {
       skippedNonTwinlyRows++;
       continue;
     }
 
-    twinlyRows++;
+    if (resolvedSku.skuLimpio) twinlyRows++;
 
-    const skuLimpio = extractTwinlySkuFromMsku(msku);
+    const skuLimpio = resolvedSku.skuLimpio ?? asin;
     if (!skuLimpio) {
       skippedRows++;
       warnings.push({
         row: rowNumber,
-        message: "MSKU Twinly detectado pero no se pudo extraer SKU limpio.",
+        message: "Fila Ledger sin SKU Twinly ni ASIN utilizable.",
+      });
+      continue;
+    }
+
+    if (resolvedSku.conflictingSkus.length > 0) {
+      skippedRows++;
+      warnings.push({
+        row: rowNumber,
+        message: `MSKU contiene aliases de varios productos (${resolvedSku.conflictingSkus.join(", ")}). No se duplica la fila.`,
       });
       continue;
     }
@@ -150,7 +202,7 @@ export async function parseAmazonFbaLedgerSummaryCsv(
       continue;
     }
 
-    const asin = getValue(row, ["ASIN"]);
+    const fnsku = getValue(row, ["FNSKU"]) || null;
     const disposition = getValue(row, ["Disposition"]);
     const location = getValue(row, ["Location"]);
 
@@ -158,9 +210,12 @@ export async function parseAmazonFbaLedgerSummaryCsv(
       rowNumber,
       snapshotDate,
       skuOriginal: msku,
+      mskuAliases: mskuAliases.length > 0 ? mskuAliases : [msku],
       skuLimpio,
-      fnsku: getValue(row, ["FNSKU"]) || null,
+      fnsku,
       asin,
+      conditionType:
+        getValue(row, ["Condition Type", "Condition", "condition-type"]) || null,
       title: getValue(row, ["Title"]) || null,
       disposition,
       startingWarehouseBalance: parseInteger(
@@ -230,8 +285,11 @@ function toPreviewSampleRow(
   return {
     snapshotDate: row.snapshotDate,
     skuOriginal: row.skuOriginal,
+    mskuAliases: row.mskuAliases,
     skuLimpio: row.skuLimpio,
+    fnsku: row.fnsku,
     asin: row.asin || null,
+    conditionType: row.conditionType,
     title: row.title,
     disposition: row.disposition || null,
     endingWarehouseBalance: row.endingWarehouseBalance,
@@ -242,7 +300,7 @@ function toPreviewSampleRow(
 }
 
 function rowSampleKey(row: ParsedAmazonFbaLedgerRow): string {
-  return `${row.snapshotDate}|${row.skuOriginal}|${row.disposition}|${row.location}`;
+  return `${row.snapshotDate}|${row.fnsku ?? row.skuOriginal}|${row.asin}|${row.disposition}|${row.location}`;
 }
 
 export function summarizeRowsByMonth(rows: ParsedAmazonFbaLedgerRow[]) {

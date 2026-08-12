@@ -10,17 +10,25 @@ import {
   parseReportRows,
   sha256,
 } from "./spApiReportImportUtils";
+import {
+  downloadReportDocument,
+  getReport,
+  getReportDocument,
+} from "./reportsClient";
 import { resolveProductMatchesBySku } from "./skuProductMatching";
+import {
+  resolveFbaSaleCountry,
+  salesChannelToMarketplaceId,
+} from "./marketplaceMapping";
 import type { SpApiReport } from "./types";
 
-const FBA_SALES_REPORT_TYPE = "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA";
 const AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE =
   "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL";
+const FBA_SALES_SOURCE = "spapi_fba_customer_shipment_sales";
 const FBA_LEDGER_REPORT_TYPE = "GET_LEDGER_SUMMARY_VIEW_DATA";
 const BATCH_SIZE = 200;
 
 export const SUPPORTED_FBA_SALES_REPORT_TYPES = [
-  FBA_SALES_REPORT_TYPE,
   AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE,
 ] as const;
 
@@ -49,6 +57,13 @@ type ImportSummary = {
   rowsParsed: number;
   rowsUpserted: number;
   ventasDiariasUpserted?: number;
+  ventasDiariasSync?: FbaSalesVentasDiariasSyncResult;
+  deletedPreviousRows?: number;
+  insertedRows?: number;
+  insertedUnits?: number;
+  skippedSourceConflicts?: number;
+  orphanRows?: number;
+  orphanUnits?: number;
   matchedRows: number;
   unmatchedRows: number;
   warnings: string[];
@@ -56,6 +71,34 @@ type ImportSummary = {
   columnsDetected?: string[];
   diagnosticDocumentExcerpt?: string | null;
   sampleSanitizedRow?: Record<string, unknown> | null;
+};
+
+type FbaSalesVentasDiariasSyncResult = {
+  deletedPreviousRows: number;
+  insertedRows: number;
+  insertedUnits: number;
+  skippedSourceConflicts: number;
+  skippedUnits: number;
+  orphanRows: number;
+  orphanUnits: number;
+  marketplaces: string[];
+  orphanMarketplaces: string[];
+  orphanCountries: string[];
+};
+
+type PersistFbaSalesReportDocumentParams = {
+  reportId: string;
+  reportType: SupportedFbaSalesReportType;
+  marketplaceIds: string[];
+  fromDate: string;
+  toDate: string;
+  documentText: string;
+  status: string;
+  processingStatus: string | null;
+  amazonReport?: SpApiReport | null;
+  requestedCreateReportPayload?: ImportSummary["requestedCreateReportPayload"];
+  warnings?: string[];
+  diagnosticDocumentExcerpt?: string | null;
 };
 
 function marketplaceIdsFromInput(marketplaceIds?: string[]): string[] {
@@ -66,6 +109,12 @@ function marketplaceIdsFromInput(marketplaceIds?: string[]): string[] {
 
 function toAmazonDateTime(date: string, endOfDay = false): string {
   return `${date}T${endOfDay ? "23:59:59" : "00:00:00"}Z`;
+}
+
+function addUtcDaysToDateOnly(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
 }
 
 function countryFromMarketplaceId(marketplaceId: string): string {
@@ -97,23 +146,45 @@ const AMAZON_FULFILLED_ALLOWED_RAW_FIELDS = [
   "amazon-order-id",
   "shipment-id",
   "shipment-item-id",
+  "purchase-date",
+  "payments-date",
   "shipment-date",
   "reporting-date",
   "sku",
-  "fnsku",
-  "asin",
-  "product-name",
-  "quantity",
   "quantity-shipped",
   "currency",
   "item-price",
-  "item-price-per-unit",
   "shipping-price",
   "ship-country",
   "fulfillment-center-id",
   "fulfillment-channel",
   "sales-channel",
 ];
+
+const AMAZON_ORDER_ID_FIELDS = ["amazon-order-id", "amazon order id", "numero de pedido de amazon"];
+const SHIPMENT_ID_FIELDS = ["shipment-id", "shipment id"];
+const SHIPMENT_ITEM_ID_FIELDS = ["shipment-item-id", "shipment item id"];
+const PURCHASE_DATE_FIELDS = ["purchase-date", "purchase date"];
+const PAYMENTS_DATE_FIELDS = ["payments-date", "payments date"];
+const SHIPMENT_DATE_FIELDS = ["shipment-date", "shipment date", "fecha de envio"];
+const REPORTING_DATE_FIELDS = ["reporting-date", "reporting date"];
+const SKU_FIELDS = ["sku", "seller-sku", "seller sku", "sku del vendedor"];
+const QUANTITY_SHIPPED_FIELDS = ["quantity-shipped", "quantity shipped", "cantidad enviada"];
+const CURRENCY_FIELDS = ["currency", "currency-code", "currency code", "divisa"];
+const ITEM_PRICE_FIELDS = ["item-price", "item price", "precio del articulo"];
+const SHIPPING_PRICE_FIELDS = ["shipping-price", "shipping price", "precio de la entrega"];
+const SHIP_COUNTRY_FIELDS = ["ship-country", "ship country", "codigo del pais de entrega"];
+const FULFILLMENT_CENTER_FIELDS = [
+  "fulfillment-center-id",
+  "fulfillment center id",
+  "centro logistico",
+];
+const FULFILLMENT_CHANNEL_FIELDS = [
+  "fulfillment-channel",
+  "fulfillment channel",
+  "canal de gestion logistica",
+];
+const SALES_CHANNEL_FIELDS = ["sales-channel", "sales channel", "canal de venta"];
 
 export function sanitizeAmazonFulfilledShipmentRow(
   row: Record<string, unknown>,
@@ -129,60 +200,57 @@ export function sanitizeAmazonFulfilledShipmentRow(
   return sanitized;
 }
 
+function normalizeAmazonFulfilledShipmentRow(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    "amazon-order-id": getField(row, AMAZON_ORDER_ID_FIELDS),
+    "shipment-id": getField(row, SHIPMENT_ID_FIELDS),
+    "shipment-item-id": getField(row, SHIPMENT_ITEM_ID_FIELDS),
+    "purchase-date": getField(row, PURCHASE_DATE_FIELDS),
+    "payments-date": getField(row, PAYMENTS_DATE_FIELDS),
+    "shipment-date": getField(row, SHIPMENT_DATE_FIELDS),
+    "reporting-date": getField(row, REPORTING_DATE_FIELDS),
+    sku: getField(row, SKU_FIELDS),
+    "quantity-shipped": getField(row, QUANTITY_SHIPPED_FIELDS),
+    currency: getField(row, CURRENCY_FIELDS),
+    "item-price": getField(row, ITEM_PRICE_FIELDS),
+    "shipping-price": getField(row, SHIPPING_PRICE_FIELDS),
+    "ship-country": getField(row, SHIP_COUNTRY_FIELDS),
+    "fulfillment-center-id": getField(row, FULFILLMENT_CENTER_FIELDS),
+    "fulfillment-channel": getField(row, FULFILLMENT_CHANNEL_FIELDS),
+    "sales-channel": getField(row, SALES_CHANNEL_FIELDS),
+  };
+}
+
 function safeRawForSalesReport(
   reportType: SupportedFbaSalesReportType,
   row: Record<string, unknown>,
 ): Record<string, unknown> {
+  if (reportType === AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE) {
+    return normalizeAmazonFulfilledShipmentRow(row);
+  }
   return sanitizeAmazonFulfilledShipmentRow(row);
 }
 
-function fbaSalesSourceForReportType(reportType: string | null | undefined): string {
-  return reportType === AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE
-    ? "spapi_amazon_fulfilled_shipments"
-    : "spapi_fba_customer_shipment_sales";
-}
-
 function buildFbaSalesNaturalFingerprint(params: {
-  reportType: SupportedFbaSalesReportType;
-  marketplaceId: string;
   row: Record<string, unknown>;
   skuOriginal: string;
   saleDate: string;
-  quantity: number;
-  amount: number | null;
-  shipToCountry: string;
 }): string {
   const amazonOrderId = getField(params.row, ["amazon-order-id", "amazon order id"]);
   const shipmentId = getField(params.row, ["shipment-id", "shipment id"]);
   const shipmentItemId = getField(params.row, ["shipment-item-id", "shipment item id"]);
-  const productName = getField(params.row, ["product-name", "product name", "title"]);
-  const hasAmazonIds = Boolean(amazonOrderId || shipmentId || shipmentItemId);
 
-  const parts = hasAmazonIds
-    ? [
-        params.reportType,
-        params.marketplaceId,
-        amazonOrderId,
-        shipmentId,
-        shipmentItemId,
-        params.skuOriginal,
-        params.saleDate,
-        String(params.quantity),
-        String(params.amount ?? ""),
-        params.shipToCountry,
-      ]
-    : [
-        params.reportType,
-        params.marketplaceId,
-        params.skuOriginal,
-        params.saleDate,
-        String(params.quantity),
-        String(params.amount ?? ""),
-        params.shipToCountry,
-        productName,
-      ];
-
-  return sha256(parts.join("|"));
+  return sha256(
+    [
+      amazonOrderId,
+      shipmentId,
+      shipmentItemId,
+      params.skuOriginal,
+      params.saleDate,
+    ].join("|"),
+  );
 }
 
 async function upsertRows(table: string, rows: Record<string, unknown>[], onConflict: string) {
@@ -199,106 +267,198 @@ async function upsertRows(table: string, rows: Record<string, unknown>[], onConf
 async function syncVentasDiariasFromFbaSalesRaw(params: {
   dateFrom: string;
   dateTo: string;
-}): Promise<number> {
-  const { data, error } = await supabaseAdmin
-    .from("amazon_fba_sales_daily_raw")
-    .select(
-      "producto_id, sale_date, ship_to_country, currency, marketplace_id, quantity, amount, raw",
-    )
-    .not("producto_id", "is", null)
-    .gte("sale_date", params.dateFrom)
-    .lte("sale_date", params.dateTo);
+  marketplaceIds: string[];
+}): Promise<FbaSalesVentasDiariasSyncResult> {
+  const { data, error } = await supabaseAdmin.rpc(
+    "sync_ventas_diarias_from_amazon_fba_sales",
+    {
+      p_start_date: params.dateFrom,
+      p_end_date: addUtcDaysToDateOnly(params.dateTo, 1),
+      p_marketplace_ids: params.marketplaceIds.length > 0 ? params.marketplaceIds : null,
+      p_tipo_cliente: "B2C",
+      p_source: FBA_SALES_SOURCE,
+    },
+  );
 
   if (error) throw new Error(error.message);
 
-  const grouped = new Map<string, Record<string, unknown> & {
-    unidades_vendidas: number;
-    ingresos_brutos: number;
-    sources: Set<string>;
-  }>();
+  const result = (data ?? {}) as Record<string, unknown>;
+  const insertedRows = Number(result.inserted ?? 0);
+  const insertedUnits = Number(result.units ?? 0);
+  const skippedSourceConflicts = Number(result.skippedSourceConflicts ?? 0);
 
-  for (const row of data ?? []) {
-    const r = row as Record<string, unknown>;
-    const raw = (r.raw && typeof r.raw === "object" ? r.raw : {}) as Record<string, unknown>;
-    const source = fbaSalesSourceForReportType(String(raw.report_type ?? ""));
-    const pais = String(r.ship_to_country ?? "UNKNOWN") || "UNKNOWN";
-    const moneda = String(r.currency ?? "EUR") || "EUR";
-    const marketplaceId = String(r.marketplace_id ?? "");
-    const key = [
-      r.producto_id,
-      r.sale_date,
-      pais,
-      "FBA",
-      moneda,
-      "B2C",
-      marketplaceId,
-    ].join("|");
-    const current =
-      grouped.get(key) ??
-      ({
-        producto_id: r.producto_id,
-        fecha: r.sale_date,
-        pais,
-        canal_venta: "FBA",
-        moneda,
-        tipo_cliente: "B2C",
-        marketplace_id: marketplaceId,
-        source,
-        unidades_vendidas: 0,
-        ingresos_brutos: 0,
-        sources: new Set<string>(),
-      } as Record<string, unknown> & {
-        unidades_vendidas: number;
-        ingresos_brutos: number;
-        sources: Set<string>;
+  return {
+    deletedPreviousRows: Number(result.deleted ?? 0),
+    insertedRows,
+    insertedUnits,
+    skippedSourceConflicts,
+    skippedUnits: 0,
+    orphanRows: Number(result.orphanRows ?? 0),
+    orphanUnits: Number(result.orphanUnits ?? 0),
+    marketplaces: Array.isArray(result.marketplaces)
+      ? result.marketplaces.map(String)
+      : [],
+    orphanMarketplaces: Array.isArray(result.orphanMarketplaces)
+      ? result.orphanMarketplaces.map(String)
+      : [],
+    orphanCountries: Array.isArray(result.orphanCountries)
+      ? result.orphanCountries.map(String)
+      : [],
+  };
+}
+
+async function parseAndPersistFbaSalesReportDocument(
+  params: PersistFbaSalesReportDocumentParams,
+): Promise<ImportSummary & { reportId: string; ventasDiariasUpserted: number }> {
+  const warnings = [...(params.warnings ?? [])];
+  const rawRows = parseReportRows(params.documentText);
+  const columnsDetected = rawRows[0] ? Object.keys(rawRows[0]) : [];
+  const normalizedRows = rawRows.map((row) => normalizeAmazonFulfilledShipmentRow(row));
+  const skuByRow = normalizedRows.map((row) => getField(row, SKU_FIELDS));
+  const matches = await resolveProductMatchesBySku(skuByRow);
+  const { data: countryRows, error: countryError } = await supabaseAdmin
+    .from("paises")
+    .select("code");
+  if (countryError) throw new Error(countryError.message);
+  const supportedCountries = new Set(
+    (countryRows ?? []).map((row) => String(row.code ?? "").trim().toUpperCase()).filter(Boolean),
+  );
+  const importedAt = new Date().toISOString();
+  let matchedRows = 0;
+  let unmatchedRows = 0;
+
+  const dbRows = rawRows.flatMap((sourceRow, index) => {
+    const row = normalizedRows[index] ?? normalizeAmazonFulfilledShipmentRow(sourceRow);
+    const skuOriginal = skuByRow[index] ?? "";
+    const match = matches.get(skuOriginal);
+    const saleDate = parseDateOnly(
+      firstNonEmpty(
+        getField(row, SHIPMENT_DATE_FIELDS),
+        getField(row, REPORTING_DATE_FIELDS),
+        getField(row, PURCHASE_DATE_FIELDS),
+      ),
+    );
+    const quantity = parseInteger(
+      getField(row, QUANTITY_SHIPPED_FIELDS),
+    );
+    if (!saleDate || !skuOriginal || quantity === 0) return [];
+    if (match?.productoId) matchedRows += 1;
+    else {
+      unmatchedRows += 1;
+      warnings.push(`Sin match de producto para venta FBA SKU ${skuOriginal}.`);
+    }
+
+    const marketplaceId = firstNonEmpty(
+      getField(row, ["marketplace-id", "marketplace id"]),
+      salesChannelToMarketplaceId(getField(row, SALES_CHANNEL_FIELDS)) ?? "",
+    );
+    const amount = parseNumberOrNull(
+      getField(row, ITEM_PRICE_FIELDS),
+    );
+    const currency = firstNonEmpty(
+      getField(row, CURRENCY_FIELDS),
+      "EUR",
+    );
+    const shipToCountry = resolveFbaSaleCountry({
+      shipCountry: getField(row, SHIP_COUNTRY_FIELDS),
+      salesChannel: getField(row, SALES_CHANNEL_FIELDS),
+      supportedCountries,
+    });
+    if (!shipToCountry && process.env.NODE_ENV === "development") {
+      console.warn("[amazon-fba-sales-import] missing ship-country in FBA sales row", {
+        reportType: params.reportType,
+        reportId: params.reportId,
+        marketplaceId,
+        skuOriginal,
+        saleDate,
       });
+    }
+    const rawSafe = safeRawForSalesReport(params.reportType, row);
+    const rowFingerprint = buildFbaSalesNaturalFingerprint({
+      row,
+      skuOriginal,
+      saleDate,
+    });
 
-    current.unidades_vendidas += Number(r.quantity ?? 0);
-    current.ingresos_brutos += Number(r.amount ?? 0);
-    current.sources.add(source);
-    current.source =
-      current.sources.size === 1
-        ? Array.from(current.sources)[0]
-        : "spapi_mixed_fba_reports";
-    grouped.set(key, current);
-  }
-
-  const ventasRows = Array.from(grouped.values()).map((r) => {
-    const ingresosBrutos = Number(r.ingresos_brutos ?? 0);
-    return {
-      producto_id: r.producto_id,
-      fecha: r.fecha,
-      pais: r.pais ?? "UNKNOWN",
-      canal_venta: "FBA",
-      moneda: r.moneda ?? "EUR",
-      tipo_cliente: "B2C",
-      marketplace_id: r.marketplace_id ?? "",
-      unidades_vendidas: Number(r.unidades_vendidas ?? 0),
-      ingresos_brutos: ingresosBrutos,
-      publicidad_gasto_ads: 0,
-      iva_pagado_cuota: 0,
-      ingresos_netos_sin_iva: ingresosBrutos,
-      comisiones_amazon_referral: 0,
-      comisiones_amazon_fba: 0,
-      coste_devoluciones: 0,
-      source: r.source,
-    };
+    return [
+      {
+        report_id: params.reportId,
+        marketplace_id: marketplaceId,
+        sale_date: saleDate,
+        sku_original: skuOriginal,
+        sku_limpio: match?.skuLimpio ?? skuOriginal,
+        producto_id: match?.productoId ?? null,
+        quantity,
+        amount,
+        currency,
+        ship_to_country: shipToCountry || null,
+        fulfillment_channel: firstNonEmpty(
+          getField(row, FULFILLMENT_CHANNEL_FIELDS),
+          "FBA",
+        ),
+        sales_channel: getField(row, SALES_CHANNEL_FIELDS) || null,
+        row_fingerprint: rowFingerprint,
+        raw: {
+          ...rawSafe,
+          report_type: params.reportType,
+          sku_limpio: match?.skuLimpio ?? null,
+          match_candidates: match?.candidates ?? [],
+          matched_by: match?.matchedBy ?? null,
+        },
+        imported_at: importedAt,
+      },
+    ];
   });
 
-  if (ventasRows.length === 0) return 0;
-
-  return upsertRows(
-    "ventas_diarias",
-    ventasRows,
-    "producto_id,fecha,pais,canal_venta,moneda,tipo_cliente,marketplace_id",
+  const rowsUpserted = await upsertRows(
+    "amazon_fba_sales_daily_raw",
+    dbRows,
+    "row_fingerprint",
   );
+  const ventasDiariasSync = await syncVentasDiariasFromFbaSalesRaw({
+    dateFrom: params.fromDate,
+    dateTo: params.toDate,
+    marketplaceIds: params.marketplaceIds,
+  });
+  if (ventasDiariasSync.skippedSourceConflicts > 0) {
+    warnings.push(
+      "Hay filas FBA cuyo grano ya existe en ventas_diarias con otro source. No se han tocado esas fuentes.",
+    );
+  }
+
+  return {
+    ok: true,
+    reportId: params.reportId,
+    status: params.status,
+    processingStatus: params.processingStatus,
+    amazonReport: params.amazonReport ?? null,
+    requestedCreateReportPayload: params.requestedCreateReportPayload,
+    rowsParsed: rawRows.length,
+    rowsUpserted,
+    ventasDiariasUpserted: ventasDiariasSync.insertedRows,
+    ventasDiariasSync,
+    deletedPreviousRows: ventasDiariasSync.deletedPreviousRows,
+    insertedRows: ventasDiariasSync.insertedRows,
+    insertedUnits: ventasDiariasSync.insertedUnits,
+    skippedSourceConflicts: ventasDiariasSync.skippedSourceConflicts,
+    orphanRows: ventasDiariasSync.orphanRows,
+    orphanUnits: ventasDiariasSync.orphanUnits,
+    matchedRows,
+    unmatchedRows,
+    warnings: warnings.slice(0, 100),
+    columnsDetected,
+    diagnosticDocumentExcerpt: params.diagnosticDocumentExcerpt ?? null,
+    sampleSanitizedRow: rawRows[0]
+      ? normalizeAmazonFulfilledShipmentRow(rawRows[0])
+      : null,
+  };
 }
 
 export async function importFbaSalesDailyFromSpApi(
   params: ImportDateRange & { reportType?: SupportedFbaSalesReportType },
 ): Promise<ImportSummary & { reportId: string; ventasDiariasUpserted: number }> {
   const marketplaceIds = marketplaceIdsFromInput(params.marketplaceIds);
-  const reportType = params.reportType ?? FBA_SALES_REPORT_TYPE;
+  const reportType = params.reportType ?? AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE;
   const dataStartTime = toAmazonDateTime(params.fromDate);
   const dataEndTime = toAmazonDateTime(params.toDate, true);
   const warnings: string[] = [];
@@ -320,6 +480,9 @@ export async function importFbaSalesDailyFromSpApi(
       rowsParsed: 0,
       rowsUpserted: 0,
       ventasDiariasUpserted: 0,
+      skippedSourceConflicts: 0,
+      orphanRows: 0,
+      orphanUnits: 0,
       matchedRows: 0,
       unmatchedRows: 0,
       warnings: report.warnings ?? [],
@@ -343,140 +506,152 @@ export async function importFbaSalesDailyFromSpApi(
       rowsParsed: 0,
       rowsUpserted: 0,
       ventasDiariasUpserted: 0,
+      skippedSourceConflicts: 0,
+      orphanRows: 0,
+      orphanUnits: 0,
       matchedRows: 0,
       unmatchedRows: 0,
       warnings: [`Amazon no entregó documento todavía. Estado: ${report.status}.`],
     };
   }
 
-  const rawRows = parseReportRows(report.documentText);
-  const columnsDetected = rawRows[0] ? Object.keys(rawRows[0]) : [];
-  const skuByRow = rawRows.map((row) =>
-    firstNonEmpty(
-      getField(row, ["seller-sku", "sku", "msku"]),
-      getField(row, ["Seller SKU", "SKU", "MSKU"]),
-    ),
-  );
-  const matches = await resolveProductMatchesBySku(skuByRow);
-  const importedAt = new Date().toISOString();
-  let matchedRows = 0;
-  let unmatchedRows = 0;
-
-  const dbRows = rawRows.flatMap((row, index) => {
-    const skuOriginal = skuByRow[index] ?? "";
-    const match = matches.get(skuOriginal);
-    const saleDate = parseDateOnly(
-      firstNonEmpty(
-        getField(row, [
-          "shipment-date",
-          "shipment date",
-          "reporting-date",
-          "purchase-date",
-          "posted-date",
-          "date",
-        ]),
-        getField(row, ["Shipment Date", "Reporting Date", "Purchase Date", "Date"]),
-      ),
-    );
-    const quantity = parseInteger(
-      firstNonEmpty(
-        getField(row, ["quantity-shipped", "quantity", "qty"]),
-        getField(row, ["Quantity Shipped", "Quantity"]),
-      ),
-    );
-    if (!saleDate || !skuOriginal || quantity === 0) return [];
-    if (match?.productoId) matchedRows += 1;
-    else {
-      unmatchedRows += 1;
-      warnings.push(`Sin match de producto para venta FBA SKU ${skuOriginal}.`);
-    }
-
-    const marketplaceId = firstNonEmpty(
-      getField(row, ["marketplace-id", "marketplace id"]),
-      marketplaceIds[0] ?? "",
-    );
-    const amount = parseNumberOrNull(
-      firstNonEmpty(
-        getField(row, ["item-price", "amount", "principal", "sales"]),
-        getField(row, ["Item Price", "Amount", "Sales"]),
-      ),
-    );
-    const currency = firstNonEmpty(
-      getField(row, ["currency", "currency-code", "currency code"]),
-      "EUR",
-    );
-    const shipToCountry = firstNonEmpty(
-      getField(row, ["ship-to-country", "ship country", "country"]),
-      getField(row, ["ship-country"]),
-      countryFromMarketplaceId(marketplaceId),
-    );
-    const rawSafe = safeRawForSalesReport(reportType, row);
-    const rowFingerprint = buildFbaSalesNaturalFingerprint({
-      reportType,
-      marketplaceId,
-      row,
-      skuOriginal,
-      saleDate,
-      quantity,
-      amount,
-      shipToCountry,
-    });
-
-    return [
-      {
-        report_id: report.reportId,
-        marketplace_id: marketplaceId,
-        sale_date: saleDate,
-        sku_original: skuOriginal,
-        sku_limpio: match?.skuLimpio ?? skuOriginal,
-        producto_id: match?.productoId ?? null,
-        quantity,
-        amount,
-        currency,
-        ship_to_country: shipToCountry,
-        fulfillment_channel: "FBA",
-        sales_channel: firstNonEmpty(getField(row, ["sales-channel", "sales channel"])),
-        row_fingerprint: rowFingerprint,
-        raw: {
-          ...rawSafe,
-          report_type: reportType,
-          sku_limpio: match?.skuLimpio ?? null,
-          match_candidates: match?.candidates ?? [],
-          matched_by: match?.matchedBy ?? null,
-        },
-        imported_at: importedAt,
-      },
-    ];
-  });
-
-  const rowsUpserted = await upsertRows(
-    "amazon_fba_sales_daily_raw",
-    dbRows,
-    "row_fingerprint",
-  );
-  const ventasDiariasUpserted = await syncVentasDiariasFromFbaSalesRaw({
-    dateFrom: params.fromDate,
-    dateTo: params.toDate,
-  });
-
-  return {
-    ok: true,
+  return parseAndPersistFbaSalesReportDocument({
     reportId: report.reportId,
+    reportType,
+    marketplaceIds,
+    fromDate: params.fromDate,
+    toDate: params.toDate,
+    documentText: report.documentText,
     status: report.status,
     processingStatus: report.processingStatus,
     amazonReport: report.report,
     requestedCreateReportPayload: report.requestedCreateReportPayload,
-    rowsParsed: rawRows.length,
-    rowsUpserted,
-    ventasDiariasUpserted,
-    matchedRows,
-    unmatchedRows,
-    warnings: warnings.slice(0, 100),
-    columnsDetected,
-    sampleSanitizedRow: rawRows[0]
-      ? sanitizeAmazonFulfilledShipmentRow(rawRows[0])
-      : null,
-  };
+    warnings,
+  });
+}
+
+export async function importFbaSalesFromExistingReport(
+  params: ImportDateRange & {
+    reportId: string;
+    reportType?: SupportedFbaSalesReportType;
+  },
+): Promise<ImportSummary & { reportId: string; ventasDiariasUpserted: number }> {
+  const marketplaceIds = marketplaceIdsFromInput(params.marketplaceIds);
+  const reportType = params.reportType ?? AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE;
+  const report = await getReport(params.reportId);
+
+  if (report.reportType && report.reportType !== reportType) {
+    return {
+      ok: false,
+      reportId: params.reportId,
+      status: "REPORT_TYPE_MISMATCH",
+      processingStatus: report.processingStatus,
+      amazonReport: report,
+      rowsParsed: 0,
+      rowsUpserted: 0,
+      ventasDiariasUpserted: 0,
+      skippedSourceConflicts: 0,
+      orphanRows: 0,
+      orphanUnits: 0,
+      matchedRows: 0,
+      unmatchedRows: 0,
+      warnings: [],
+      error: `El reportId ${params.reportId} es ${report.reportType}, no ${reportType}.`,
+    };
+  }
+
+  if (report.processingStatus === "CANCELLED") {
+    return {
+      ok: false,
+      reportId: params.reportId,
+      status: "AMAZON_REPORT_CANCELLED",
+      processingStatus: report.processingStatus,
+      amazonReport: report,
+      rowsParsed: 0,
+      rowsUpserted: 0,
+      ventasDiariasUpserted: 0,
+      skippedSourceConflicts: 0,
+      orphanRows: 0,
+      orphanUnits: 0,
+      matchedRows: 0,
+      unmatchedRows: 0,
+      warnings: [],
+      error: `Amazon canceló el informe ${params.reportId}.`,
+    };
+  }
+
+  if (report.processingStatus === "FATAL") {
+    const warnings: string[] = [];
+    let diagnosticDocumentExcerpt: string | null = null;
+    if (report.reportDocumentId) {
+      try {
+        const document = await getReportDocument(report.reportDocumentId);
+        const diagnosticText = await downloadReportDocument(document);
+        diagnosticDocumentExcerpt = diagnosticText.slice(0, 4000);
+      } catch (error) {
+        warnings.push(
+          `No se pudo descargar documento diagnostico FATAL: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    return {
+      ok: false,
+      reportId: params.reportId,
+      status: "AMAZON_REPORT_FATAL",
+      processingStatus: report.processingStatus,
+      amazonReport: report,
+      rowsParsed: 0,
+      rowsUpserted: 0,
+      ventasDiariasUpserted: 0,
+      skippedSourceConflicts: 0,
+      orphanRows: 0,
+      orphanUnits: 0,
+      matchedRows: 0,
+      unmatchedRows: 0,
+      warnings,
+      diagnosticDocumentExcerpt,
+      error: `Amazon marcó el informe ${params.reportId} como FATAL.`,
+    };
+  }
+
+  if (report.processingStatus !== "DONE" || !report.reportDocumentId) {
+    return {
+      ok: true,
+      reportId: params.reportId,
+      status: "PENDING",
+      processingStatus: report.processingStatus,
+      amazonReport: report,
+      rowsParsed: 0,
+      rowsUpserted: 0,
+      ventasDiariasUpserted: 0,
+      skippedSourceConflicts: 0,
+      orphanRows: 0,
+      orphanUnits: 0,
+      matchedRows: 0,
+      unmatchedRows: 0,
+      warnings: [
+        `Amazon no entregó documento todavía. Estado: PENDING (${report.processingStatus}).`,
+      ],
+    };
+  }
+
+  const document = await getReportDocument(report.reportDocumentId);
+  const documentText = await downloadReportDocument(document);
+
+  return parseAndPersistFbaSalesReportDocument({
+    reportId: params.reportId,
+    reportType,
+    marketplaceIds,
+    fromDate: params.fromDate,
+    toDate: params.toDate,
+    documentText,
+    status: "DONE",
+    processingStatus: report.processingStatus,
+    amazonReport: report,
+  });
 }
 
 type InventorySummary = {

@@ -8,9 +8,11 @@ export type ParsedAmazonFbaLedgerRow = {
   rowNumber: number;
   snapshotDate: string;
   skuOriginal: string;
+  mskuAliases: string[];
   skuLimpio: string;
   fnsku: string | null;
   asin: string;
+  conditionType: string | null;
   title: string | null;
   disposition: string;
   startingWarehouseBalance: number;
@@ -48,8 +50,11 @@ export type AmazonFbaLedgerParseResult = {
 export type AmazonFbaLedgerPreviewSampleRow = {
   snapshotDate: string;
   skuOriginal: string;
+  mskuAliases: string[];
   skuLimpio: string;
+  fnsku: string | null;
   asin: string | null;
+  conditionType: string | null;
   title: string | null;
   disposition: string | null;
   endingWarehouseBalance: number;
@@ -79,6 +84,8 @@ export type AmazonFbaLedgerPreviewResponse = {
   skippedRows: number;
   uniqueSkus: number;
   unlinkedProductRows: number;
+  conflictRows: number;
+  unknownConditionRows: number;
   unlinkedSkus: AmazonFbaLedgerUnlinkedSku[];
   skipUnlinkedProducts: boolean;
   importableRows: number;
@@ -104,20 +111,25 @@ export type AmazonFbaLedgerCommitResponse = {
   skippedRows: number;
   uniqueSkus: number;
   unlinkedProductRows: number;
+  conflictRows: number;
+  unknownConditionRows: number;
   skipUnlinkedProducts: boolean;
   insertedOrUpdated: number;
   omittedUnlinkedRows: number;
   source: string;
   sourceFileName: string | null;
+  reportDocumentId: string | null;
   warnings: AmazonFbaLedgerParseWarning[];
 };
 
 export type AmazonFbaLedgerDbRow = {
   producto_id: string | null;
   sku_original: string;
+  msku_aliases: string[];
   sku_limpio: string;
   fnsku: string;
   asin: string;
+  condition_type: string | null;
   title: string | null;
   snapshot_date: string;
   disposition: string;
@@ -139,6 +151,7 @@ export type AmazonFbaLedgerDbRow = {
   location_country: string | null;
   source: string;
   source_file_name: string | null;
+  report_document_id: string;
   raw: Record<string, unknown>;
   updated_at: string;
 };

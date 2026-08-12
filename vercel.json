@@ -3,6 +3,14 @@
     {
       "path": "/api/cron/amazon/reports/run",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/amazon-financial-planning",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/amazon-sp-api/reports/fba-sales/import",
+      "schedule": "20 5 * * *"
     }
   ]
 }

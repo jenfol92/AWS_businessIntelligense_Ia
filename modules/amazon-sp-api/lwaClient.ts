@@ -10,19 +10,32 @@ type CachedToken = {
 };
 
 let cachedToken: CachedToken | null = null;
+const LWA_EXPIRY_SAFETY_MARGIN_SECONDS = 300;
+
+export type LwaAccessTokenResult = {
+  accessToken: string;
+  expiresIn: number;
+  cached: boolean;
+};
 
 export function clearLwaTokenCache(): void {
   cachedToken = null;
 }
 
+export function clearLwaAccessTokenCache(): void {
+  clearLwaTokenCache();
+}
+
 export async function getLwaAccessToken(
   config: SpApiConfig,
-): Promise<{ accessToken: string; expiresIn: number }> {
+  options: { forceRefresh?: boolean } = {},
+): Promise<LwaAccessTokenResult> {
   const now = Date.now();
-  if (cachedToken && cachedToken.expiresAtMs > now + 60_000) {
+  if (!options.forceRefresh && cachedToken && cachedToken.expiresAtMs > now) {
     return {
       accessToken: cachedToken.accessToken,
       expiresIn: Math.floor((cachedToken.expiresAtMs - now) / 1000),
+      cached: true,
     };
   }
 
@@ -50,11 +63,14 @@ export async function getLwaAccessToken(
 
   cachedToken = {
     accessToken: json.access_token,
-    expiresAtMs: now + json.expires_in * 1000,
+    expiresAtMs:
+      now +
+      Math.max(json.expires_in - LWA_EXPIRY_SAFETY_MARGIN_SECONDS, 0) * 1000,
   };
 
   return {
     accessToken: json.access_token,
-    expiresIn: json.expires_in,
+    expiresIn: Math.max(json.expires_in - LWA_EXPIRY_SAFETY_MARGIN_SECONDS, 0),
+    cached: false,
   };
 }

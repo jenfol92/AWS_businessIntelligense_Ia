@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
         {
           ok: false,
           error:
-            "reportType no soportado para ventas FBA. Usa GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA o GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL.",
+            "reportType no soportado para ventas FBA. Usa GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL.",
         },
         { status: 400 },
       );

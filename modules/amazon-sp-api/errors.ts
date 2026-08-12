@@ -46,33 +46,82 @@ export function mapLwaError(error: string, description?: string): SpApiError {
   return new SpApiError(desc || error, "unknown", 401);
 }
 
-export function mapHttpSpApiError(status: number, body: unknown): SpApiError {
-  const message =
+function readAmazonError(body: unknown): {
+  code: string;
+  message: string;
+  details: string;
+} {
+  if (
     typeof body === "object" &&
     body !== null &&
     "errors" in body &&
     Array.isArray((body as { errors: unknown[] }).errors)
-      ? String((body as { errors: { message?: string }[] }).errors[0]?.message ?? "")
-      : `SP-API HTTP ${status}`;
+  ) {
+    const first = (
+      body as { errors: Array<{ code?: unknown; message?: unknown; details?: unknown }> }
+    ).errors[0];
+    return {
+      code: String(first?.code ?? ""),
+      message: String(first?.message ?? ""),
+      details: String(first?.details ?? ""),
+    };
+  }
+
+  return { code: "", message: "", details: "" };
+}
+
+function enrichErrorDetails(
+  body: unknown,
+  headers?: Record<string, string>,
+): unknown {
+  const requestId =
+    headers?.["x-amzn-requestid"] ??
+    headers?.["x-amzn-request-id"] ??
+    headers?.["x-amz-request-id"] ??
+    null;
+
+  if (typeof body === "object" && body !== null && !Array.isArray(body)) {
+    return {
+      ...(body as Record<string, unknown>),
+      headers: headers ?? {},
+      requestId,
+    };
+  }
+
+  return {
+    raw: body,
+    headers: headers ?? {},
+    requestId,
+  };
+}
+
+export function mapHttpSpApiError(
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+): SpApiError {
+  const amazonError = readAmazonError(body);
+  const message = amazonError.message || `SP-API HTTP ${status}`;
+  const details = enrichErrorDetails(body, headers);
 
   if (status === 401) {
-    return new SpApiError(message || "No autorizado SP-API.", "unauthorized", 401, body);
+    return new SpApiError(message || "No autorizado SP-API.", "unauthorized", 401, details);
   }
   if (status === 403) {
-    return new SpApiError(message || "Acceso denegado SP-API.", "forbidden", 403, body);
+    return new SpApiError(message || "Acceso denegado SP-API.", "forbidden", 403, details);
   }
   if (status === 429) {
     return new SpApiError(
       message || "Rate limit SP-API. Reintenta más tarde.",
       "rate_limited",
       429,
-      body,
+      details,
     );
   }
   if (status >= 500) {
-    return new SpApiError(message || "Error interno SP-API.", "server_error", status, body);
+    return new SpApiError(message || "Error interno SP-API.", "server_error", status, details);
   }
-  return new SpApiError(message || "Error SP-API.", "unknown", status, body);
+  return new SpApiError(message || "Error SP-API.", "unknown", status, details);
 }
 
 export function mapGenericError(error: unknown): SpApiError {

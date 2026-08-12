@@ -1,12 +1,14 @@
 "use client";
 
 import React, { useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   CheckCircle,
   FileSpreadsheet,
   Loader2,
   Package,
+  RefreshCw,
 } from "lucide-react";
 import type {
   AmazonFbaLedgerCommitResponse,
@@ -15,27 +17,44 @@ import type {
 
 type PreviewState = AmazonFbaLedgerPreviewResponse | null;
 type CommitState = AmazonFbaLedgerCommitResponse | null;
+type SpApiLedgerRunState = {
+  ok: boolean;
+  status?: string;
+  processingStatus?: string | null;
+  jobId?: string | null;
+  reportId?: string | null;
+  reportDocumentId?: string | null;
+  dataStartTime?: string | null;
+  dataEndTime?: string | null;
+  requestedCreateReportPayload?: Record<string, unknown>;
+  imported?: AmazonFbaLedgerCommitResponse | null;
+  commit?: AmazonFbaLedgerCommitResponse | null;
+  error?: string | null;
+} | null;
 
 const UNLINKED_SKUS_DISPLAY_LIMIT = 20;
 
 function computeImportStats(
   validRows: number,
   unlinkedProductRows: number,
+  conflictRows: number,
   skipUnlinkedProducts: boolean,
 ) {
+  const rowsAfterConflicts = Math.max(validRows - conflictRows, 0);
   if (skipUnlinkedProducts) {
     return {
-      importableRows: validRows - unlinkedProductRows,
+      importableRows: Math.max(rowsAfterConflicts - unlinkedProductRows, 0),
       omittedUnlinkedRows: unlinkedProductRows,
     };
   }
   return {
-    importableRows: validRows,
+    importableRows: rowsAfterConflicts,
     omittedUnlinkedRows: 0,
   };
 }
 
 export function AmazonFbaLedgerImportCard() {
+  const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<PreviewState>(null);
@@ -43,6 +62,9 @@ export function AmazonFbaLedgerImportCard() {
   const [error, setError] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [loadingCommit, setLoadingCommit] = useState(false);
+  const [loadingSpApiLedger, setLoadingSpApiLedger] = useState(false);
+  const [spApiLedgerStage, setSpApiLedgerStage] = useState<string | null>(null);
+  const [spApiLedgerResult, setSpApiLedgerResult] = useState<SpApiLedgerRunState>(null);
   const [skipUnlinkedProducts, setSkipUnlinkedProducts] = useState(true);
 
   const displayStats = useMemo(() => {
@@ -50,9 +72,12 @@ export function AmazonFbaLedgerImportCard() {
     return computeImportStats(
       preview.validRows,
       preview.unlinkedProductRows,
+      preview.conflictRows,
       skipUnlinkedProducts,
     );
   }, [preview, skipUnlinkedProducts]);
+  const commitBlocked =
+    preview != null && (preview.warnings.length > 0 || preview.conflictRows > 0);
 
   async function runImport(mode: "preview" | "commit") {
     if (!file) {
@@ -98,6 +123,72 @@ export function AmazonFbaLedgerImportCard() {
     }
   }
 
+  async function runSpApiLedger() {
+    setError(null);
+    setSpApiLedgerResult(null);
+    setLoadingSpApiLedger(true);
+    setSpApiLedgerStage("solicitado");
+
+    try {
+      const requestRes = await fetch("/api/amazon/sp-api/reports/fba-ledger/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "request" }),
+      });
+      const requested = await requestRes.json();
+      if (!requestRes.ok || !requested.ok || !requested.jobId) {
+        throw new Error(requested.error ?? "Error solicitando Inventory Ledger diario.");
+      }
+      setSpApiLedgerResult(requested as SpApiLedgerRunState);
+
+      let polled = requested as NonNullable<SpApiLedgerRunState>;
+      for (let attempt = 0; attempt < 24; attempt++) {
+        setSpApiLedgerStage(`procesando ${attempt + 1}/24`);
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        const pollRes = await fetch("/api/amazon/sp-api/reports/fba-ledger/run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "poll", jobId: requested.jobId }),
+        });
+        polled = await pollRes.json();
+        if (!pollRes.ok || !polled.ok) {
+          throw new Error(polled.error ?? "Error comprobando estado del Ledger.");
+        }
+        setSpApiLedgerResult(polled);
+        if (polled.processingStatus === "DONE" || polled.status === "DONE") break;
+        if (polled.status === "FATAL" || polled.status === "CANCELLED") {
+          throw new Error(`Amazon devolvio estado ${polled.status}.`);
+        }
+      }
+
+      if (polled.processingStatus !== "DONE" && polled.status !== "DONE") {
+        throw new Error("Amazon aun no ha cerrado el Ledger. Reintenta en unos minutos.");
+      }
+
+      setSpApiLedgerStage("descargando e importando");
+      const commitRes = await fetch("/api/amazon/sp-api/reports/fba-ledger/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "commit", jobId: requested.jobId }),
+      });
+      const committed = await commitRes.json();
+      if (!commitRes.ok || !committed.ok) {
+        throw new Error(committed.error ?? "Error importando Inventory Ledger diario.");
+      }
+      setSpApiLedgerStage("importado");
+      setSpApiLedgerResult({
+        ...committed,
+        imported: committed.commit,
+      } as SpApiLedgerRunState);
+      router.refresh();
+    } catch (err: unknown) {
+      setSpApiLedgerStage("fallido");
+      setError(err instanceof Error ? err.message : "Error desconocido.");
+    } finally {
+      setLoadingSpApiLedger(false);
+    }
+  }
+
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex items-start gap-3">
@@ -122,6 +213,27 @@ export function AmazonFbaLedgerImportCard() {
       </div>
 
       <div className="mt-5 space-y-4">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-orange-100 bg-orange-50 px-3 py-3">
+          <button
+            type="button"
+            disabled={loadingPreview || loadingCommit || loadingSpApiLedger}
+            onClick={runSpApiLedger}
+            className="inline-flex items-center gap-2 rounded-lg bg-orange-700 px-4 py-2 text-sm font-medium text-white hover:bg-orange-800 disabled:opacity-50"
+          >
+            {loadingSpApiLedger ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            Actualizar Inventory Ledger diario
+          </button>
+          {spApiLedgerStage ? (
+            <span className="text-sm font-medium text-orange-900">
+              Estado: {spApiLedgerStage}
+            </span>
+          ) : null}
+        </div>
+
         <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
           <input
             type="checkbox"
@@ -177,7 +289,7 @@ export function AmazonFbaLedgerImportCard() {
 
           <button
             type="button"
-            disabled={!file || !preview || loadingPreview || loadingCommit}
+            disabled={!file || !preview || commitBlocked || loadingPreview || loadingCommit}
             onClick={() => runImport("commit")}
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
           >
@@ -221,6 +333,32 @@ export function AmazonFbaLedgerImportCard() {
         </div>
       ) : null}
 
+      {spApiLedgerResult?.imported ? (
+        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+          <div className="flex items-start gap-2">
+            <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              Ledger diario importado. Fecha solicitada:{" "}
+              <strong>{String(spApiLedgerResult.dataStartTime ?? "").slice(0, 10)}</strong>.
+              Filas insertadas/actualizadas:{" "}
+              <strong>
+                {spApiLedgerResult.imported.insertedOrUpdated.toLocaleString("es-ES")}
+              </strong>
+              .
+            </div>
+          </div>
+          <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
+            <span>Report ID: {spApiLedgerResult.reportId ?? "-"}</span>
+            <span>
+              Conflictos matching: {spApiLedgerResult.imported.conflictRows}
+            </span>
+            <span>
+              FNSKU sin condicion: {spApiLedgerResult.imported.unknownConditionRows}
+            </span>
+          </div>
+        </div>
+      ) : null}
+
       {preview && displayStats ? (
         <div className="mt-5 space-y-5">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -234,6 +372,8 @@ export function AmazonFbaLedgerImportCard() {
               label="Filas que se importarían"
               value={displayStats.importableRows}
             />
+            <Stat label="Conflictos matching" value={preview.conflictRows} />
+            <Stat label="Condicion UNKNOWN" value={preview.unknownConditionRows} />
             <Stat label="SKUs únicos" value={preview.uniqueSkus} />
             <Stat
               label="Filas sin producto"
@@ -257,6 +397,19 @@ export function AmazonFbaLedgerImportCard() {
               }
             />
           </div>
+
+          {commitBlocked ? (
+            <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                Commit bloqueado: resuelve{" "}
+                <strong>{preview.warnings.length.toLocaleString("es-ES")}</strong>{" "}
+                warnings y{" "}
+                <strong>{preview.conflictRows.toLocaleString("es-ES")}</strong>{" "}
+                conflictos de matching antes de importar.
+              </span>
+            </div>
+          ) : null}
 
           {preview.rowsByMonth.length > 0 ? (
             <div>
@@ -304,10 +457,11 @@ export function AmazonFbaLedgerImportCard() {
                 {preview.dispositions.join(", ")}
               </div>
               <p className="mt-2 text-xs text-slate-600">
-                <strong className="text-slate-700">SELLABLE</strong> se considera
-                stock vendible. El resto de estados se guardan como stock no
-                vendible para control, pero no cuentan como stock disponible
-                para forecast.
+                <strong className="text-slate-700">SELLABLE + NEWITEM</strong>{" "}
+                entra en FBA nuevo vendible. SELLABLE usado queda separado,
+                condition UNKNOWN queda visible y separada, pero no entra en FBA
+                nuevo vendible. Cualquier disposition distinta de SELLABLE se
+                registra como no apta para stock principal.
               </p>
             </div>
           ) : null}

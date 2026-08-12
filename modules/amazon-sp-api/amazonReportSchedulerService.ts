@@ -14,6 +14,12 @@ import {
   requestFbaCountryReportJob,
 } from "./fbaCountryReportService";
 import {
+  commitFbaLedgerReportJob,
+  downloadAndPreviewFbaLedgerReportJob,
+  FBA_LEDGER_REPORT_TYPE,
+  requestFbaLedgerReportJob,
+} from "./fbaLedgerReportService";
+import {
   findLatestImportedAmazonReportJob,
   findBlockingAmazonReportJob,
   listAmazonReportJobsReadyForPreview,
@@ -21,6 +27,7 @@ import {
   listAmazonReportJobsPendingPoll,
   updateReportJob,
 } from "./reportJobsRepository";
+import { isAmazonReportJobSupersededByImportedJob } from "./amazonReportSupersededPolicy";
 import { getReport, mapAmazonProcessingToJobStatus } from "./reportsClient";
 import {
   finishAmazonReportSyncRunError,
@@ -166,6 +173,7 @@ export type AmazonReportRunSafeSummary = {
 
 const SUPPORTED_FBA_COUNTRY_SCHEDULE_TYPES = new Set([
   FBA_COUNTRY_REPORT_TYPE,
+  FBA_LEDGER_REPORT_TYPE,
   "FBA_COUNTRY",
 ]);
 
@@ -214,21 +222,19 @@ function countriesFromSummary(summary: Record<string, unknown>): string[] {
   return value.map((item) => String(item)).filter(Boolean);
 }
 
-function timestampMs(value: string | null): number {
-  if (!value) return 0;
-  const time = new Date(value).getTime();
-  return Number.isFinite(time) ? time : 0;
-}
-
-function isJobOlderThanImported(
-  job: { requested_at: string; updated_at: string },
-  imported: { requested_at: string; updated_at: string } | null,
+function passesCommitGateByReportType(
+  reportType: string,
+  summary: Record<string, unknown>,
 ): boolean {
-  if (!imported) return false;
-  const jobTime = timestampMs(job.requested_at) || timestampMs(job.updated_at);
-  const importedTime =
-    timestampMs(imported.requested_at) || timestampMs(imported.updated_at);
-  return importedTime > jobTime;
+  const warnings = numberFromSummary(summary, "warnings") ?? 0;
+  if (reportType === FBA_LEDGER_REPORT_TYPE) {
+    return warnings === 0 && (numberFromSummary(summary, "conflictRows") ?? 0) === 0;
+  }
+
+  return (
+    warnings === 0 &&
+    (numberFromSummary(summary, "productsUnmatched") ?? 0) === 0
+  );
 }
 
 async function requestDueAmazonReportSchedule(
@@ -266,8 +272,12 @@ async function requestDueAmazonReportSchedule(
   }
 
   try {
+    const reportType =
+      schedule.report_type === FBA_LEDGER_REPORT_TYPE
+        ? FBA_LEDGER_REPORT_TYPE
+        : FBA_COUNTRY_REPORT_TYPE;
     const blockingJob = await findBlockingAmazonReportJob({
-      reportType: FBA_COUNTRY_REPORT_TYPE,
+      reportType,
       recentSince: blockingJobRecentSince(schedule),
     });
 
@@ -280,7 +290,7 @@ async function requestDueAmazonReportSchedule(
         {
           action: "skipped_existing_job",
           reason: blockingJob.reason,
-          reportType: FBA_COUNTRY_REPORT_TYPE,
+          reportType,
           existingAmazonReportJobId: existingJob.id,
           existingReportId: existingJob.report_id,
           existingStatus: existingJob.status,
@@ -296,7 +306,7 @@ async function requestDueAmazonReportSchedule(
       console.info("[amazon-report-scheduler] skipped existing job", {
         scheduleId: schedule.id,
         runId: started.runId,
-        reportType: FBA_COUNTRY_REPORT_TYPE,
+        reportType,
         marketplaceCountry: schedule.marketplace_country,
         marketplaceId: schedule.marketplace_id,
         existingAmazonReportJobId: existingJob.id,
@@ -324,26 +334,37 @@ async function requestDueAmazonReportSchedule(
     console.info("[amazon-report-scheduler] createReport input resolved", {
       scheduleId: schedule.id,
       runId: started.runId,
-      reportType: FBA_COUNTRY_REPORT_TYPE,
+      reportType,
       marketplaceCountry: schedule.marketplace_country,
       marketplaceId: schedule.marketplace_id,
       marketplaceIds: scheduleSpecificMarketplaceIds,
       usesManualDefaultMarketplaceIds,
     });
 
-    const { job, reportId, marketplaceIds, usedDefaultMarketplaceIds } =
-      usesManualDefaultMarketplaceIds
-        ? await requestFbaCountryReportJob({ source: "scheduler" })
-        : await requestFbaCountryReportJob({
+    const requested =
+      reportType === FBA_LEDGER_REPORT_TYPE
+        ? await requestFbaLedgerReportJob({
             marketplaceIds: scheduleSpecificMarketplaceIds,
             source: "scheduler",
-          });
+          })
+        : usesManualDefaultMarketplaceIds
+          ? await requestFbaCountryReportJob({ source: "scheduler" })
+          : await requestFbaCountryReportJob({
+              marketplaceIds: scheduleSpecificMarketplaceIds,
+              source: "scheduler",
+            });
+    const { job, reportId } = requested;
+    const marketplaceIds = requested.marketplaceIds ?? job.marketplace_ids ?? [];
+    const usedDefaultMarketplaceIds =
+      "usedDefaultMarketplaceIds" in requested
+        ? requested.usedDefaultMarketplaceIds
+        : usesManualDefaultMarketplaceIds;
 
     await finishAmazonReportSyncRunSuccess(
       started.runId,
       {
         stage: "request_created",
-        reportType: FBA_COUNTRY_REPORT_TYPE,
+        reportType,
         reportId,
         amazonReportJobId: job.id,
         marketplaceIds,
@@ -356,7 +377,7 @@ async function requestDueAmazonReportSchedule(
     console.info("[amazon-report-scheduler] report requested", {
       scheduleId: schedule.id,
       runId: started.runId,
-      reportType: FBA_COUNTRY_REPORT_TYPE,
+      reportType,
       marketplaceCountry: schedule.marketplace_country,
       marketplaceId: schedule.marketplace_id,
       marketplaceIds,
@@ -512,24 +533,36 @@ export async function pollPendingAmazonReportJobs(): Promise<AmazonReportPollSum
 }
 
 export async function previewReadyAmazonReportJobs(): Promise<AmazonReportPreviewSummary> {
-  const jobs = await listAmazonReportJobsReadyForPreview({
-    reportType: FBA_COUNTRY_REPORT_TYPE,
-  });
+  const jobs = [
+    ...(await listAmazonReportJobsReadyForPreview({
+      reportType: FBA_COUNTRY_REPORT_TYPE,
+    })),
+    ...(await listAmazonReportJobsReadyForPreview({
+      reportType: FBA_LEDGER_REPORT_TYPE,
+    })),
+  ];
   console.info("[amazon-report-scheduler] ready report jobs for preview found", {
     count: jobs.length,
-    reportType: FBA_COUNTRY_REPORT_TYPE,
+    reportType: "FBA_SUPPORTED",
   });
 
   const results: AmazonReportPreviewResult[] = [];
 
   for (const job of jobs) {
     try {
-      const { job: updatedJob, preview } = await downloadAndPreviewFbaCountryReportJob(
-        job.id,
-      );
-      const productsUnmatched = preview.skippedUnlinkedRows;
+      const previewed =
+        job.report_type === FBA_LEDGER_REPORT_TYPE
+          ? await downloadAndPreviewFbaLedgerReportJob(job.id)
+          : await downloadAndPreviewFbaCountryReportJob(job.id);
+      const updatedJob = previewed.job;
+      const preview = previewed.preview;
+      const productsUnmatched =
+        "skippedUnlinkedRows" in preview
+          ? preview.skippedUnlinkedRows
+          : preview.unlinkedProductRows;
       const productsMatched = preview.validRows - productsUnmatched;
-      const countries = preview.rowsByCountry.map((row) => row.key);
+      const countries =
+        "rowsByCountry" in preview ? preview.rowsByCountry.map((row) => row.key) : [];
 
       console.info("[amazon-report-scheduler] report job previewed", {
         jobId: job.id,
@@ -583,9 +616,14 @@ export async function previewReadyAmazonReportJobs(): Promise<AmazonReportPrevie
 export async function listReadyToCommitAmazonReportJobs(): Promise<
   AmazonReportReadyToCommitItem[]
 > {
-  const jobs = await listAmazonReportJobsReadyToCommit({
-    reportType: FBA_COUNTRY_REPORT_TYPE,
-  });
+  const jobs = [
+    ...(await listAmazonReportJobsReadyToCommit({
+      reportType: FBA_COUNTRY_REPORT_TYPE,
+    })),
+    ...(await listAmazonReportJobsReadyToCommit({
+      reportType: FBA_LEDGER_REPORT_TYPE,
+    })),
+  ];
 
   return jobs
     .filter((job) => {
@@ -595,10 +633,7 @@ export async function listReadyToCommitAmazonReportJobs(): Promise<
       if (job.raw?.importedAt || job.raw?.importSummary) return false;
       const summary = readPreviewSummary(job.raw);
       if (!summary) return false;
-      return (
-        numberFromSummary(summary, "productsUnmatched") === 0 &&
-        numberFromSummary(summary, "warnings") === 0
-      );
+      return passesCommitGateByReportType(job.report_type, summary);
     })
     .map((job) => {
       const summary = readPreviewSummary(job.raw) ?? {};
@@ -623,24 +658,44 @@ export async function listReadyToCommitAmazonReportJobs(): Promise<
 }
 
 export async function commitReadyAmazonReportJobs(): Promise<AmazonReportCommitReadySummary> {
-  const jobs = await listAmazonReportJobsReadyToCommit({
-    reportType: FBA_COUNTRY_REPORT_TYPE,
+  const candidateJobs = [
+    ...(await listAmazonReportJobsReadyToCommit({
+      reportType: FBA_COUNTRY_REPORT_TYPE,
+    })),
+    ...(await listAmazonReportJobsReadyToCommit({
+      reportType: FBA_LEDGER_REPORT_TYPE,
+    })),
+  ];
+  const jobs = candidateJobs.filter((job) => {
+    const summary = readPreviewSummary(job.raw);
+    return summary ? passesCommitGateByReportType(job.report_type, summary) : false;
   });
-  const latestImported = await findLatestImportedAmazonReportJob({
-    reportType: FBA_COUNTRY_REPORT_TYPE,
-  });
+  const latestImportedByReportType = new Map(
+    await Promise.all(
+      Array.from(new Set(jobs.map((job) => job.report_type))).map(async (reportType) => {
+        const latestImported = await findLatestImportedAmazonReportJob({ reportType });
+        return [reportType, latestImported] as const;
+      }),
+    ),
+  );
 
   console.info("[amazon-report-scheduler] ready report jobs for commit found", {
     count: jobs.length,
-    reportType: FBA_COUNTRY_REPORT_TYPE,
-    latestImportedJobId: latestImported?.id ?? null,
-    latestImportedReportId: latestImported?.report_id ?? null,
+    candidates: candidateJobs.length,
+    reportTypes: Array.from(latestImportedByReportType.entries()).map(
+      ([reportType, latestImported]) => ({
+        reportType,
+        latestImportedJobId: latestImported?.id ?? null,
+        latestImportedReportId: latestImported?.report_id ?? null,
+      }),
+    ),
   });
 
   const results: AmazonReportCommitReadyResult[] = [];
 
   for (const job of jobs) {
-    if (isJobOlderThanImported(job, latestImported)) {
+    const latestImported = latestImportedByReportType.get(job.report_type) ?? null;
+    if (isAmazonReportJobSupersededByImportedJob(job, latestImported)) {
       await updateReportJob(job.id, {
         raw: {
           ...(job.raw ?? {}),
@@ -648,7 +703,7 @@ export async function commitReadyAmazonReportJobs(): Promise<AmazonReportCommitR
           supersededByJobId: latestImported?.id ?? null,
           supersededByReportId: latestImported?.report_id ?? null,
           supersededReason:
-            "Skipped by scheduler because a newer job of the same report_type is already IMPORTED.",
+            `Skipped by scheduler because a newer ${job.report_type} job is already IMPORTED.`,
         },
       });
 
@@ -672,13 +727,24 @@ export async function commitReadyAmazonReportJobs(): Promise<AmazonReportCommitR
     }
 
     try {
-      const { job: updatedJob, commit } = await commitFbaCountryReportJob(job.id);
+      const committed =
+        job.report_type === FBA_LEDGER_REPORT_TYPE
+          ? await commitFbaLedgerReportJob(job.id)
+          : await commitFbaCountryReportJob(job.id);
+      const updatedJob = committed.job;
+      const commit = committed.commit;
+      const inventarioPaisesUpserted =
+        "inventarioPaisesUpserted" in commit ? commit.inventarioPaisesUpserted : 0;
+      const historySnapshotsUpserted =
+        "historySnapshotsUpserted" in commit
+          ? commit.historySnapshotsUpserted
+          : commit.insertedOrUpdated;
       console.info("[amazon-report-scheduler] report job auto committed", {
         jobId: updatedJob.id,
         reportId: updatedJob.report_id,
         reportType: updatedJob.report_type,
-        inventarioPaisesUpserted: commit.inventarioPaisesUpserted,
-        historySnapshotsUpserted: commit.historySnapshotsUpserted,
+        inventarioPaisesUpserted,
+        historySnapshotsUpserted,
       });
 
       results.push({
@@ -686,8 +752,8 @@ export async function commitReadyAmazonReportJobs(): Promise<AmazonReportCommitR
         reportId: updatedJob.report_id,
         reportType: updatedJob.report_type,
         action: "committed",
-        inventarioPaisesUpserted: commit.inventarioPaisesUpserted,
-        historySnapshotsUpserted: commit.historySnapshotsUpserted,
+        inventarioPaisesUpserted,
+        historySnapshotsUpserted,
       });
     } catch (error: unknown) {
       const mapped = mapGenericError(error);

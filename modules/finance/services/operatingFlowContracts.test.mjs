@@ -1,0 +1,11 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+const read=(path)=>readFile(new URL(`../../../${path}`,import.meta.url),"utf8");
+
+test("refinancing SQL is atomic, idempotent and locks lines deterministically",async()=>{const sql=await read("sql/migrations/20260806_01_financial_operating_flow.sql");assert.match(sql,/create or replace function public\.finance_refinance_credit_line/);assert.match(sql,/order by id for update/);assert.match(sql,/credit-line-refinancing:/);assert.match(sql,/IDEMPOTENCY_PAYLOAD_MISMATCH/);assert.match(sql,/principal_eur \+ interest_eur \+ fees_eur/);});
+test("BBVA/manual line rejects missing due date",async()=>{const sql=await read("sql/migrations/20260806_01_financial_operating_flow.sql");assert.match(sql,/if p_funding_manual_due_date is null then raise exception 'MANUAL_DUE_DATE_REQUIRED'/);});
+test("projected and confirmed use a no-cash RPC; received uses one movement",async()=>{const repository=await read("modules/finance/repositories/operatingFlowRepository.ts");const sql=await read("sql/migrations/20260806_01_financial_operating_flow.sql");assert.match(repository,/finance_upsert_amazon_income/);assert.doesNotMatch(repository,/finance_cash_movements/);assert.match(sql,/finance_receive_amazon_income/);assert.match(sql,/'amazon_income_forecast'/);assert.match(sql,/cash_movement_id uuid unique/);});
+test("fixture is synthetic, guarded and always rolls back",async()=>{const sql=await read("sql/data/financial_operating_flow_fixture.sql");assert.match(sql,/FINFLOW_SYNTHETIC/);assert.match(sql,/REMOTE_GUARD/);assert.match(sql,/inet_server_addr/);assert.match(sql,/rollback;\s*$/i);});
+test("new API routes require finance details access",async()=>{for(const path of ["app/api/finance/credit-lines/refinance/route.ts","app/api/finance/treasury/operations/route.ts","app/api/finance/amazon-income/route.ts","app/api/finance/amazon-income/[id]/receive/route.ts"]){const code=await read(path);assert.match(code,/requireFinanceDetailsAccess/);}});
+test("maturities UI exposes refinancing preview and manual due date",async()=>{const ui=await read("modules/finance/components/CreditLineRefinancingModal.tsx");assert.match(ui,/Preview:/);assert.match(ui,/Vencimiento manual/);assert.match(ui,/Confirmar refinanciacion/);});

@@ -120,12 +120,13 @@ export function normalizePurchasePaymentBatchPayload(
     manualDueDate = manualDueDateRaw;
   }
   const actualFxRate = optionalPositive(payload.actualFxRate, "actualFxRate");
+  const actualFxForeignPerEur = optionalPositive(payload.actualFxForeignPerEur, "actualFxForeignPerEur");
   const actualAmountEur = optionalPositive(payload.actualAmountEur, "actualAmountEur");
   const originalCurrency = text(payload.originalCurrency, "originalCurrency").toUpperCase();
   if (!SUPPORTED_CURRENCIES.has(originalCurrency)) {
     fail("INVALID_PLAN_CURRENCY", "originalCurrency debe ser USD, EUR, GBP o CNY.");
   }
-  if (originalCurrency !== "EUR" && actualFxRate === null && actualAmountEur === null) {
+  if (originalCurrency !== "EUR" && actualFxForeignPerEur === null && actualFxRate === null && actualAmountEur === null) {
     fail("MISSING_ACTUAL_VALUE", "Introduce el tipo de cambio real o el importe EUR real.");
   }
   return {
@@ -135,6 +136,7 @@ export function normalizePurchasePaymentBatchPayload(
     amountOriginal: positive(payload.amountOriginal, "amountOriginal"),
     originalCurrency,
     actualFxRate,
+    actualFxForeignPerEur,
     actualAmountEur,
     bankFeeEur: nonNegative(payload.bankFeeEur, "bankFeeEur"),
     ffFeeEur: nonNegative(payload.ffFeeEur, "ffFeeEur"),

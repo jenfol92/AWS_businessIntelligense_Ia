@@ -32,6 +32,7 @@ export type CreatePurchasePaymentBatchPayload = {
   amountOriginal?: unknown;
   originalCurrency?: unknown;
   actualFxRate?: unknown;
+  actualFxForeignPerEur?: unknown;
   actualAmountEur?: unknown;
   bankFeeEur?: unknown;
   ffFeeEur?: unknown;
@@ -53,6 +54,7 @@ export type CreatePurchasePaymentBatchInput = {
   amountOriginal: number;
   originalCurrency: string;
   actualFxRate: number | null;
+  actualFxForeignPerEur: number | null;
   actualAmountEur: number | null;
   bankFeeEur: number;
   ffFeeEur: number;

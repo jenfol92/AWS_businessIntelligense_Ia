@@ -26,11 +26,12 @@ export async function markAndFinanceSupplierPaymentRpc(
   input: MarkSupplierPaymentPaidInput,
   supabase: SupplierPaymentExecutionClient = createSupabaseRouteClient(),
 ): Promise<MarkAndFinanceSupplierPaymentResult> {
-  const { data, error } = await supabase.rpc("mark_and_finance_supplier_payment", {
+  const { data, error } = await supabase.rpc("finance_execute_supplier_payment_fx_v2", {
     p_supplier_payment_id: input.supplierPaymentId,
     p_order_id: input.orderId,
     p_paid_at: input.paidAt,
     p_actual_fx_rate: input.actualFxRate,
+    p_actual_fx_foreign_per_eur: input.actualFxForeignPerEur,
     p_actual_amount_eur: input.actualAmountEur,
     p_bank_reference: input.bankReference,
     p_bank_fee_eur: input.bankFeeEur,
@@ -40,6 +41,7 @@ export async function markAndFinanceSupplierPaymentRpc(
     p_cash_account_id: input.cashAccountId,
     p_credit_line_id: input.creditLineId,
     p_manual_due_date: input.manualDueDate,
+    p_idempotency_key: input.idempotencyKey,
   });
 
   if (error) throw new Error(formatSupabaseError(error));

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { buildFinancialPlanning } from "@/modules/finance/services/buildFinancialPlanning";
+import { ensureFreshAmazonFinancialPlanning } from "@/modules/finance/services/financialPlanningAmazonFreshness";
 import type { FinancePlanningQuery } from "@/modules/finance/types/planning.types";
 import {
   getFinanceAccessErrorResponse,
@@ -39,7 +40,7 @@ function parseQuery(req: Request): ParseResult {
 
 export async function GET(req: Request) {
   try {
-    await requireTreasuryAccess();
+    const access = await requireTreasuryAccess();
     const supabaseHost = (() => {
       try {
         return new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").host;
@@ -53,10 +54,11 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: parsed.error }, { status: 400 });
     }
 
+    const amazonSync = await ensureFreshAmazonFinancialPlanning();
     console.log("[finance/planning] buildFinancialPlanning start", parsed.query);
-    const data = await buildFinancialPlanning(parsed.query);
+    const data = await buildFinancialPlanning(parsed.query, access.role === "admin" || access.role === "accounting");
     console.log("[finance/planning] buildFinancialPlanning done");
-    return NextResponse.json(data);
+    return NextResponse.json({...data,amazonSync});
   } catch (error) {
     const access = getFinanceAccessErrorResponse(error);
     if (access) return NextResponse.json(access.body, { status: access.status });

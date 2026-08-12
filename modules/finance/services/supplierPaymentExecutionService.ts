@@ -126,6 +126,10 @@ export function normalizeMarkSupplierPaymentPaidInput(
   if (!UUID_PATTERN.test(id)) {
     throw executionError("INVALID_UUID", "supplierPaymentId debe ser un UUID valido.");
   }
+  const idempotencyKey = optionalString(payload.idempotencyKey);
+  if (!idempotencyKey) {
+    throw executionError("INVALID_IDEMPOTENCY_KEY", "idempotencyKey es obligatoria.");
+  }
 
   if (payload.sourceType === "manual") {
     throw executionError(
@@ -173,6 +177,7 @@ export function normalizeMarkSupplierPaymentPaidInput(
   }
 
   return {
+    idempotencyKey,
     supplierPaymentId: id,
     orderId: optionalString(payload.orderId),
     paidAt: normalizePaidAt(payload.paidAt),
@@ -180,6 +185,11 @@ export function normalizeMarkSupplierPaymentPaidInput(
       payload.actualFxRate,
       "INVALID_ACTUAL_FX_RATE",
       "actualFxRate",
+    ),
+    actualFxForeignPerEur: optionalPositiveNumber(
+      payload.actualFxForeignPerEur,
+      "INVALID_ACTUAL_FX_RATE",
+      "actualFxForeignPerEur",
     ),
     actualAmountEur: optionalPositiveNumber(
       payload.actualAmountEur,

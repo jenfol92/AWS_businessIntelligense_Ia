@@ -197,6 +197,8 @@ export async function createCreditLineLegacyRegularization(
         principalEur: Number(item.principal_eur),
         dispositionDate: item.disposition_date,
         contractualDueDate: item.contractual_due_date,
+        expectedInterestEur: item.expected_interest_eur == null ? null : Number(item.expected_interest_eur),
+        expectedFeesEur: item.expected_fees_eur == null ? null : Number(item.expected_fees_eur),
       })),
       idempotent: result.idempotent,
     };

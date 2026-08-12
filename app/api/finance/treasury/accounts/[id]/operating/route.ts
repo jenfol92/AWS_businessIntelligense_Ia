@@ -1,0 +1,4 @@
+import { NextResponse } from "next/server";
+import { getFinanceAccessErrorResponse,requireFinanceDetailsAccess } from "@/server/auth/requireFinanceAccess";
+import { setOperatingCashAccount } from "@/modules/finance/services/operatingFlowService";
+export async function PATCH(request:Request,{params}:{params:{id:string}}){try{await requireFinanceDetailsAccess();}catch(error){const access=getFinanceAccessErrorResponse(error);return NextResponse.json(access?.body??{ok:false,error:"Internal server error"},{status:access?.status??500});}try{const body=await request.json() as {enabled:boolean};return NextResponse.json({ok:true,data:await setOperatingCashAccount(params.id,body.enabled)});}catch(error){return NextResponse.json({ok:false,error:error instanceof Error?error.message:"OPERATING_ACCOUNT_FAILED"},{status:422});}}

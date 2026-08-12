@@ -2,12 +2,14 @@ export type SupplierPaymentActualInput = {
   amountOriginal: number;
   currencyOriginal: string;
   actualFxRate?: number | null;
+  actualFxForeignPerEur?: number | null;
   actualAmountEur?: number | null;
   toleranceEur?: number;
 };
 
 export type SupplierPaymentActualValues = {
   actualFxRate: number;
+  actualFxForeignPerEur: number;
   actualAmountEur: number;
 };
 
@@ -29,6 +31,12 @@ export function resolveSupplierPaymentActuals(
   const currency = input.currencyOriginal.trim().toUpperCase();
   if (!currency) throw new Error("INVALID_ORIGINAL_CURRENCY");
 
+  if (
+    input.actualFxForeignPerEur != null &&
+    !positiveFinite(input.actualFxForeignPerEur)
+  ) {
+    throw new Error("INVALID_ACTUAL_FX_FOREIGN_PER_EUR");
+  }
   if (
     input.actualFxRate != null &&
     !positiveFinite(input.actualFxRate)
@@ -54,7 +62,13 @@ export function resolveSupplierPaymentActuals(
     ) {
       throw new Error("INCONSISTENT_ACTUAL_VALUES");
     }
-    return { actualFxRate: 1, actualAmountEur: amount };
+    return { actualFxRate: 1, actualFxForeignPerEur: 1, actualAmountEur: amount };
+  }
+
+  if (input.actualFxForeignPerEur != null) {
+    const actualAmountEur=roundEur(input.amountOriginal/input.actualFxForeignPerEur);
+    if (input.actualAmountEur != null && Math.abs(actualAmountEur-roundEur(input.actualAmountEur))>(input.toleranceEur??0.01)) throw new Error("INCONSISTENT_ACTUAL_VALUES");
+    return {actualFxRate:1/input.actualFxForeignPerEur,actualFxForeignPerEur:input.actualFxForeignPerEur,actualAmountEur};
   }
 
   if (input.actualFxRate == null && input.actualAmountEur == null) {
@@ -69,6 +83,7 @@ export function resolveSupplierPaymentActuals(
     }
     return {
       actualFxRate: input.actualFxRate,
+      actualFxForeignPerEur: 1/input.actualFxRate,
       actualAmountEur: provided,
     };
   }
@@ -76,6 +91,7 @@ export function resolveSupplierPaymentActuals(
   if (input.actualFxRate != null) {
     return {
       actualFxRate: input.actualFxRate,
+      actualFxForeignPerEur: 1/input.actualFxRate,
       actualAmountEur: roundEur(input.amountOriginal * input.actualFxRate),
     };
   }
@@ -83,6 +99,7 @@ export function resolveSupplierPaymentActuals(
   const actualAmountEur = roundEur(input.actualAmountEur as number);
   return {
     actualFxRate: actualAmountEur / input.amountOriginal,
+    actualFxForeignPerEur: input.amountOriginal/actualAmountEur,
     actualAmountEur,
   };
 }

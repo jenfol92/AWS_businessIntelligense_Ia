@@ -31,6 +31,7 @@ export type OrderForSupplierPayments = {
   eta_real: string | null;
   etd: string | null;
   moneda_compra: string | null;
+  planned_fx_foreign_per_eur: number | null;
   coste_total_eur: number | null;
   coste_total_usd: number | null;
   deposito_porcentaje: number | null;
@@ -73,7 +74,7 @@ export async function fetchOrderForSupplierPayments(
     .select(
       `id, estado, tipo_envio, numero_orden, numero_pedido_agente,
        fecha_confirmacion, fecha_orden, eta, eta_real, etd,
-       moneda_compra, coste_total_eur, coste_total_usd,
+       moneda_compra, planned_fx_foreign_per_eur, coste_total_eur, coste_total_usd,
        deposito_porcentaje, balance_dias_antes_eta, fecha_pago_balance,
        agentes_compra(contacto),
        orden_items(cantidad, coste_unitario_moneda)`,
@@ -203,6 +204,7 @@ export type UpsertSupplierPaymentInput = {
   amount_original: number;
   original_currency: string;
   planned_fx_rate: number | null;
+  planned_fx_foreign_per_eur: number;
   amount_eur: number;
   logistics_type: string | null;
   contenedor_id: string | null;
@@ -214,13 +216,14 @@ export async function upsertSupplierPayment(
   input: UpsertSupplierPaymentInput,
   supabase: SupabaseClient = createSupabaseRouteClient(),
 ): Promise<SupplierPaymentRow> {
-  const { data, error } = await supabase.rpc("sync_supplier_payment_plan", {
+  const { data, error } = await supabase.rpc("sync_supplier_payment_plan_fx_v2", {
     p_order_id: input.orden_id,
     p_payment_type: input.payment_type,
     p_due_date: input.due_date,
     p_amount_original: input.amount_original,
     p_original_currency: input.original_currency,
     p_planned_fx_rate: input.planned_fx_rate,
+    p_planned_fx_foreign_per_eur: input.planned_fx_foreign_per_eur,
     p_amount_eur: input.amount_eur,
     p_logistics_type: input.logistics_type,
     p_container_id: input.contenedor_id,

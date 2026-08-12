@@ -37,7 +37,7 @@ export async function createPurchasePaymentBatchRpc(
   input: CreatePurchasePaymentBatchInput,
   supabase: SupabaseClient = createSupabaseRouteClient(),
 ): Promise<PurchasePaymentBatchResult> {
-  const { data, error } = await supabase.rpc("create_and_apply_purchase_payment_batch", {
+  const { data, error } = await supabase.rpc("create_and_apply_purchase_payment_batch_fx_v2", {
     p_payload: {
       payee_type: input.payeeType,
       agent_id: input.agentId,
@@ -45,6 +45,7 @@ export async function createPurchasePaymentBatchRpc(
       amount_original: input.amountOriginal,
       original_currency: input.originalCurrency,
       actual_fx_rate: input.actualFxRate,
+      actual_fx_foreign_per_eur: input.actualFxForeignPerEur,
       actual_amount_eur: input.actualAmountEur,
       bank_fee_eur: input.bankFeeEur,
       ff_fee_eur: input.ffFeeEur,

@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 
 export class UnlinkedObligationsApiError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status = 422) {
+  readonly code:string;
+  readonly status:number;
+  constructor(code: string, message: string, status = 422) {
     super(message);
+    this.code=code;
+    this.status=status;
     this.name = "UnlinkedObligationsApiError";
   }
 }

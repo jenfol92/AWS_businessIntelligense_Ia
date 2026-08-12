@@ -243,6 +243,8 @@ export async function createCreditLineLegacyRegularizationRpc(
       principalEur: item.principalEur,
       dispositionDate: item.dispositionDate,
       contractualDueDate: item.contractualDueDate,
+      expectedInterestEur: item.expectedInterestEur,
+      expectedFeesEur: item.expectedFeesEur,
       reference: item.reference,
       notes: item.notes,
     })),

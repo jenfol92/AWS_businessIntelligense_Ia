@@ -13,10 +13,13 @@ export type CreditLineMaturityRawGroup = {
   status: string;
   bank_name: string;
   line_name: string;
+  credit_limit: number;
   line_status: string;
   movement_count: number;
   financed_order_codes: string[];
   is_legacy_opening_balance: boolean;
+  expected_interest_eur: number | null;
+  expected_fees_eur: number | null;
 };
 
 export type CreditLineLegacyGapRaw = {
@@ -24,6 +27,7 @@ export type CreditLineLegacyGapRaw = {
   bank_name: string;
   line_name: string;
   used_amount: number;
+  credit_limit: number;
   explained_remaining: number;
   repayment_mode: "periodic_release" | "manual_due_dates";
   cycle_days: number | null;
@@ -51,7 +55,7 @@ export async function findOpenCreditLineMaturities(
     .select(
       `id, credit_line_id, period_start, period_end, due_date,
        amount, paid_amount, remaining_amount, status,
-       finance_credit_lines!inner(id, bank_name, line_name, status, used_amount),
+       finance_credit_lines!inner(id, bank_name, line_name, status, credit_limit, used_amount),
        finance_credit_line_movements(
          id, movement_type, source_type, source_id
        )`,
@@ -82,7 +86,7 @@ export async function findOpenCreditLineMaturities(
 
   let linesQuery = supabase
     .from("finance_credit_lines")
-    .select("id, bank_name, line_name, used_amount, status, repayment_mode, cycle_days");
+    .select("id, bank_name, line_name, credit_limit, used_amount, status, repayment_mode, cycle_days");
   if (query.creditLineId) {
     linesQuery = linesQuery.eq("id", query.creditLineId);
   }
@@ -96,6 +100,23 @@ export async function findOpenCreditLineMaturities(
   if (groupsResult.error) throw new Error(groupsResult.error.message);
   if (integrityResult.error) throw new Error(integrityResult.error.message);
   if (linesResult.error) throw new Error(linesResult.error.message);
+
+  const groupIds = (groupsResult.data ?? []).map((row) => String((row as Record<string, unknown>)["id"]));
+  const legacyCostsByGroup = new Map<string, { interest: number | null; fees: number | null }>();
+  if (groupIds.length > 0) {
+    const { data, error } = await supabase
+      .from("finance_credit_line_legacy_regularization_items")
+      .select("repayment_group_id, expected_interest_eur, expected_fees_eur")
+      .in("repayment_group_id", groupIds);
+    if (error) throw new Error(error.message);
+    for (const item of data ?? []) {
+      const record = item as Record<string, unknown>;
+      legacyCostsByGroup.set(String(record["repayment_group_id"]), {
+        interest: record["expected_interest_eur"] == null ? null : Number(record["expected_interest_eur"]),
+        fees: record["expected_fees_eur"] == null ? null : Number(record["expected_fees_eur"]),
+      });
+    }
+  }
 
   const supplierPaymentIds = new Set<string>();
   const batchIds = new Set<string>();
@@ -190,6 +211,7 @@ export async function findOpenCreditLineMaturities(
       (record["finance_credit_line_movements"] as Record<string, unknown>[] | null) ?? [];
     const orderCodes = new Set<string>();
     let isLegacy = false;
+    const legacyCosts = legacyCostsByGroup.get(String(record["id"]));
 
     for (const movement of movements) {
       if (movement["source_type"] === "legacy_opening_balance") {
@@ -221,6 +243,7 @@ export async function findOpenCreditLineMaturities(
       status: String(record["status"]),
       bank_name: String(line?.["bank_name"] ?? ""),
       line_name: String(line?.["line_name"] ?? ""),
+      credit_limit: Number(line?.["credit_limit"] ?? 0),
       line_status: String(line?.["status"] ?? ""),
       movement_count: movements.filter(
         (m) =>
@@ -229,6 +252,8 @@ export async function findOpenCreditLineMaturities(
       ).length,
       financed_order_codes: Array.from(orderCodes).sort(),
       is_legacy_opening_balance: isLegacy,
+      expected_interest_eur: legacyCosts?.interest ?? null,
+      expected_fees_eur: legacyCosts?.fees ?? null,
     };
   });
 
@@ -254,6 +279,7 @@ export async function findOpenCreditLineMaturities(
         bank_name: String(row["bank_name"] ?? ""),
         line_name: String(row["line_name"] ?? ""),
         used_amount: used,
+        credit_limit: Number(row["credit_limit"] ?? 0),
         explained_remaining: explained,
         repayment_mode: String(row["repayment_mode"]) as "periodic_release" | "manual_due_dates",
         cycle_days: row["cycle_days"] == null ? null : Number(row["cycle_days"]),

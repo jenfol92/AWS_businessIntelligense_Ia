@@ -36,7 +36,7 @@ export function LinkedPurchasePaymentModal({
   const [cashAccountId, setCashAccountId] = useState("");
   const [creditLineId, setCreditLineId] = useState("");
   const [manualDueDate, setManualDueDate] = useState("");
-  const [actualFxRate, setActualFxRate] = useState("");
+  const [actualFxForeignPerEur, setActualFxForeignPerEur] = useState("");
   const [actualAmountEur, setActualAmountEur] = useState("");
   const [bankFeeEur, setBankFeeEur] = useState("");
   const [ffFeeEur, setFfFeeEur] = useState("");
@@ -79,7 +79,7 @@ export function LinkedPurchasePaymentModal({
     ? principal
     : actualAmountEur
       ? Number(actualAmountEur)
-      : principal * Number(actualFxRate || 0);
+      : actualFxForeignPerEur ? principal / Number(actualFxForeignPerEur) : 0;
   const totalCharged = eurReal + Number(bankFeeEur || 0) + Number(ffFeeEur || 0);
   const orderCount = new Set(selectedRows.map((row) => row.orderId)).size;
   const supplierCount = new Set(selectedRows.map((row) => row.supplierId ?? row.supplierName)).size;
@@ -152,7 +152,7 @@ export function LinkedPurchasePaymentModal({
         return setError("El vencimiento debe ser igual o posterior a la fecha efectiva del pago.");
       }
     }
-    if (lockedCurrency !== "EUR" && !actualFxRate && !actualAmountEur) {
+    if (lockedCurrency !== "EUR" && !actualFxForeignPerEur && !actualAmountEur) {
       return setError("Introduce tipo de cambio real o EUR real.");
     }
 
@@ -167,7 +167,8 @@ export function LinkedPurchasePaymentModal({
           entryMode: mode,
           amountOriginal: principal,
           originalCurrency: selectedRows[0].originalCurrency,
-          actualFxRate: actualFxRate || null,
+          actualFxForeignPerEur: actualFxForeignPerEur || null,
+          actualFxRate: actualFxForeignPerEur ? 1/Number(actualFxForeignPerEur) : null,
           actualAmountEur: actualAmountEur || null,
           bankFeeEur: bankFeeEur || 0,
           ffFeeEur: ffFeeEur || 0,
@@ -285,7 +286,7 @@ export function LinkedPurchasePaymentModal({
               </dl>
             </section>
             <div className="grid grid-cols-2 gap-2">
-              <label className="text-xs">Cambio real<input type="number" step="0.000001" value={actualFxRate} onChange={(e) => setActualFxRate(e.target.value)} className="mt-1 w-full border px-2 py-2" /></label>
+              <label className="text-xs">Cambio real · 1 EUR = X {lockedCurrency}<input type="number" step="0.000001" value={actualFxForeignPerEur} onChange={(e) => setActualFxForeignPerEur(e.target.value)} className="mt-1 w-full border px-2 py-2" /></label>
               <label className="text-xs">EUR real<input type="number" step="0.01" value={actualAmountEur} onChange={(e) => setActualAmountEur(e.target.value)} className="mt-1 w-full border px-2 py-2" /></label>
               <label className="text-xs">Comisión banco<input type="number" step="0.01" min="0" value={bankFeeEur} onChange={(e) => setBankFeeEur(e.target.value)} className="mt-1 w-full border px-2 py-2" /></label>
               <label className="text-xs">Gastos FF<input type="number" step="0.01" min="0" value={ffFeeEur} onChange={(e) => setFfFeeEur(e.target.value)} className="mt-1 w-full border px-2 py-2" /></label>

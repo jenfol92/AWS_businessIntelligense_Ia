@@ -115,6 +115,7 @@ export async function syncSupplierPaymentsForOrder(
     originalCurrency,
     baseOriginal,
     depositPercent: depositPct,
+    plannedFxForeignPerEur: order.planned_fx_foreign_per_eur,
   });
   const balancePct = 100 - depositPct;
 
@@ -130,6 +131,7 @@ export async function syncSupplierPaymentsForOrder(
       amount_original: planAmounts.deposit.amountOriginal,
       original_currency: originalCurrency,
       planned_fx_rate: null,
+      planned_fx_foreign_per_eur: planAmounts.deposit.plannedFxForeignPerEur,
       amount_eur: planAmounts.deposit.amountEur,
       logistics_type: logisticsType,
       contenedor_id: container?.id ?? null,
@@ -145,6 +147,7 @@ export async function syncSupplierPaymentsForOrder(
       amount_original: planAmounts.balance.amountOriginal,
       original_currency: originalCurrency,
       planned_fx_rate: null,
+      planned_fx_foreign_per_eur: planAmounts.balance.plannedFxForeignPerEur,
       amount_eur: planAmounts.balance.amountEur,
       logistics_type: logisticsType,
       contenedor_id: container?.id ?? null,

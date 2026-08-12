@@ -1,9 +1,10 @@
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import { supabaseAdmin } from "@/server/supabase/adminClient";
 import type { FinancePlanningQuery, FinancePlanningRawData } from "../types/planning.types";
 
 function addMonths(date: Date, months: number): Date {
   const next = new Date(date);
-  next.setMonth(next.getMonth() + months);
+  next.setUTCMonth(next.getUTCMonth() + months);
   return next;
 }
 
@@ -12,9 +13,9 @@ function firstDayOfMonth(month: string): string {
 }
 
 function lastDayOfWindow(fromMonth: string, months: number): string {
-  const start = new Date(`${fromMonth}-01T00:00:00`);
+  const start = new Date(`${fromMonth}-01T00:00:00Z`);
   const end = addMonths(start, months);
-  end.setDate(0);
+  end.setUTCDate(0);
   return end.toISOString().slice(0, 10);
 }
 
@@ -37,8 +38,12 @@ export async function findFinancialPlanningData(
     supplierPaymentsResult,
     creditLinesResult,
     repaymentGroupsResult,
+    repaymentMovementsResult,
+    legacyItemsResult,
+    plannedMaturitiesResult,
     cashResult,
     incomeResult,
+    observationResult,
     settingsResult,
   ] = await Promise.all([
     supabase
@@ -85,7 +90,7 @@ export async function findFinancialPlanningData(
            allocated_amount_eur,
            finance_purchase_payment_batches(
              id, status, paid_at, bank_reference, source_type,
-             actual_fx_rate, actual_amount_eur, bank_fee_eur, ff_fee_eur
+             actual_fx_rate, actual_fx_foreign_per_eur, actual_amount_eur, bank_fee_eur, ff_fee_eur
            )
          )`,
       ),
@@ -99,6 +104,23 @@ export async function findFinancialPlanningData(
       .in("status", ["open", "partially_paid"])
       .order("due_date", { ascending: true }),
     supabase
+      .from("finance_credit_line_repayments")
+      .select("*,finance_credit_lines!inner(bank_name,line_name),finance_credit_line_repayment_groups(group_origin_type)")
+      .eq("status", "posted")
+      .gte("effective_date", fromDate)
+      .lte("effective_date", toDate)
+      .order("effective_date", { ascending: true }),
+    supabase
+      .from("finance_credit_line_legacy_regularization_items")
+      .select("repayment_group_id,expected_interest_eur,expected_fees_eur"),
+    supabase
+      .from("finance_credit_line_planned_maturities")
+      .select("*,finance_credit_lines!inner(bank_name,line_name)")
+      .eq("status", "planned")
+      .neq("source_type", "spreadsheet_schedule")
+      .is("linked_repayment_group_id", null)
+      .order("due_date", { ascending: true }),
+    supabase
       .from("finance_cash_accounts")
       .select("*")
       .order("name", { ascending: true }),
@@ -108,10 +130,15 @@ export async function findFinancialPlanningData(
       .gte("forecast_date", fromDate)
       .lte("forecast_date", toDate)
       .order("forecast_date", { ascending: true }),
+    supabaseAdmin
+      .from("finance_amazon_treasury_forecast_snapshots")
+      .select("*")
+      .in("economic_state",["AVAILABLE","DEFERRED","PENDING_BANK"])
+      .order("snapshot_at",{ascending:false}),
     supabase
       .from("finance_settings")
       .select("*")
-      .in("key", ["planned_usd_eur_rate"]),
+      .in("key", ["planned_usd_eur_rate", "minimum_operating_cash_reserve_eur", "amazon_expected_net_ratio", "amazon_transfer_request_weekdays", "amazon_bank_lag_days", "amazon_treasury_percentile", "amazon_min_history_samples"]),
   ]);
 
   for (const result of [
@@ -119,8 +146,12 @@ export async function findFinancialPlanningData(
     supplierPaymentsResult,
     creditLinesResult,
     repaymentGroupsResult,
+    repaymentMovementsResult,
+    legacyItemsResult,
+    plannedMaturitiesResult,
     cashResult,
     incomeResult,
+    observationResult,
     settingsResult,
   ]) {
     if (result.error) {
@@ -133,8 +164,12 @@ export async function findFinancialPlanningData(
     supplierPayments: (supplierPaymentsResult.data ?? []) as Record<string, unknown>[],
     creditLines: (creditLinesResult.data ?? []) as Record<string, unknown>[],
     creditLineRepaymentGroups: (repaymentGroupsResult.data ?? []) as Record<string, unknown>[],
+    creditLineRepaymentMovements: (repaymentMovementsResult.data ?? []) as Record<string, unknown>[],
+    creditLineLegacyRegularizationItems: (legacyItemsResult.data ?? []) as Record<string, unknown>[],
+    creditLinePlannedMaturities: (plannedMaturitiesResult.data ?? []) as Record<string, unknown>[],
     cashAccounts: (cashResult.data ?? []) as Record<string, unknown>[],
     amazonIncomeForecasts: (incomeResult.data ?? []) as Record<string, unknown>[],
+    amazonTreasuryObservations: (observationResult.data ?? []) as Record<string, unknown>[],
     settings: (settingsResult.data ?? []) as Record<string, unknown>[],
   };
 }

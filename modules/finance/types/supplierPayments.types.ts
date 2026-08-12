@@ -13,7 +13,9 @@ export type SupplierPaymentRow = {
   amount_original: number | null;
   original_currency: string;
   planned_fx_rate: number | null;
+  planned_fx_foreign_per_eur: number | null;
   actual_fx_rate: number | null;
+  actual_fx_foreign_per_eur: number | null;
   amount_eur: number;
   actual_amount_original: number | null;
   actual_amount_eur: number | null;

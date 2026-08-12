@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Banknote, AlertTriangle } from "lucide-react";
-import type { FinanceCashAccount } from "../types/planning.types";
+import type { FinanceCashAccount, FinanceCreditLine } from "../types/planning.types";
+import { CreditLineRefinancingModal } from "./CreditLineRefinancingModal";
 import type {
   CreditLineMaturitiesResponse,
   CreditLineMaturity,
@@ -369,17 +370,19 @@ type LegacyDispositionDraft = {
   principalEur: string;
   dispositionDate: string;
   contractualDueDate: string;
+  expectedInterestEur: string;
+  expectedFeesEur: string;
   dueDateEdited: boolean;
   reference: string;
   notes: string;
 };
 
-function LegacyRegularizationForm({ gap, onSaved, onCancel }: {
+export function LegacyRegularizationForm({ gap, onSaved, onCancel }: {
   gap: CreditLineLegacyGap;
   onSaved: (message: string) => Promise<void>;
   onCancel: () => void;
 }) {
-  const blank = (): LegacyDispositionDraft => ({ principalEur: "", dispositionDate: "", contractualDueDate: "", dueDateEdited: false, reference: "", notes: "" });
+  const blank = (): LegacyDispositionDraft => ({ principalEur: "", dispositionDate: "", contractualDueDate: "", expectedInterestEur: "", expectedFeesEur: "", dueDateEdited: false, reference: "", notes: "" });
   const [items, setItems] = useState<LegacyDispositionDraft[]>([blank()]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -402,10 +405,9 @@ function LegacyRegularizationForm({ gap, onSaved, onCancel }: {
     const amount = Number(item.principalEur);
     return Number.isFinite(amount) && amount > 0 && amount < MAX_MONEY_EXCLUSIVE
       && Math.abs(amount * 100 - Math.round(amount * 100)) < 1e-7
-      && /^\d{4}-\d{2}-\d{2}$/.test(item.dispositionDate)
       && /^\d{4}-\d{2}-\d{2}$/.test(item.contractualDueDate)
-      && item.dispositionDate <= today
-      && item.contractualDueDate >= item.dispositionDate;
+      && (!item.dispositionDate || (/^\d{4}-\d{2}-\d{2}$/.test(item.dispositionDate) && item.dispositionDate <= today && item.contractualDueDate >= item.dispositionDate))
+      && [item.expectedInterestEur, item.expectedFeesEur].every((raw) => raw === "" || (Number.isFinite(Number(raw)) && Number(raw) >= 0 && Number(raw) < MAX_MONEY_EXCLUSIVE && Math.abs(Number(raw) * 100 - Math.round(Number(raw) * 100)) < 1e-7));
   });
 
   const update = (index: number, changes: Partial<LegacyDispositionDraft>) => setItems((current) => current.map((item, i) => i === index ? { ...item, ...changes } : item));
@@ -414,8 +416,10 @@ function LegacyRegularizationForm({ gap, onSaved, onCancel }: {
     if (!valid) return;
     setSaving(true); setError(null);
     const dispositions = items.map((item) => ({
-      principalEur: Number(item.principalEur), dispositionDate: item.dispositionDate,
+      principalEur: Number(item.principalEur), dispositionDate: item.dispositionDate || null,
       contractualDueDate: item.contractualDueDate, reference: item.reference.trim() || null,
+      expectedInterestEur: item.expectedInterestEur === "" ? null : Number(item.expectedInterestEur),
+      expectedFeesEur: item.expectedFeesEur === "" ? null : Number(item.expectedFeesEur),
       notes: item.notes.trim() || null,
     }));
     const fingerprint = JSON.stringify(dispositions);
@@ -435,20 +439,25 @@ function LegacyRegularizationForm({ gap, onSaved, onCancel }: {
   };
 
   return <form onSubmit={submit} className="mt-3 space-y-3 rounded-lg border border-amber-300 bg-white p-3">
-    <div className="grid grid-cols-3 gap-2 text-xs">
-      <div><span className="block text-slate-500">Gap pendiente</span><b>{eur(gapCents / 100)}</b></div>
+    <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-6">
+      <div><span className="block text-slate-500">Limite</span><b>{eur(gap.creditLimit)}</b></div>
+      <div><span className="block text-slate-500">Usado actual</span><b>{eur(gap.usedAmount)}</b></div>
+      <div><span className="block text-slate-500">Principal explicado</span><b>{eur(gap.explainedRemaining)}</b></div>
+      <div><span className="block text-slate-500">Gap legacy</span><b>{eur(gapCents / 100)}</b></div>
       <div><span className="block text-slate-500">Total desglosado</span><b>{eur(totalCents / 100)}</b></div>
       <div><span className="block text-slate-500">Diferencia</span><b>{eur(differenceCents / 100)}</b></div>
     </div>
     {items.map((item, index) => {
       const suggested = gap.repaymentMode === "periodic_release" && gap.cycleDays
         ? addCivilDays(item.dispositionDate, gap.cycleDays) : "";
-      return <div key={index} className="grid gap-2 rounded border border-slate-200 p-2 md:grid-cols-5">
+      return <div key={index} className="grid gap-2 rounded border border-slate-200 p-2 md:grid-cols-7">
         <input aria-label="Principal" type="number" min="0.01" max="999999999999.99" step="0.01" value={item.principalEur} onChange={(e) => update(index, { principalEur: e.target.value })} placeholder="Principal EUR" className="rounded border px-2 py-1" />
-        <input aria-label="Fecha disposicion" type="date" max={today} value={item.dispositionDate} onChange={(e) => update(index, { dispositionDate: e.target.value, contractualDueDate: nextSuggestedDueDate(e.target.value, gap.cycleDays, item.contractualDueDate, item.dueDateEdited) })} className="rounded border px-2 py-1" />
+        <input aria-label="Fecha disposicion" title="Opcional si se desconoce" type="date" max={today} value={item.dispositionDate} onChange={(e) => update(index, { dispositionDate: e.target.value, contractualDueDate: nextSuggestedDueDate(e.target.value, gap.cycleDays, item.contractualDueDate, item.dueDateEdited) })} className="rounded border px-2 py-1" />
         <div><input aria-label="Vencimiento contractual" type="date" value={item.contractualDueDate} onChange={(e) => update(index, { contractualDueDate: e.target.value, dueDateEdited: true })} className="w-full rounded border px-2 py-1" />
           <div className="mt-1 text-[10px] text-slate-500">{gap.repaymentMode === "manual_due_dates" ? "Vencimiento pactado por disposicion" : item.dueDateEdited && item.contractualDueDate !== suggested ? "Fecha contractual ajustada manualmente" : `Calculado con plazo predeterminado de ${gap.cycleDays} dias`}</div></div>
         <input aria-label="Referencia" maxLength={MAX_REFERENCE_LENGTH} value={item.reference} onChange={(e) => update(index, { reference: e.target.value })} placeholder="Referencia" className="rounded border px-2 py-1" />
+        <input aria-label="Intereses conocidos" type="number" min="0" step="0.01" value={item.expectedInterestEur} onChange={(e) => update(index, { expectedInterestEur: e.target.value })} placeholder="Intereses (opcional)" className="rounded border px-2 py-1" />
+        <input aria-label="Comisiones conocidas" type="number" min="0" step="0.01" value={item.expectedFeesEur} onChange={(e) => update(index, { expectedFeesEur: e.target.value })} placeholder="Comisiones (opcional)" className="rounded border px-2 py-1" />
         <div className="flex gap-1"><input aria-label="Notas" maxLength={MAX_NOTES_LENGTH} value={item.notes} onChange={(e) => update(index, { notes: e.target.value })} placeholder="Notas" className="min-w-0 flex-1 rounded border px-2 py-1" /><button type="button" onClick={() => setItems((current) => current.filter((_, i) => i !== index))} disabled={items.length === 1}>Quitar</button></div>
       </div>;
     })}
@@ -463,9 +472,11 @@ function LegacyRegularizationForm({ gap, onSaved, onCancel }: {
 
 export function CreditLineMaturitiesSection({
   cashAccounts,
+  creditLines,
   onRepaid,
 }: {
   cashAccounts: FinanceCashAccount[];
+  creditLines: FinanceCreditLine[];
   onRepaid: (message: string) => Promise<void>;
 }) {
   const [data, setData] = useState<CreditLineMaturitiesResponse | null>(null);
@@ -473,6 +484,7 @@ export function CreditLineMaturitiesSection({
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<CreditLineMaturityFilter>("all");
   const [selected, setSelected] = useState<CreditLineMaturity | null>(null);
+  const [refinancing, setRefinancing] = useState<CreditLineMaturity | null>(null);
   const [regularizing, setRegularizing] = useState<string | null>(null);
 
   const load = useCallback(async (status: CreditLineMaturityFilter) => {
@@ -636,7 +648,7 @@ export function CreditLineMaturitiesSection({
                   : " · Sin ordenes vinculadas"}
               </div>
               {data?.permissions.canExecuteCreditLineRepayments && maturity.canRepay ? (
-                <button
+                <div className="flex gap-2"><button
                   type="button"
                   onClick={() => setSelected(maturity)}
                   className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
@@ -644,6 +656,7 @@ export function CreditLineMaturitiesSection({
                   <Banknote className="h-3.5 w-3.5" />
                   Pagar linea
                 </button>
+                <button type="button" onClick={() => setRefinancing(maturity)} className="rounded-lg border border-indigo-300 px-2.5 py-1.5 text-xs font-medium text-indigo-700">Refinanciar</button></div>
               ) : null}
             </div>
           </article>
@@ -661,6 +674,7 @@ export function CreditLineMaturitiesSection({
           }}
         />
       ) : null}
+      {refinancing ? <CreditLineRefinancingModal maturity={refinancing} creditLines={creditLines} onClose={() => setRefinancing(null)} onSaved={async (message) => { await load(filter); await onRepaid(message); }} /> : null}
     </section>
   );
 }

@@ -24,6 +24,18 @@ function money(value: unknown): number {
   return Math.round(cents) / 100;
 }
 
+function optionalMoney(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value >= MAX_MONEY_EXCLUSIVE) {
+    throw new CreditLineLedgerError("Intereses y comisiones deben ser importes no negativos.", "INVALID_AMOUNT");
+  }
+  const cents = value * 100;
+  if (Math.abs(cents - Math.round(cents)) > Number.EPSILON * Math.max(1, Math.abs(cents)) * 4) {
+    throw new CreditLineLedgerError("Los importes admiten como maximo dos decimales.", "INVALID_AMOUNT");
+  }
+  return Math.round(cents) / 100;
+}
+
 function optionalText(value: unknown, maxLength: number): string | null {
   if (value == null || value === "") return null;
   if (typeof value !== "string") throw new CreditLineLedgerError("Texto no valido.", "INVALID_AMOUNT");
@@ -54,24 +66,27 @@ export function normalizeCreditLineLegacyRegularizationInput(
       throw new CreditLineLedgerError("Disposicion no valida.", "INVALID_AMOUNT");
     }
     const item = raw as Record<string, unknown>;
-    const allowed = ["principalEur", "dispositionDate", "contractualDueDate", "reference", "notes"];
+    const allowed = ["principalEur", "dispositionDate", "contractualDueDate", "expectedInterestEur", "expectedFeesEur", "reference", "notes"];
     if (Object.keys(item).some((key) => !allowed.includes(key))) {
       throw new CreditLineLedgerError("La disposicion contiene campos no admitidos.", "INVALID_AMOUNT");
     }
-    if (!isRealIsoDate(item.dispositionDate) || !isRealIsoDate(item.contractualDueDate)) {
+    const dispositionDate = item.dispositionDate == null || item.dispositionDate === "" ? null : String(item.dispositionDate);
+    if ((dispositionDate !== null && !isRealIsoDate(dispositionDate)) || !isRealIsoDate(item.contractualDueDate)) {
       throw new CreditLineLedgerError("Las fechas de la disposicion no son validas.", "INVALID_DATE");
     }
-    if (item.contractualDueDate < item.dispositionDate) {
+    if (dispositionDate !== null && item.contractualDueDate < dispositionDate) {
       throw new CreditLineLedgerError("El vencimiento no puede preceder a la disposicion.", "INVALID_DATE");
     }
     const today = new Date().toISOString().slice(0, 10);
-    if (item.dispositionDate > today) {
+    if (dispositionDate !== null && dispositionDate > today) {
       throw new CreditLineLedgerError("La fecha de disposicion no puede ser futura.", "INVALID_DATE");
     }
     return {
       principalEur: money(item.principalEur),
-      dispositionDate: item.dispositionDate,
+      dispositionDate,
       contractualDueDate: item.contractualDueDate,
+      expectedInterestEur: optionalMoney(item.expectedInterestEur),
+      expectedFeesEur: optionalMoney(item.expectedFeesEur),
       reference: optionalText(item.reference, MAX_REFERENCE_LENGTH),
       notes: optionalText(item.notes, MAX_NOTES_LENGTH),
     };

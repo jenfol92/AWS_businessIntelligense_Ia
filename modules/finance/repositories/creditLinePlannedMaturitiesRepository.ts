@@ -1,0 +1,10 @@
+import type { PlannedMaturityInput, PlannedMaturityPatchInput, PlannedMaturityRepositoryClient } from "../types/creditLinePlannedMaturities.types";
+
+export async function listPlannedMaturities(client:PlannedMaturityRepositoryClient,filters:{creditLineId?:string;from?:string;to?:string;status?:string}){
+  let q=client.from("finance_credit_line_planned_maturities").select("*,finance_credit_lines!inner(bank_name,line_name,used_amount,available_amount)").order("due_date");
+  if(filters.creditLineId)q=q.eq("credit_line_id",filters.creditLineId); if(filters.from)q=q.gte("due_date",filters.from); if(filters.to)q=q.lte("due_date",filters.to); if(filters.status&&filters.status!=="all")q=q.eq("status",filters.status);
+  const {data,error}=await q;if(error)throw error;return data??[];
+}
+export async function createPlannedMaturity(client:PlannedMaturityRepositoryClient,input:PlannedMaturityInput){const {data,error}=await client.rpc("finance_create_credit_line_planned_maturity",{p_credit_line_id:input.creditLineId,p_due_date:input.dueDate,p_planned_principal_eur:input.plannedPrincipalEur,p_expected_interest_eur:input.expectedInterestEur,p_expected_fees_eur:input.expectedFeesEur,p_concept:input.concept,p_reference:input.reference,p_notes:input.notes,p_source_key:input.idempotencyKey});if(error)throw error;return data;}
+export async function updatePlannedMaturity(client:PlannedMaturityRepositoryClient,id:string,input:PlannedMaturityPatchInput){const {data,error}=await client.rpc("finance_update_credit_line_planned_maturity",{p_id:id,p_due_date:input.dueDate,p_planned_principal_eur:input.plannedPrincipalEur,p_expected_interest_eur:input.expectedInterestEur,p_expected_fees_eur:input.expectedFeesEur,p_concept:input.concept,p_reference:input.reference,p_notes:input.notes});if(error)throw error;return data;}
+export async function cancelPlannedMaturity(client:PlannedMaturityRepositoryClient,id:string){const {data,error}=await client.rpc("finance_cancel_credit_line_planned_maturity",{p_id:id});if(error)throw error;return data;}

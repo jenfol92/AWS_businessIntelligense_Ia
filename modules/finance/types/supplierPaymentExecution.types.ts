@@ -3,9 +3,11 @@ import type { SupplierPaymentRow } from "./supplierPayments.types";
 export type SupplierPaymentFundingSourceType = "cash_account" | "credit_line";
 
 export type MarkSupplierPaymentPaidPayload = {
+  idempotencyKey?: string;
   orderId?: unknown;
   paidAt?: unknown;
   actualFxRate?: unknown;
+  actualFxForeignPerEur?: unknown;
   actualAmountEur?: unknown;
   bankReference?: unknown;
   bankFeeEur?: unknown;
@@ -21,10 +23,12 @@ export type MarkSupplierPaymentPaidPayload = {
 };
 
 export type MarkSupplierPaymentPaidInput = {
+  idempotencyKey: string;
   supplierPaymentId: string;
   orderId: string | null;
   paidAt: string;
   actualFxRate: number | null;
+  actualFxForeignPerEur: number | null;
   actualAmountEur: number | null;
   bankReference: string | null;
   bankFeeEur: number | null;

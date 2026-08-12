@@ -152,6 +152,7 @@ export async function buildCreditLineMaturities(
         repaymentGroupId: group.id,
         bankName: group.bank_name,
         lineName: group.line_name,
+        creditLimit: group.credit_limit,
         lineStatus: group.line_status,
         lineAllowsDrawdown,
         dueDate: group.due_date,
@@ -167,6 +168,8 @@ export async function buildCreditLineMaturities(
         financedOrderCodes: group.financed_order_codes,
         canRepay: group.remaining_amount > 0,
         isLegacyOpeningBalance: group.is_legacy_opening_balance,
+        expectedInterestEur: group.expected_interest_eur,
+        expectedFeesEur: group.expected_fees_eur,
       };
     });
 
@@ -176,6 +179,7 @@ export async function buildCreditLineMaturities(
     creditLineId: gap.id,
     bankName: gap.bank_name,
     lineName: gap.line_name,
+    creditLimit: gap.credit_limit,
     usedAmount: gap.used_amount,
     explainedRemaining: gap.explained_remaining,
     unexplainedAmount: Math.max(0, gap.used_amount - gap.explained_remaining),

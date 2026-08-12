@@ -139,17 +139,18 @@ BEGIN
     '[{"principalEur":30,"dispositionDate":"2026-01-02","contractualDueDate":"2026-04-01","reference":"A"},{"principalEur":20,"dispositionDate":"2026-01-01","contractualDueDate":"2026-04-01","reference":"B"},{"principalEur":30,"dispositionDate":"2026-02-01","contractualDueDate":"2026-05-01","reference":"C"}]',
     'legacy-complete');
   v_id:=(v_result->>'regularization_id')::uuid;
-  IF (v_result->>'derived_gap_eur')::numeric<>80 OR jsonb_array_length(v_result->'groups')<>2 OR jsonb_array_length(v_result->'dispositions')<>3 THEN
+  IF (v_result->>'derived_gap_eur')::numeric<>80 OR jsonb_array_length(v_result->'groups')<>3 OR jsonb_array_length(v_result->'dispositions')<>3 THEN
     RAISE EXCEPTION 'ASSERTION_FAILED: result %',v_result;
   END IF;
-  IF (SELECT count(*) FROM public.finance_credit_line_repayment_groups WHERE group_origin_id=v_id)<>2
+  IF (SELECT count(*) FROM public.finance_credit_line_repayment_groups WHERE group_origin_id=v_id)<>3
      OR (SELECT count(*) FROM public.finance_credit_line_legacy_regularization_items WHERE regularization_id=v_id)<>3
      OR (SELECT count(*) FROM public.finance_credit_line_movements WHERE source_type='legacy_opening_balance' AND source_id IN (SELECT id FROM public.finance_credit_line_legacy_regularization_items WHERE regularization_id=v_id))<>3
      OR EXISTS(SELECT 1 FROM public.finance_credit_line_movements WHERE source_type='legacy_opening_balance' AND movement_type<>'adjustment')
      OR EXISTS(SELECT 1 FROM public.finance_cash_movements WHERE source_id=v_id) THEN
     RAISE EXCEPTION 'ASSERTION_FAILED: traceability counts';
   END IF;
-  IF NOT EXISTS(SELECT 1 FROM public.finance_credit_line_repayment_groups WHERE group_origin_id=v_id AND due_date='2026-04-01' AND period_start='2026-01-01' AND period_end='2026-01-02' AND amount=50)
+  IF NOT EXISTS(SELECT 1 FROM public.finance_credit_line_repayment_groups WHERE group_origin_id=v_id AND due_date='2026-04-01' AND period_start='2026-01-01' AND period_end='2026-01-01' AND amount=20)
+     OR NOT EXISTS(SELECT 1 FROM public.finance_credit_line_repayment_groups WHERE group_origin_id=v_id AND due_date='2026-04-01' AND period_start='2026-01-02' AND period_end='2026-01-02' AND amount=30)
      OR NOT EXISTS(SELECT 1 FROM public.finance_credit_line_repayment_groups WHERE group_origin_id=v_id AND due_date='2026-05-01' AND period_start='2026-02-01' AND period_end='2026-02-01' AND amount=30) THEN
     RAISE EXCEPTION 'ASSERTION_FAILED: legacy periods/groups';
   END IF;
@@ -175,7 +176,7 @@ DO $$
 BEGIN
   IF NOT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='ux_finance_credit_line_repayment_groups_operational_period'
       AND indexdef LIKE '%group_origin_type = ''operational_cycle''%')
-     OR NOT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='ux_finance_credit_line_repayment_groups_legacy_due'
+     OR NOT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='ix_finance_credit_line_repayment_groups_legacy_due'
       AND indexdef LIKE '%group_origin_type = ''legacy_regularization''%') THEN
     RAISE EXCEPTION 'ASSERTION_FAILED: origin-scoped unique indexes';
   END IF;
@@ -185,23 +186,6 @@ SELECT pg_temp.assert_error($q$SELECT public.finance_register_legacy_opening_bal
  '51000000-0000-4000-8000-000000000001','[{"principalEur":80,"dispositionDate":"2026-01-01","contractualDueDate":"2026-04-01"}]','another-key')$q$,'NO_LEGACY_GAP');
 SELECT pg_temp.assert_error($q$SELECT public.finance_register_legacy_opening_balance_v2(
  '51000000-0000-4000-8000-000000000001','[{"principalEur":80,"dispositionDate":"2026-01-03","contractualDueDate":"2026-04-01"}]','legacy-complete')$q$,'IDEMPOTENCY_PAYLOAD_MISMATCH');
-
-DO $$
-DECLARE v_origin uuid;
-BEGIN
-  SELECT id INTO v_origin FROM public.finance_credit_line_legacy_regularizations WHERE idempotency_key='legacy-complete';
-  INSERT INTO public.finance_credit_line_repayment_groups(id,credit_line_id,period_start,period_end,due_date,amount,paid_amount,remaining_amount,status,group_origin_type,group_origin_id)
-  VALUES(gen_random_uuid(),'51000000-0000-4000-8000-000000000001','2026-01-01','2026-01-01','2026-04-01',1,0,1,'cancelled','legacy_regularization',v_origin);
-  BEGIN
-    INSERT INTO public.finance_credit_line_repayment_groups(id,credit_line_id,period_start,period_end,due_date,amount,paid_amount,remaining_amount,status,group_origin_type,group_origin_id)
-    VALUES(gen_random_uuid(),'51000000-0000-4000-8000-000000000001','2026-01-01','2026-01-01','2026-04-01',1,0,1,'open','legacy_regularization',v_origin);
-    RAISE EXCEPTION 'ASSERTION_FAILED: active legacy duplicate accepted';
-  EXCEPTION WHEN unique_violation THEN NULL; END;
-  IF pg_get_functiondef(to_regprocedure('public.finance_register_legacy_opening_balance_v2(uuid,jsonb,text)'))
-       NOT LIKE '%EXCEPTION WHEN unique_violation THEN RAISE EXCEPTION ''LEGACY_PERIOD_CONFLICT''%' THEN
-    RAISE EXCEPTION 'ASSERTION_FAILED: RPC does not translate legacy index conflict';
-  END IF;
-END $$;
 
 -- Physical last line of defence: a drawdown can never target a legacy group.
 SELECT pg_temp.assert_error($q$INSERT INTO public.finance_credit_line_movements(

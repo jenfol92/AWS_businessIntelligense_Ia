@@ -49,11 +49,13 @@ export type CreditLineLedgerErrorCode =
   | "DIRECT_DML_FORBIDDEN";
 
 export class CreditLineLedgerError extends Error {
+  readonly code: CreditLineLedgerErrorCode;
   constructor(
     message: string,
-    public readonly code: CreditLineLedgerErrorCode,
+    code: CreditLineLedgerErrorCode,
   ) {
     super(message);
+    this.code = code;
     this.name = "CreditLineLedgerError";
   }
 }
@@ -247,8 +249,10 @@ export type CreateCreditLineRepaymentV2Result = {
 
 export type CreditLineLegacyDispositionInput = {
   principalEur: number;
-  dispositionDate: string;
+  dispositionDate: string | null;
   contractualDueDate: string;
+  expectedInterestEur: number | null;
+  expectedFeesEur: number | null;
   reference: string | null;
   notes: string | null;
 };
@@ -270,7 +274,9 @@ export type CreditLineLegacyRegularizationRpcResponse = {
     repayment_group_id: string;
     credit_line_movement_id: string;
     principal_eur: number;
-    disposition_date: string;
+    disposition_date: string | null;
+    expected_interest_eur: number | null;
+    expected_fees_eur: number | null;
     contractual_due_date: string;
   }>;
   idempotent: boolean;
@@ -287,8 +293,10 @@ export type CreateCreditLineLegacyRegularizationResult = {
     repaymentGroupId: string;
     creditLineMovementId: string;
     principalEur: number;
-    dispositionDate: string;
+    dispositionDate: string | null;
     contractualDueDate: string;
+    expectedInterestEur: number | null;
+    expectedFeesEur: number | null;
   }>;
   idempotent: boolean;
 };

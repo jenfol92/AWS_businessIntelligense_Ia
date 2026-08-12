@@ -22,6 +22,7 @@ export type CreditLineMaturity = {
   repaymentGroupId: string;
   bankName: string;
   lineName: string;
+  creditLimit: number;
   lineStatus: string;
   lineAllowsDrawdown: boolean;
   dueDate: string;
@@ -38,6 +39,8 @@ export type CreditLineMaturity = {
   financedOrderCodes: string[];
   canRepay: boolean;
   isLegacyOpeningBalance: boolean;
+  expectedInterestEur: number | null;
+  expectedFeesEur: number | null;
 };
 
 export type CreditLineMaturitySummary = {
@@ -57,6 +60,7 @@ export type CreditLineLegacyGap = {
   creditLineId: string;
   bankName: string;
   lineName: string;
+  creditLimit: number;
   usedAmount: number;
   explainedRemaining: number;
   unexplainedAmount: number;

@@ -3,6 +3,7 @@ export type SupplierPaymentPlanBaseInput = {
   originalCurrency: string;
   baseOriginal: number;
   depositPercent: number;
+  plannedFxForeignPerEur?: number | null;
 };
 
 export function validateSupplierPaymentPlanBase(
@@ -25,8 +26,8 @@ export function validateSupplierPaymentPlanBase(
 }
 
 export type SupplierPaymentPlanAmounts = {
-  deposit: { amountOriginal: number; amountEur: number } | null;
-  balance: { amountOriginal: number; amountEur: number } | null;
+  deposit: { amountOriginal: number; amountEur: number; plannedFxForeignPerEur: number } | null;
+  balance: { amountOriginal: number; amountEur: number; plannedFxForeignPerEur: number } | null;
 };
 
 export function buildSupplierPaymentPlanAmounts(
@@ -34,22 +35,26 @@ export function buildSupplierPaymentPlanAmounts(
 ): SupplierPaymentPlanAmounts {
   validateSupplierPaymentPlanBase(input);
   const balancePercent = 100 - input.depositPercent;
-  const legacyBaseEur =
-    input.originalCurrency.trim().toUpperCase() === "EUR" ? input.baseOriginal : 0;
+  const currency=input.originalCurrency.trim().toUpperCase();
+  const fx=currency === "EUR" ? 1 : Number(input.plannedFxForeignPerEur);
+  if (!Number.isFinite(fx) || fx <= 0) throw new Error("MISSING_PLANNED_FX_FOREIGN_PER_EUR");
+  const baseEur=input.baseOriginal/fx;
 
   return {
     deposit:
       input.depositPercent > 0
         ? {
             amountOriginal: input.baseOriginal * (input.depositPercent / 100),
-            amountEur: legacyBaseEur * (input.depositPercent / 100),
+            amountEur: baseEur * (input.depositPercent / 100),
+            plannedFxForeignPerEur: fx,
           }
         : null,
     balance:
       balancePercent > 0
         ? {
             amountOriginal: input.baseOriginal * (balancePercent / 100),
-            amountEur: legacyBaseEur * (balancePercent / 100),
+            amountEur: baseEur * (balancePercent / 100),
+            plannedFxForeignPerEur: fx,
           }
         : null,
   };

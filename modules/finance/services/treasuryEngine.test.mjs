@@ -1,0 +1,15 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { evaluateTreasury } from "./treasuryEngine.ts";
+const line={id:"line",name:"Caja Rural",availableEur:30000,priority:1,dueDate:"2027-01-01",cycleDays:120};
+const run=(cash,out,lines=[line])=>evaluateTreasury({initialCashEur:cash,reserveEur:20000,events:[{id:"e",date:"2026-09-01",title:"Pago",kind:"outflow",amountEur:out}],lines});
+test("clasifica saludable",()=>assert.equal(run(50000,10000).status,"healthy"));
+test("clasifica vigilancia",()=>assert.equal(run(25000,10000).status,"watch"));
+test("clasifica tension cubierta",()=>assert.equal(run(10000,15000).status,"stress"));
+test("clasifica tension alta por concentracion",()=>assert.equal(evaluateTreasury({initialCashEur:0,reserveEur:20000,events:[{id:"m",date:"2026-09-01",title:"Vencimiento",kind:"maturity",amountEur:15000}],lines:[line]}).status,"high_stress"));
+test("clasifica critico y deficit exacto",()=>{const result=run(1000,50000,[]);assert.equal(result.status,"critical");assert.equal(result.deficitEur,49000);});
+test("recomendacion respeta prioridad y explica importe",()=>{const result=run(10000,15000,[{...line,priority:2},{...line,id:"p1",name:"CaixaBank",priority:1}]);assert.match(result.recommendation,/CaixaBank/);assert.match(result.recommendation,/25000.00/);});
+test("no recomienda linea que vence antes del siguiente ingreso",()=>{const result=evaluateTreasury({initialCashEur:10000,reserveEur:20000,events:[{id:"out",date:"2026-09-01",title:"Pago",kind:"outflow",amountEur:15000},{id:"in",date:"2026-09-15",title:"Amazon",kind:"income",amountEur:10000}],lines:[{...line,dueDate:"2026-09-10"}]});assert.match(result.recommendation,/Cobertura insuficiente/);});
+test("projected es solo evento y no muta entrada",()=>{const input={initialCashEur:10000,reserveEur:20000,events:[{id:"income",date:"2026-09-01",title:"Amazon",kind:"income",amountEur:15000}],lines:[]};const result=evaluateTreasury(input);assert.equal(input.initialCashEur,10000);assert.equal(result.minimumCashEur,10000);});
+test("Amazon previsto reduce la tension sin crear caja inicial",()=>{const result=evaluateTreasury({initialCashEur:10000,reserveEur:20000,events:[{id:"amazon",date:"2026-09-01",title:"Amazon previsto",kind:"income",amountEur:20000},{id:"out",date:"2026-09-02",title:"Pago",kind:"outflow",amountEur:25000}],lines:[]});assert.equal(result.minimumCashEur,5000);assert.equal(result.deficitEur,0);assert.deepEqual(result.causingEvents.map(event=>event.id),["out"]);});
+test("recomendacion BBVA exige fecha manual",()=>{const result=run(10000,15000,[{...line,name:"BBVA",cycleDays:null}]);assert.match(result.recommendation,/fecha manual/);});

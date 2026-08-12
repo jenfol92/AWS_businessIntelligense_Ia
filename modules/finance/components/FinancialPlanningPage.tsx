@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   Banknote,
@@ -31,7 +31,8 @@ import {
 } from "../utils/creditLineStatus";
 import { LinkedPurchasePaymentModal } from "./LinkedPurchasePaymentModal";
 import { PurchasePaymentBatchDetailModal } from "./PurchasePaymentBatchDetailModal";
-import { CreditLineMaturitiesSection } from "./CreditLineMaturitiesSection";
+import { CreditLineMaturityPaymentModal } from "./CreditLineMaturityPaymentModal";
+import type { CreditLineMaturity } from "../types/creditLineMaturities.types";
 
 const FUNDING_SOURCE_OPTIONS: Array<{
   value: SupplierPaymentFundingSourceType;
@@ -121,6 +122,8 @@ function eventMatchesQuery(event: FinancePlanningEvent, query: string): boolean 
     event.containerCode,
     event.creditLineBank,
     event.creditLineName,
+    event.title,
+    event.plannedMaturityReference,
   ].some((value) => normalizeSearch(value).includes(normalizedQuery));
 }
 
@@ -128,7 +131,7 @@ function eventMatchesStatus(event: FinancePlanningEvent, estado: StatusFilter): 
   if (estado === "ALL") return true;
 
   if (estado === "proximos_30") {
-    if (event.type !== "credit_line_maturity" || !event.date || event.status === "pagado") {
+    if (!["credit_line_maturity","credit_line_planned_maturity"].includes(event.type) || !event.date || event.status === "pagado") {
       return false;
     }
 
@@ -186,11 +189,57 @@ function logisticsTypeLabel(type: FinancePlanningEvent["logisticsType"]): string
 function eventAccent(event: FinancePlanningEvent): string {
   if (event.type === "amazon_income") return "border-l-emerald-400";
   if (event.type === "supplier_deposit" || event.type === "supplier_balance") return "border-l-sky-400";
-  if (event.type === "credit_line_maturity") return "border-l-indigo-500";
+  if (["credit_line_maturity", "credit_line_planned_maturity", "credit_line_repayment_settlement"].includes(event.type)) return "border-l-indigo-500";
   if (event.type === "credit_line_release") return "border-l-slate-300";
   if (event.status === "pagado") return "border-l-emerald-400";
   if (event.status === "vencido") return "border-l-rose-400";
   return "border-l-amber-400";
+}
+
+function eventCategoryLabel(event: FinancePlanningEvent): string {
+  if (event.type === "supplier_deposit" || event.obligationCategory === "deposits") return "PROVEEDOR · DEPÓSITO";
+  if (event.type === "supplier_balance" || event.obligationCategory === "balances") return "PROVEEDOR · BALANCE";
+  if (event.isLegacyOpeningBalance && ["credit_line_maturity", "credit_line_repayment_settlement"].includes(event.type)) return "CRÉDITO · DEUDA INICIAL";
+  if (["credit_line_maturity", "credit_line_planned_maturity", "credit_line_repayment_settlement"].includes(event.type)) return "CRÉDITO · VENCIMIENTO";
+  if (event.type === "amazon_income") return `AMAZON · ${{RECEIVED:"RECIBIDO",PENDING_BANK:"PENDIENTE DE BANCO",AVAILABLE:"DISPONIBLE",DEFERRED:"DIFERIDO",FUTURE:"FUTURO",LEGACY_CONFIRMED:"HISTORICO SIN CLASIFICAR"}[event.amazonStatus??"FUTURE"]}`;
+  return "OTROS · OBLIGACIÓN";
+}
+
+function knownEur(value: number | null | undefined): string {
+  return value == null ? "Pendiente" : eur(value);
+}
+
+function combinedKnownEur(...values: Array<number | null | undefined>): string {
+  const known = values.filter((value): value is number => value != null);
+  return known.length === 0 ? "Pendiente" : eur(known.reduce((sum, value) => sum + value, 0));
+}
+
+function eventToMaturity(event: FinancePlanningEvent): CreditLineMaturity {
+  return {
+    id: event.id,
+    creditLineId: event.creditLineId ?? "",
+    repaymentGroupId: event.repaymentGroupId ?? "",
+    bankName: event.creditLineBank ?? "",
+    lineName: event.creditLineName ?? "",
+    creditLimit: 0,
+    lineStatus: "active",
+    lineAllowsDrawdown: true,
+    dueDate: event.date ?? "",
+    originalAmountEur: event.originalAmountEur ?? event.plannedAmountEur,
+    paidAmountEur: event.paidLineAmountEur ?? 0,
+    remainingAmountEur: event.remainingAmountEur ?? event.plannedAmountEur,
+    groupStatus: event.repaymentGroupStatus === "partially_paid" ? "partially_paid" : "open",
+    displayStatus: event.status === "vencido" ? "vencido" : event.status === "parcial" ? "parcial" : "pendiente",
+    visualStatus: event.status === "vencido" ? "overdue" : event.status === "parcial" ? "partial" : "pending",
+    daysUntilDue: event.daysUntilDue ?? 0,
+    movementCount: event.movementCount ?? 0,
+    financedOrderCount: event.financedOrderCount ?? 0,
+    financedOrderCodes: event.financedOrderCodes ?? [],
+    canRepay: event.canRepay ?? false,
+    isLegacyOpeningBalance: event.isLegacyOpeningBalance ?? false,
+    expectedInterestEur: event.expectedInterestEur ?? null,
+    expectedFeesEur: event.expectedFeesEur ?? null,
+  };
 }
 
 function isSupplierPaymentEvent(event: FinancePlanningEvent): boolean {
@@ -228,7 +277,7 @@ function PaymentModal({
   const [cashAccountId, setCashAccountId] = useState("");
   const [creditLineId, setCreditLineId] = useState("");
   const [manualDueDate, setManualDueDate] = useState("");
-  const [actualFxRate, setActualFxRate] = useState(isEurPayment ? "1" : "");
+  const [actualFxForeignPerEur, setActualFxForeignPerEur] = useState(isEurPayment ? "1" : "");
   const [actualAmountEur, setActualAmountEur] = useState(
     isEurPayment && originalAmount > 0 ? String(originalAmount) : "",
   );
@@ -239,7 +288,9 @@ function PaymentModal({
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const actualFxRateNumber = actualFxRate.trim() ? Number(actualFxRate) : null;
+  const paymentIdempotencyKey = useRef<string | null>(null);
+  if (!paymentIdempotencyKey.current) paymentIdempotencyKey.current = crypto.randomUUID();
+  const actualFxForeignPerEurNumber = actualFxForeignPerEur.trim() ? Number(actualFxForeignPerEur) : null;
   const actualAmountEurNumber = actualAmountEur.trim() ? Number(actualAmountEur) : null;
   let resolvedActualAmountEur = 0;
   let resolvedActualFxRate: number | null = null;
@@ -247,7 +298,7 @@ function PaymentModal({
     const resolved = resolveSupplierPaymentActuals({
       amountOriginal: originalAmount,
       currencyOriginal: event.originalCurrency,
-      actualFxRate: actualFxRateNumber,
+      actualFxForeignPerEur: actualFxForeignPerEurNumber,
       actualAmountEur: actualAmountEurNumber,
     });
     resolvedActualAmountEur = resolved.actualAmountEur;
@@ -303,7 +354,7 @@ function PaymentModal({
 
     if (
       !isEurPayment &&
-      actualFxRateNumber == null &&
+      actualFxForeignPerEurNumber == null &&
       actualAmountEurNumber == null
     ) {
       setError("Introduce el tipo de cambio real o el importe EUR real.");
@@ -311,8 +362,8 @@ function PaymentModal({
     }
 
     if (
-      actualFxRateNumber != null &&
-      (!Number.isFinite(actualFxRateNumber) || actualFxRateNumber <= 0)
+      actualFxForeignPerEurNumber != null &&
+      (!Number.isFinite(actualFxForeignPerEurNumber) || actualFxForeignPerEurNumber <= 0)
     ) {
       setError("Tipo de cambio real debe ser mayor que 0.");
       return;
@@ -330,7 +381,7 @@ function PaymentModal({
       resolveSupplierPaymentActuals({
         amountOriginal: originalAmount,
         currencyOriginal: event.originalCurrency,
-        actualFxRate: actualFxRateNumber,
+        actualFxForeignPerEur: actualFxForeignPerEurNumber,
         actualAmountEur: actualAmountEurNumber,
       });
     } catch (validationError) {
@@ -362,8 +413,10 @@ function PaymentModal({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            idempotencyKey: paymentIdempotencyKey.current,
             orderId: event.orderId,
-            actualFxRate: isEurPayment ? undefined : actualFxRateNumber,
+            actualFxForeignPerEur: isEurPayment ? undefined : actualFxForeignPerEurNumber,
+            actualFxRate: isEurPayment ? undefined : resolvedActualFxRate,
             actualAmountEur: isEurPayment ? undefined : actualAmountEurNumber,
             sourceType,
             cashAccountId: sourceType === "cash_account" ? cashAccountId : null,
@@ -466,15 +519,15 @@ function PaymentModal({
                 step="0.000001"
                 min="0.000001"
                 disabled={isEurPayment}
-                value={actualFxRate}
-                onChange={(e) => setActualFxRate(e.target.value)}
+                value={actualFxForeignPerEur}
+                onChange={(e) => setActualFxForeignPerEur(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-500"
-                placeholder="Ej. 0.92"
+                placeholder="Ej. 1.17"
               />
               <span className="mt-1 block text-[11px] font-normal text-slate-500">
                 {isEurPayment
                   ? "Pago en EUR, no requiere tipo de cambio."
-                  : "1 unidad de moneda origen = X EUR."}
+                  : `1 EUR = X ${event.originalCurrency}. Se conserva el inverso en actual_fx_rate legacy.`}
               </span>
             </label>
             <label className="text-xs font-medium text-slate-600">
@@ -679,23 +732,79 @@ function EventCard({
   event,
   onMarkPaid,
   onViewBatch,
+  onPayMaturity,
 }: {
   event: FinancePlanningEvent;
   onMarkPaid: (event: FinancePlanningEvent) => void;
   onViewBatch: (batchId: string) => void;
+  onPayMaturity: (event: FinancePlanningEvent) => void;
 }) {
   const canMarkSupplierPayment =
     event.canMarkPaid && event.status !== "pagado" && isSupplierPaymentEvent(event);
   const financeLabel = supplierPaymentFinanceLabel(event);
   const isCreditLineMaturity = event.type === "credit_line_maturity";
+  const isPlannedCreditMaturity = event.type === "credit_line_planned_maturity";
   const isCreditLineInfo = event.type === "credit_line_release";
-  const isCreditLineEvent = isCreditLineMaturity || isCreditLineInfo;
+  const isCreditLineEvent = isCreditLineMaturity || isPlannedCreditMaturity || isCreditLineInfo;
   const showSupplierPaymentTrace = isSupplierPaymentEvent(event);
+
+  if (isPlannedCreditMaturity) {
+    return (
+      <article className={`bg-white border border-slate-200 border-l-4 ${eventAccent(event)} rounded-lg p-3 shadow-sm`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0"><div className="mb-1 text-[10px] font-bold tracking-wide text-indigo-600">{eventCategoryLabel(event)}</div><div className="flex items-center gap-2 text-xs text-slate-500"><CalendarDays className="h-3.5 w-3.5" /><span>{dateLabel(event.date)}</span></div><h3 className="mt-1 truncate text-sm font-semibold text-slate-900">{event.title}</h3><p className="text-xs text-slate-500">{event.creditLineBank} / {event.creditLineName}</p></div>
+          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusClass(event.status)}`}>{event.status}</span>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+          <div><div className="text-slate-400">Principal previsto</div><b>{eur(event.plannedPrincipalEur ?? 0)}</b></div>
+          <div><div className="text-slate-400">Salida total prevista</div><b>{eur(event.plannedCashOutEur ?? 0)}</b></div>
+          <div><div className="text-slate-400">Intereses previstos</div><b>{knownEur(event.expectedInterestEur)}</b></div>
+          <div><div className="text-slate-400">Comisiones previstas</div><b>{knownEur(event.expectedFeesEur)}</b></div>
+          <div><div className="text-slate-400">Crédito previsto a liberar</div><b>{eur(event.plannedCreditReleaseEur ?? 0)}</b></div>
+          <div><div className="text-slate-400">Estado de la previsión</div><b>{event.status === "vencido" ? "vencido" : "previsto"}</b></div>
+        </div>
+        {event.plannedMaturityReference ? <div className="mt-2 text-[11px] text-slate-500">Referencia: {event.plannedMaturityReference}</div> : null}
+      </article>
+    );
+  }
+
+  if (event.isLegacyOpeningBalance && (isCreditLineMaturity || event.type === "credit_line_repayment_settlement")) {
+    const principal = isCreditLineMaturity
+      ? event.remainingAmountEur ?? event.plannedAmountEur
+      : event.plannedPrincipalEur ?? event.plannedAmountEur;
+    const totalKnown = principal + (event.expectedInterestEur ?? 0) + (event.expectedFeesEur ?? 0);
+    const stateLabel = event.status === "parcial"
+      ? "parcialmente pagado"
+      : event.status;
+    return (
+      <article className={`rounded-lg border border-slate-200 border-l-4 ${eventAccent(event)} bg-white p-3 shadow-sm`}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="mb-1 text-[10px] font-bold tracking-wide text-indigo-700">CRÉDITO · DEUDA INICIAL</div>
+            <div className="flex items-center gap-2 text-xs text-slate-500"><CalendarDays className="h-3.5 w-3.5" />{dateLabel(event.date)}</div>
+            <h3 className="mt-1 text-sm font-semibold text-slate-900">{event.creditLineBank}</h3>
+            <p className="text-xs text-slate-500">{event.creditLineName}</p>
+          </div>
+          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusClass(event.status)}`}>{stateLabel}</span>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+          <div><div className="text-slate-400">Principal {isCreditLineMaturity ? "pendiente" : "pagado"}</div><b>{eur(principal)}</b></div>
+          <div><div className="text-slate-400">Intereses conocidos</div><b>{knownEur(event.expectedInterestEur)}</b></div>
+          <div><div className="text-slate-400">Comisiones conocidas</div><b>{knownEur(event.expectedFeesEur)}</b></div>
+          <div><div className="text-slate-400">Total conocido</div><b>{eur(totalKnown)}</b></div>
+        </div>
+        {isCreditLineMaturity && event.canRepay ? (
+          <div className="mt-3 flex justify-end"><button type="button" onClick={() => onPayMaturity(event)} className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">Pagar y liberar</button></div>
+        ) : null}
+      </article>
+    );
+  }
 
   return (
     <article className={`bg-white border border-slate-200 border-l-4 ${eventAccent(event)} rounded-lg p-3 shadow-sm`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
+          <div className="mb-1 text-[10px] font-bold tracking-wide text-slate-600">{eventCategoryLabel(event)}</div>
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <CalendarDays className="h-3.5 w-3.5" />
             <span>{dateLabel(event.date)}</span>
@@ -762,14 +871,14 @@ function EventCard({
         <div className="mt-2 text-[11px] text-slate-500">
           {event.creditLineBank} / {event.creditLineName}
           {isCreditLineInfo ? " - Sin vencimiento generado todavia" : ""}
-          {isCreditLineMaturity ? " - Ver seccion Vencimientos de lineas para pagar" : ""}
+          {isCreditLineMaturity ? " - Operable desde este evento" : ""}
         </div>
       ) : (
         <div className="mt-2 text-[11px] text-slate-500">
           {showSupplierPaymentTrace
-            ? event.plannedAmountEur > 0
-              ? `Estimación EUR legacy: ${eur(event.plannedAmountEur)}`
-              : "Sin estimación EUR"
+            ? event.plannedFxPending
+              ? "FX pendiente de regularización · la deuda no se considera cero"
+              : `EUR pendiente estimado: ${eur(event.estimatedPendingEur ?? event.plannedAmountEur)} · Coste provisional: ${eur(event.provisionalCostEur ?? event.plannedAmountEur)}`
             : `Cambio previsto: ${event.plannedFxRate ?? "pendiente"}`}
         </div>
       )}
@@ -777,7 +886,7 @@ function EventCard({
         <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-2 text-[11px] text-slate-600">
           <div>
             <span className="block text-slate-400">Tipo de cambio real</span>
-            <b>{event.actualFxRate ?? "-"}{event.actualFxRateIsWeighted ? " (medio ponderado)" : ""}</b>
+            <b>{event.actualFxForeignPerEur != null ? `1 EUR = ${event.actualFxForeignPerEur} ${event.originalCurrency}` : event.actualFxRate != null ? `${event.actualFxRate} EUR por ${event.originalCurrency} (legacy)` : "-"}{event.actualFxRateIsWeighted ? " (medio ponderado informativo)" : ""}</b>
           </div>
           <div>
             <span className="block text-slate-400">Fecha efectiva</span>
@@ -822,7 +931,9 @@ function EventCard({
               Ver pagos vinculados
             </button>
           ) : null}
-          {canMarkSupplierPayment ? (
+          {isCreditLineMaturity && event.canRepay ? (
+            <button type="button" onClick={() => onPayMaturity(event)} className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">Pagar y liberar</button>
+          ) : canMarkSupplierPayment ? (
             <button
               onClick={() => onMarkPaid(event)}
               className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
@@ -845,10 +956,10 @@ export function FinancialPlanningPage() {
     useState<FinancePlanningEvent | null>(null);
   const [linkedPaymentOpen, setLinkedPaymentOpen] = useState(false);
   const [detailBatchId, setDetailBatchId] = useState<string | null>(null);
+  const [maturityPaymentEvent, setMaturityPaymentEvent] = useState<FinancePlanningEvent | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [filters, setFilters] = useState<FinanceFiltersState>(EMPTY_FILTERS);
   const [urlFiltersReady, setUrlFiltersReady] = useState(false);
-  const [maturitiesReloadKey, setMaturitiesReloadKey] = useState(0);
 
   const loadPlanning = useCallback(async () => {
     setLoading(true);
@@ -884,7 +995,6 @@ export function FinancialPlanningPage() {
 
   const refreshAfterCreditLineRepayment = useCallback(async (message: string) => {
     await reloadPlanning();
-    setMaturitiesReloadKey((key) => key + 1);
     setSuccessMessage(message);
   }, [reloadPlanning]);
 
@@ -893,7 +1003,6 @@ export function FinancialPlanningPage() {
     reference: string | null,
   ) => {
     await reloadPlanning();
-    setMaturitiesReloadKey((key) => key + 1);
     setSuccessMessage(
       `Pago proveedor registrado (${reference || batchId || "sin referencia"}). Planificación y saldos actualizados.`,
     );
@@ -902,7 +1011,6 @@ export function FinancialPlanningPage() {
   const refreshAfterLinkedPayment = useCallback(async (batchId: string, reference: string | null) => {
     try {
       await reloadPlanning();
-      setMaturitiesReloadKey((key) => key + 1);
       setSuccessMessage(
         `Pago vinculado registrado (${reference || batchId}). Planificación y saldos actualizados.`,
       );
@@ -1026,6 +1134,11 @@ export function FinancialPlanningPage() {
             <p className="mt-1 text-sm text-slate-500">
               Pagos de contenedores, liberaciones de lineas e ingresos previstos. No se recomienda por coste hasta configurar comisiones/intereses.
             </p>
+            <p className={`mt-1 text-xs ${data.amazonSync?.stale ? "text-amber-700" : "text-emerald-700"}`}>
+              {data.amazonSync?.stale
+                ? `Amazon: datos de ${data.amazonSync.lastSuccessfulAmazonSyncAt ? new Date(data.amazonSync.lastSuccessfulAmazonSyncAt).toLocaleString("es-ES") : "sin sincronizacion previa"} · actualizacion pendiente`
+                : `Amazon actualizado: ${data.amazonSync?.lastSuccessfulAmazonSyncAt ? new Date(data.amazonSync.lastSuccessfulAmazonSyncAt).toLocaleString("es-ES") : "ahora"}`}
+            </p>
             <button
               type="button"
               onClick={() => setLinkedPaymentOpen(true)}
@@ -1053,17 +1166,41 @@ export function FinancialPlanningPage() {
               </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-[11px] text-slate-500">Caja propia</div>
+              <div className="text-[11px] text-slate-500">Caja operativa real</div>
               <div className="text-sm font-bold text-slate-900">{eur(data.summary.cashBalance)}</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3">
+              <div className="text-[11px] text-slate-500">Reserva / disponible sobre reserva</div>
+              <div className="text-sm font-bold text-slate-900">{eur(data.summary.minimumOperatingReserveEur)} / {eur(data.summary.operatingCashAvailableAboveReserveEur)}</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3">
+              <div className="text-[11px] text-slate-500">Estado tesoreria</div>
+              <div className="text-sm font-bold uppercase text-indigo-700">{data.summary.treasuryEvaluation.status}</div>
+              <div className="mt-1 text-[10px] text-slate-500">{data.summary.treasuryEvaluation.recommendation}</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3">
+              <div className="text-[11px] text-slate-500">Amazon disponible</div>
+              <div className="text-sm font-bold text-slate-900">{eur(data.summary.amazonAvailable)}</div>
+              <div className="mt-1 text-[10px] text-slate-500">{data.summary.amazonAvailableSource}</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3">
+              <div className="text-[11px] text-slate-500">Amazon previsto</div>
+              <div className="text-sm font-bold text-sky-700">{eur(data.summary.amazonExpected)}</div>
+              <div className="mt-1 text-[10px] text-slate-500">{data.summary.amazonExpectedNetRatio == null ? "Neto bancario no disponible hasta disponer de evidencia histórica suficiente." : `Ventas estimadas × ratio neto histórico configurado ${Math.round(data.summary.amazonExpectedNetRatio * 100)} %.`} No modifica caja.</div>
             </div>
           </div>
         </header>
 
-        <CreditLineMaturitiesSection
-          key={maturitiesReloadKey}
-          cashAccounts={data.cashAccounts}
-          onRepaid={refreshAfterCreditLineRepayment}
-        />
+        <section className="rounded-xl border border-slate-200 bg-white p-4">
+          <h2 className="text-sm font-semibold text-slate-900">Amazon · previsión de caja por marketplace</h2>
+          <p className="mt-1 text-xs text-slate-500">La fecha bancaria esperada gobierna el mes. DEFERRED y FUTURE sin evidencia histórica quedan fuera de escenarios; no modifican caja real.</p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {data.amazonCashForecast.marketplaceCards.map(card=><div key={card.marketplace} className="rounded-lg border border-slate-200 p-3 text-xs"><div className="font-bold text-slate-900">{card.marketplace}</div><div className="mt-2">Disponible positivo: <b>{knownEur(card.availablePositiveEur)}</b></div><div>Disponible neto: <b>{knownEur(card.availableEur)}</b></div><div>Diferido conocido: <b>{knownEur(card.deferredEur)}</b></div><div>Pendiente banco: <b>{knownEur(card.pendingBankEur)}</b></div><div>Futuro: <b>{eur(card.futureEur)}</b></div><div className="mt-1 text-[10px] text-slate-500">Banco esperado: {card.expectedBankDate??"no disponible"} · {card.confidence}</div><div className="mt-1 text-[10px] text-slate-500">FX: {card.fxSources.join(", ")||"no disponible"} · snapshot: {card.lastSnapshotAt?new Date(card.lastSnapshotAt).toLocaleString("es-ES"):"no disponible"}</div></div>)}
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-3">
+            {data.amazonCashForecast.monthlyScenarios.map(row=><div key={row.month} className="rounded-lg bg-slate-50 p-3 text-xs"><b>{row.month}</b><div>Conservador {eur(row.conservative)} · Base {eur(row.base)} · Optimista {eur(row.optimistic)}</div><div className="text-[10px] text-slate-500">Observado {eur(row.observed)} · estimado con evidencia {eur(row.estimated)}</div></div>)}
+          </div>
+        </section>
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           {data.creditLines.map((line) => {
@@ -1079,23 +1216,31 @@ export function FinancialPlanningPage() {
                 </div>
                 <Landmark className="h-5 w-5 text-slate-400" />
               </div>
-              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                 <div><span className="block text-slate-400">Limite</span><b>{eur(line.creditLimit)}</b></div>
-                <div><span className="block text-slate-400">Usado</span><b>{eur(line.usedAmount)}</b></div>
+                <div><span className="block text-slate-400">Usado real</span><b>{eur(line.usedAmount)}</b></div>
                 <div>
                   <span className="block text-slate-400">
-                    {allowsDrawdown ? "Libre" : "Libre (no usable)"}
+                    {allowsDrawdown ? "Disponible real" : "Disponible (no usable)"}
                   </span>
                   <b className={allowsDrawdown ? undefined : "text-slate-400"}>
                     {eur(line.availableAmount)}
                   </b>
                 </div>
+                <div><span className="block text-slate-400">Liberacion prevista</span><b>{eur(line.plannedReleaseDuringHorizon ?? 0)}</b></div>
               </div>
+              {(line.scheduledExcessEur ?? 0) > 0 ? <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-800">Exceso calendarizado: {eur(line.scheduledExcessEur ?? 0)}. Es una alerta, no credito disponible.</p> : null}
+              <p className="mt-2 text-[11px] text-slate-500">Solo el disponible real autoriza nuevas disposiciones. Las liberaciones previstas no pueden anticiparse.</p>
               <p className="mt-3 text-[11px] text-slate-500">
                 {line.cycleDays ? `Ciclo aprox. ${line.cycleDays} dias.` : "Fechas configuradas"} Coste pendiente de configurar.
               </p>
               {debtNote ? (
                 <p className="mt-2 text-[11px] text-amber-800">{debtNote}</p>
+              ) : null}
+              {line.legacyGap ? (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                  <div className="font-semibold">Deuda inicial pendiente de migración: {eur(line.legacyGap.unexplainedAmount)}</div>
+                </div>
               ) : null}
             </div>
             );
@@ -1194,10 +1339,17 @@ export function FinancialPlanningPage() {
                   <Clock className="h-5 w-5 text-slate-300" />
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-200">
-                  <span>Pendiente: {eur(month.totalPendingPayments)}</span>
-                  <span>Pagado: {eur(month.totalPaidPayments)}</span>
-                  <span>Ingresos: {eur(month.totalIncome)}</span>
-                  <span>Liberaciones: {eur(month.totalCreditReleases)}</span>
+                  <div><b className="text-white">Pendiente: {eur(month.pendingBreakdown.total)}</b><div>Lineas {eur(month.pendingBreakdown.lines)}</div><div>Depositos {eur(month.pendingBreakdown.deposits)}</div><div>Balances {eur(month.pendingBreakdown.balances)}</div><div>Otros {eur(month.pendingBreakdown.others)}</div></div>
+                  <div><b className="text-white">Pagado: {eur(month.paidBreakdown.total)}</b><div>Lineas {eur(month.paidBreakdown.lines)}</div><div>Depositos {eur(month.paidBreakdown.deposits)}</div><div>Balances {eur(month.paidBreakdown.balances)}</div><div>Otros {eur(month.paidBreakdown.others)}</div></div>
+                  <span>Amazon disponible: {eur(month.amazonAvailableEur)}</span>
+                  <span>Amazon pendiente banco: {eur(month.amazonPendingBankEur)}</span>
+                  <span>Amazon diferido: {eur(month.amazonDeferredEur)}</span>
+                  <span>Amazon futuro: {eur(month.amazonFutureEur)}</span>
+                  <span>Amazon recibido: {eur(month.amazonReceivedEur)}</span>
+                  {month.hasUnvaluedForeignDebt ? <span className="text-amber-300">FX pendiente: {month.pendingFxObligations} obligación(es), importe EUR no valorado</span> : null}
+                  <span>Liberacion prevista: {eur(month.totalCreditReleases)}</span>
+                  <span>Intereses: {combinedKnownEur(month.recordedInterestEur, month.plannedCreditInterestEur)}</span>
+                  <span>Comisiones: {combinedKnownEur(month.recordedFeesEur, month.plannedCreditFeesEur)}</span>
                 </div>
               </div>
               <div className="px-4 py-3 border-b border-slate-200 grid grid-cols-2 gap-2 text-xs bg-white">
@@ -1207,7 +1359,7 @@ export function FinancialPlanningPage() {
                 </div>
                 <div className="flex items-center gap-2 text-slate-600">
                   <CreditCard className="h-4 w-4" />
-                  Credito: <b>{eur(month.projectedCreditAvailable)}</b>
+                  Disponible real actual: <b>{eur(month.projectedCreditAvailable)}</b>
                 </div>
               </div>
               <div className="p-3 space-y-3 min-h-44">
@@ -1222,6 +1374,7 @@ export function FinancialPlanningPage() {
                       event={event}
                       onMarkPaid={openSupplierPaymentModal}
                       onViewBatch={setDetailBatchId}
+                      onPayMaturity={setMaturityPaymentEvent}
                     />
                   ))
                 )}
@@ -1243,6 +1396,7 @@ export function FinancialPlanningPage() {
                   event={event}
                   onMarkPaid={openSupplierPaymentModal}
                   onViewBatch={setDetailBatchId}
+                  onPayMaturity={setMaturityPaymentEvent}
                 />
               ))}
             </div>
@@ -1256,7 +1410,7 @@ export function FinancialPlanningPage() {
           </div>
           <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-600">
             <p>La recomendacion usa disponibilidad suficiente y prioridad configurada, no coste.</p>
-            <p>Una linea no se usa para pagar otra linea; las liberaciones salen de caja propia.</p>
+            <p>Una linea puede refinanciar un vencimiento mediante el flujo atomico existente.</p>
             <p>La caja propia se reserva para liberar lineas y cubrir pagos no financiables.</p>
           </div>
         </section>
@@ -1281,6 +1435,18 @@ export function FinancialPlanningPage() {
         <PurchasePaymentBatchDetailModal
           batchId={detailBatchId}
           onClose={() => setDetailBatchId(null)}
+        />
+      ) : null}
+      {maturityPaymentEvent ? (
+        <CreditLineMaturityPaymentModal
+          maturity={eventToMaturity(maturityPaymentEvent)}
+          cashAccounts={data.cashAccounts}
+          creditLines={data.creditLines}
+          onClose={() => setMaturityPaymentEvent(null)}
+          onSaved={async (message) => {
+            setMaturityPaymentEvent(null);
+            await refreshAfterCreditLineRepayment(message);
+          }}
         />
       ) : null}
     </main>

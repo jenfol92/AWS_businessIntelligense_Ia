@@ -14,13 +14,11 @@ import type { InventoryContext } from "./loadInventoryContext";
 import {
   avgDaily,
   countryRisk,
-  countryStockTotal,
   coverageDays,
   productRisk,
   salesKey,
   salesKeyGlobal,
 } from "./inventoryMetrics";
-import { resolveChannelScope } from "./inventoryScope";
 
 let snapshotAlignmentLogCount = 0;
 
@@ -29,9 +27,6 @@ function stockTotalForCurrentChannel(params: {
   stockFba: number;
   stockFbm: number;
 }): number {
-  const channelScope = resolveChannelScope(params.canal);
-  if (channelScope.filter === "AMAZON_FBA") return params.stockFba;
-  if (channelScope.filter === "AMAZON_FBM") return params.stockFbm;
   return params.stockFba + params.stockFbm;
 }
 
@@ -49,32 +44,66 @@ export function buildCountryRowsForProduct(
   ctx: InventoryContext,
 ): InventoryCountryStockRow[] {
   const rows = ctx.inventoryRows.filter((r) => r.producto_id === productId);
+  const fbaRows = ctx.fbaInventoryCountryLatest.get(productId) ?? [];
   const countries: InventoryCountryStockRow[] = [];
+  const countryCodes = new Set<string>();
 
+  for (const fba of fbaRows) countryCodes.add(fba.pais);
   for (const inv of rows) {
-    const stockFba = Number(inv.stock_fba ?? 0);
-    const stockFbm = Number(inv.stock_fbm ?? 0);
-    const stockTotal = countryStockTotal(
+    if (Number(inv.stock_fbm ?? 0) > 0) {
+      countryCodes.add(inv.pais);
+    }
+  }
+
+  for (const pais of Array.from(countryCodes).sort((a, b) => a.localeCompare(b))) {
+    const inv = rows.find((r) => r.pais === pais);
+    const fba = fbaRows.find((r) => r.pais === pais);
+    const stockFbaApp = Number(inv?.stock_fba ?? 0);
+    const stockFba = fba?.stockSellable ?? 0;
+    const stockFbaUnsellable = fba?.stockUnsellable ?? 0;
+    const stockFbaPhysicalTotal = fba?.stockTotal ?? 0;
+    const stockFbm = Number(inv?.stock_fbm ?? 0);
+    const stockTotal = stockTotalForCurrentChannel({
+      canal: ctx.canal,
       stockFba,
       stockFbm,
-      inv.stock_pais,
-      ctx.canal,
-    );
+    });
     const sales =
-      ctx.sales.byProductCountry.get(salesKey(productId, inv.pais)) ??
-      ({ units30: 0, units90: 0 } as SalesAgg);
-    const avg30 = avgDaily(sales.units30, 30);
+      ctx.sales.byProductCountry.get(salesKey(productId, pais)) ??
+      ({ unitsPeriod: 0, units30: 0, units90: 0 } as SalesAgg);
+    const marketplaceSales = ctx.marketplaceSales.byProductMarketplace.get(
+      salesKey(productId, pais),
+    );
+    const salesUnitsPeriod = sales.unitsPeriod ?? sales.units30;
+    const avgPeriod = avgDaily(salesUnitsPeriod, ctx.periodDays);
+    const avg30 = avgDaily(salesUnitsPeriod, ctx.periodDays);
     const avg90 = avgDaily(sales.units90, 90);
-    const avgUsed = Math.max(avg30, avg90);
+    const avgUsed = avgPeriod;
     const cov = coverageDays(stockTotal, avgUsed);
 
     countries.push({
-      pais: inv.pais,
+      pais,
       stockFba,
+      stockFbaUnsellable,
+      stockFbaPhysicalTotal,
+      stockFbaApp,
+      stockFbaLedgerSnapshotDate: fba?.snapshotDate ?? null,
+      stockFbaLastImportedAt: fba?.lastImportedAt ?? null,
+      stockFbaLedgerStale: fba?.isStale ?? false,
+      stockFbaLedgerStaleDays: fba?.staleDays ?? null,
       stockFbm,
       stockTotal,
+      salesUnitsPeriod,
       salesUnits30: sales.units30,
       salesUnits90: sales.units90,
+      marketplaceSalesUnits30: marketplaceSales?.units30 ?? 0,
+      marketplaceSalesUnits90: marketplaceSales?.units90 ?? 0,
+      marketplaceSalesAmount30: marketplaceSales?.amount30 ?? 0,
+      marketplaceSalesAmount90: marketplaceSales?.amount90 ?? 0,
+      marketplaceSalesChannels: marketplaceSales?.salesChannels ?? [],
+      marketplaceDeliveryBreakdown:
+        marketplaceSales?.deliveryBreakdown ?? [],
+      avgDailyPeriod: avgPeriod,
       avgDaily30: avg30,
       avgDaily90: avg90,
       coverageDays: cov,
@@ -96,78 +125,79 @@ export function buildProductSummary(
     : undefined;
   const stockView = ctx.stockSuggestions.get(product.id);
   const countries = buildCountryRowsForProduct(product.id, ctx);
-  const fbaSnapshot = ctx.fbaInventorySnapshotLatest.get(product.id);
-  const hasFbaSnapshot = fbaSnapshot != null;
+  const hasLedgerCountryRows = countries.some(
+    (country) => country.stockFbaLedgerSnapshotDate != null,
+  );
 
   let stockFba = 0;
   let stockFbm = 0;
   let stockTotal = 0;
-  let legacyFba = 0;
+  const legacyFba = stockView?.stock_fba ?? 0;
 
-  if (stockView) {
-    legacyFba = stockView.stock_fba;
+  if (hasLedgerCountryRows) {
+    for (const c of countries) {
+      stockFba += c.stockFba;
+      stockFbm += c.stockFbm;
+    }
+    stockTotal = stockFba + stockFbm;
+  } else if (stockView) {
     stockFba = legacyFba;
     stockFbm = stockView.stock_fbm;
     stockTotal = stockView.stock_actual;
   } else {
     for (const c of countries) {
-      legacyFba += c.stockFba;
       stockFba += c.stockFba;
       stockFbm += c.stockFbm;
-      stockTotal += c.stockTotal;
     }
+    stockTotal = stockFba + stockFbm;
   }
 
-  const stockFbaOperationalSource = hasFbaSnapshot
-    ? "SP-API FBA Inventory"
+  const latestLedgerDate =
+    countries
+      .map((country) => country.stockFbaLedgerSnapshotDate)
+      .filter(Boolean)
+      .sort()
+      .at(-1) ?? null;
+  const canonicalFbaOperationalSource = hasLedgerCountryRows
+    ? "Inventory Ledger Amazon"
     : stockView
-      ? "Legacy país"
-      : "Fallback país/ledger";
+      ? "Legacy pais"
+      : "Sin fuente FBA";
 
-  if (hasFbaSnapshot) {
-    stockFba = fbaSnapshot.fulfillableQuantity;
-    stockTotal = stockTotalForCurrentChannel({
-      canal: ctx.canal,
-      stockFba,
-      stockFbm,
+  if (
+    hasLedgerCountryRows &&
+    process.env.NODE_ENV === "development" &&
+    snapshotAlignmentLogCount < 10 &&
+    legacyFba !== stockFba
+  ) {
+    snapshotAlignmentLogCount += 1;
+    console.log("[inventory] stock summary aligned with FBA ledger", {
+      productId: product.id,
+      sku: product.sku,
+      legacyFba,
+      ledgerFba: stockFba,
+      stockOperationalTotal: stockTotal,
+      source: canonicalFbaOperationalSource,
     });
-    if (
-      process.env.NODE_ENV === "development" &&
-      snapshotAlignmentLogCount < 10 &&
-      legacyFba !== stockFba
-    ) {
-      snapshotAlignmentLogCount += 1;
-      console.log("[inventory] stock summary aligned with FBA snapshot", {
-        productId: product.id,
-        sku: product.sku,
-        legacyFba,
-        snapshotFba: stockFba,
-        stockOperationalTotal: stockTotal,
-        source: stockFbaOperationalSource,
-      });
-    }
   }
 
   const globalSales =
     ctx.sales.byProductGlobal.get(salesKeyGlobal(product.id)) ??
-    ({ units30: 0, units90: 0 } as SalesAgg);
+    ({ unitsPeriod: 0, units30: 0, units90: 0 } as SalesAgg);
 
   const hasHistory = globalSales.units90 > 0;
   const hasBenchmark = ctx.benchmarkIds.has(product.id);
   const inboundRows = ctx.inbound.get(product.id) ?? [];
   const hasInbound = inboundRows.length > 0;
-  const avgDailyDemand = Math.max(
-    avgDaily(globalSales.units30, 30),
-    avgDaily(globalSales.units90, 90),
-  );
+  const salesUnitsPeriod = globalSales.unitsPeriod ?? globalSales.units30;
+  const avgDailyDemand = avgDaily(salesUnitsPeriod, ctx.periodDays);
 
-  const coverage =
-    hasFbaSnapshot
-      ? coverageDays(stockTotal, avgDailyDemand)
-      : stockView?.dias_cobertura ?? coverageDays(stockTotal, avgDailyDemand);
+  const coverage = hasLedgerCountryRows
+    ? coverageDays(stockTotal, avgDailyDemand)
+    : stockView?.dias_cobertura ?? coverageDays(stockTotal, avgDailyDemand);
   const countryRisks = countries.map((c) => c.risk);
-  const risk = hasFbaSnapshot
-    ? countryRisk(stockTotal, coverage)
+  const risk = hasLedgerCountryRows
+    ? productRisk(countryRisks, undefined)
     : productRisk(countryRisks, stockView?.riesgo);
 
   return {
@@ -183,14 +213,13 @@ export function buildProductSummary(
     stockTotal,
     stockFba,
     stockFbm,
-    stockFbaOperationalSource,
-    stockFbaLatestSnapshot: fbaSnapshot?.fulfillableQuantity ?? null,
-    stockFbaLatestSnapshotAt: fbaSnapshot?.snapshotAt ?? null,
+    stockFbaOperationalSource: canonicalFbaOperationalSource,
+    stockFbaLatestSnapshot: hasLedgerCountryRows ? stockFba : null,
+    stockFbaLatestSnapshotAt: latestLedgerDate,
     stockOperationalTotal: stockTotal,
-    stockOperationalSource: hasFbaSnapshot
-      ? "SP-API FBA Inventory"
-      : stockFbaOperationalSource,
-    hasFbaSnapshot,
+    stockOperationalSource: canonicalFbaOperationalSource,
+    hasFbaSnapshot: hasLedgerCountryRows,
+    salesUnitsPeriod,
     salesUnits30: globalSales.units30,
     salesUnits90: globalSales.units90,
     coverageDays: coverage,

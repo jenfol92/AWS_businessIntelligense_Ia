@@ -105,15 +105,55 @@ export type InventoryExplanationCode =
 
 export type InventoryCountryStockRow = {
   pais: string;
+  /** FBA sellable stock from latest Inventory Ledger location snapshot. */
   stockFba: number;
+  /** FBA unsellable stock from latest Inventory Ledger location snapshot. */
+  stockFbaUnsellable: number;
+  /** FBA sellable + unsellable physical stock from latest Inventory Ledger. */
+  stockFbaPhysicalTotal: number;
+  /** Legacy/persisted country FBA stock kept for audit comparisons. */
+  stockFbaApp: number;
+  stockFbaLedgerSnapshotDate: string | null;
+  stockFbaLastImportedAt: string | null;
+  stockFbaLedgerStale: boolean;
+  stockFbaLedgerStaleDays: number | null;
   stockFbm: number;
   stockTotal: number;
+  /** FBA shipped units by customer delivery country (ventas_diarias.pais). */
+  salesUnitsPeriod: number;
   salesUnits30: number;
   salesUnits90: number;
+  /** FBA shipped units grouped by Amazon sales marketplace (raw sales-channel). */
+  marketplaceSalesUnits30: number;
+  marketplaceSalesUnits90: number;
+  marketplaceSalesAmount30: number;
+  marketplaceSalesAmount90: number;
+  marketplaceSalesChannels: string[];
+  marketplaceDeliveryBreakdown: MarketplaceDeliveryBreakdown[];
+  avgDailyPeriod: number;
   avgDaily30: number;
   avgDaily90: number;
   coverageDays: number | null;
   risk: InventoryRiskLevel;
+  priceToday?: number | null;
+  priceTodayUnits?: number | null;
+  priceTopPeriod?: number | null;
+  priceTopPeriodUnits?: number | null;
+  priceTop30d?: number | null;
+  priceTop30dUnits?: number | null;
+  priceTop90d?: number | null;
+  priceTop90dUnits?: number | null;
+};
+
+export type InventoryCountryPriceChannel = "ALL" | "FBA" | "FBM";
+
+export type InventoryCountryPriceDistributionRow = {
+  unitPrice: number;
+  units: number;
+  grossAmount: number;
+  percentageUnits?: number;
+  lastSaleDate: string | null;
+  source: string;
 };
 
 export type InventoryProductSummary = {
@@ -135,6 +175,7 @@ export type InventoryProductSummary = {
   stockOperationalTotal?: number | null;
   stockOperationalSource?: string | null;
   hasFbaSnapshot?: boolean;
+  salesUnitsPeriod: number;
   salesUnits30: number;
   salesUnits90: number;
   coverageDays: number | null;
@@ -160,6 +201,66 @@ export type InventoryComparisonResponse = {
   summary: InventoryDashboardSummary;
   categorias: string[];
   proveedores: string[];
+};
+
+export type InventoryDiagnosticsSyncStatus = {
+  jobKey: string;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  lastRowsUpserted: number | null;
+  nextRunHint: string | null;
+} | null;
+
+export type InventoryProductDiagnostics = {
+  productId: string;
+  sku: string;
+  nombre: string;
+  hasFbaSnapshot: boolean;
+  fbaSnapshotUnits: number | null;
+  fbaSnapshotAt: string | null;
+  fbaSnapshotSource: string | null;
+  legacyFbaUnits: number;
+  legacyFbmUnits: number;
+  legacyTotalUnits: number;
+  fbaDifferenceUnits: number | null;
+  fbaDifferenceSeverity: "ok" | "warning" | "critical";
+  sales30Units: number;
+  sales60Units: number;
+  sales90Units: number;
+  hasRecentSales: boolean;
+  hasSalesPreviousYear: boolean;
+  previousYearUnits: number;
+  hasLedger: boolean;
+  ledgerUnits: number | null;
+  ledgerDate: string | null;
+  hasInbound: boolean;
+  inboundUnits: number;
+  hasAmazonInbound: boolean;
+  amazonShipmentIds: string[];
+  hasBenchmark: boolean;
+  hasSupplyConfig: boolean;
+  missingData: string[];
+  warnings: string[];
+  recommendedActions: string[];
+};
+
+export type InventoryDiagnosticsResponse = {
+  ok: true;
+  generatedAt: string;
+  syncStatus: Record<string, InventoryDiagnosticsSyncStatus>;
+  summary: {
+    totalProducts: number;
+    productsWithoutFbaSnapshot: number;
+    productsWithoutRecentSales: number;
+    productsWithoutPreviousYearSales: number;
+    productsWithFbaDifference: number;
+    productsWithInbound: number;
+    productsWithAmazonInbound: number;
+    productsUsingLegacyFbm: number;
+  };
+  products: InventoryProductDiagnostics[];
 };
 
 export type InventoryInboundConfidence = "confirmed" | "provisional";
@@ -304,6 +405,10 @@ export type InventoryProductDetailResponse = {
   /** true cuando el detalle se calculó con overrides temporales (query params). */
   simulationActive?: boolean;
   appliedForecastConfig?: ProductForecastConfigUpsertBody;
+  periodLabel: string;
+  periodDays: number;
+  periodFrom: string;
+  periodTo: string;
 };
 
 export type InventoryComparisonParams = {
@@ -339,8 +444,45 @@ export type InventoryRow = {
 export type OperationalStockSummary = import("../services/resolveOperationalStock").OperationalStockSummary;
 
 export type SalesAgg = {
+  unitsPeriod: number;
   units30: number;
   units90: number;
 };
 
+export type FbaInventoryCountryStockRow = {
+  productoId: string;
+  pais: string;
+  snapshotDate: string;
+  lastImportedAt: string | null;
+  stockSellable: number;
+  stockUnsellable: number;
+  stockTotal: number;
+  isStale: boolean;
+  staleDays: number | null;
+  dispositions: Array<{
+    disposition: string;
+    stock: number;
+  }>;
+};
+
 export type SalesByProductCountry = Map<string, SalesAgg>;
+
+export type MarketplaceDeliveryBreakdown = {
+  shipCountry: string;
+  units30: number;
+  units90: number;
+  amount30: number;
+  amount90: number;
+};
+
+export type MarketplaceSalesAgg = {
+  marketplaceCountry: string;
+  salesChannels: string[];
+  units30: number;
+  units90: number;
+  amount30: number;
+  amount90: number;
+  deliveryBreakdown: MarketplaceDeliveryBreakdown[];
+};
+
+export type MarketplaceSalesByProductCountry = Map<string, MarketplaceSalesAgg>;

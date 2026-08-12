@@ -4,6 +4,8 @@
 // NO calcula reglas de negocio complejas; solo lecturas y agregados básicos.
 
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import { supabaseAdmin } from "@/server/supabase/adminClient";
+import { salesChannelToMarketplaceCountry } from "@/modules/amazon-sp-api/marketplaceMapping";
 import {
   filterRowsByCompetitorSelection,
   resolveSelectionFilterForProduct,
@@ -12,11 +14,16 @@ import { fetchForecastInboundItems } from "@/modules/planner/repositories/foreca
 import { mapForecastInboundToInventoryRow } from "@/modules/planner/services/mapForecastInboundToInventoryRow";
 import type {
   InventoryInboundRow,
+  InventoryCountryPriceChannel,
+  InventoryCountryPriceDistributionRow,
   InventoryLoteRow,
   InventoryRow,
+  FbaInventoryCountryStockRow,
   ProductBaseRow,
   SalesAgg,
   SalesByProductCountry,
+  MarketplaceSalesAgg,
+  MarketplaceSalesByProductCountry,
 } from "../types/inventory.types";
 import type { AmazonSyncJobStatus } from "../services/resolveOperationalStock";
 
@@ -41,6 +48,29 @@ function salesKeyGlobal(productoId: string): string {
   return `${productoId}::__ALL__`;
 }
 
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeIsoDate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const value = raw.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+function addDaysIso(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function normalizeShipCountry(raw: string | null | undefined): string {
+  const value = String(raw ?? "").trim().toUpperCase();
+  if (!value || value === "--") return "UNKNOWN";
+  return value;
+}
+
+
 type AmazonSyncJobRow = {
   job_key: string;
   last_run_at: string | null;
@@ -50,6 +80,18 @@ type AmazonSyncJobRow = {
   last_rows_upserted: number | null;
   next_run_hint: string | null;
 };
+
+function mapAmazonSyncJobRow(row: AmazonSyncJobRow): AmazonSyncJobStatus {
+  return {
+    jobKey: row.job_key,
+    lastRunAt: row.last_run_at,
+    lastSuccessAt: row.last_success_at,
+    lastStatus: row.last_status,
+    lastError: row.last_error,
+    lastRowsUpserted: row.last_rows_upserted,
+    nextRunHint: row.next_run_hint,
+  };
+}
 
 const PRODUCT_BASE_SELECT =
   "id, sku, nombre, estado, proveedor_id, parent_id, stock_seguridad_minimo";
@@ -103,15 +145,39 @@ export async function fetchAmazonSyncJobStatus(
   const row = data as AmazonSyncJobRow | null;
   if (!row) return null;
 
-  return {
-    jobKey: row.job_key,
-    lastRunAt: row.last_run_at,
-    lastSuccessAt: row.last_success_at,
-    lastStatus: row.last_status,
-    lastError: row.last_error,
-    lastRowsUpserted: row.last_rows_upserted,
-    nextRunHint: row.next_run_hint,
-  };
+  return mapAmazonSyncJobRow(row);
+}
+
+export async function fetchAmazonSyncJobStatuses(
+  jobKeys: string[],
+): Promise<Map<string, AmazonSyncJobStatus>> {
+  const result = new Map<string, AmazonSyncJobStatus>();
+  const keys = Array.from(new Set(jobKeys.map((key) => key.trim()).filter(Boolean)));
+  if (keys.length === 0) return result;
+
+  const supabase = createSupabaseRouteClient();
+  const { data, error } = await supabase
+    .from("amazon_sync_jobs")
+    .select(
+      "job_key, last_run_at, last_success_at, last_status, last_error, last_rows_upserted, next_run_hint",
+    )
+    .in("job_key", keys);
+
+  if (error) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[inventory] amazon_sync_jobs statuses unavailable", {
+        jobKeys: keys,
+        error,
+      });
+    }
+    return result;
+  }
+
+  for (const row of (data ?? []) as AmazonSyncJobRow[]) {
+    result.set(row.job_key, mapAmazonSyncJobRow(row));
+  }
+
+  return result;
 }
 
 /** Producto activo seleccionado y su familia minima para el detalle de inventario. */
@@ -204,6 +270,7 @@ export async function fetchSalesAggregates(
   productIds: string[],
   canal: string = "ALL",
   windowDays: number = 30,
+  periodRange?: { fromDate?: string | null; toDate?: string | null },
 ): Promise<{
   byProductCountry: SalesByProductCountry;
   byProductGlobal: Map<string, SalesAgg>;
@@ -217,15 +284,14 @@ export async function fetchSalesAggregates(
 
   const supabase = createSupabaseRouteClient();
   const safeWindow = Math.max(1, Math.min(windowDays, 365));
+  const today = todayIsoDate();
+  const periodTo = normalizeIsoDate(periodRange?.toDate) ?? today;
+  const periodFrom =
+    normalizeIsoDate(periodRange?.fromDate) ?? addDaysIso(periodTo, -(safeWindow - 1));
   const fromDate = new Date();
   fromDate.setDate(fromDate.getDate() - 90);
-  const fromStr = fromDate.toISOString().slice(0, 10);
-  const cutoffWindow = new Date();
-  cutoffWindow.setDate(cutoffWindow.getDate() - safeWindow);
-  const cutoffWindowStr = cutoffWindow.toISOString().slice(0, 10);
-  const cutoff30 = new Date();
-  cutoff30.setDate(cutoff30.getDate() - 30);
-  const cutoff30Str = cutoff30.toISOString().slice(0, 10);
+  const from90Str = fromDate.toISOString().slice(0, 10);
+  const fromStr = periodFrom < from90Str ? periodFrom : from90Str;
 
   const canalNorm =
     canal === "FBA" || canal === "FBM"
@@ -245,6 +311,7 @@ export async function fetchSalesAggregates(
         .from("ventas_diarias")
         .select("producto_id, pais, unidades_vendidas, fecha, canal_venta")
         .gte("fecha", fromStr)
+        .lte("fecha", periodTo)
         .in("producto_id", chunk)
         .order("fecha", { ascending: true })
         .range(offset, offset + pageSize - 1);
@@ -261,15 +328,23 @@ export async function fetchSalesAggregates(
         const units = Number(row.unidades_vendidas ?? 0);
         const pais = row.pais ?? "—";
         const ck = salesKey(pid, pais);
-        const curCountry = byProductCountry.get(ck) ?? { units30: 0, units90: 0 };
-        curCountry.units90 += units;
-        if (row.fecha >= cutoffWindowStr) curCountry.units30 += units;
+        const curCountry =
+          byProductCountry.get(ck) ?? { unitsPeriod: 0, units30: 0, units90: 0 };
+        if (row.fecha >= from90Str) curCountry.units90 += units;
+        if (row.fecha >= periodFrom && row.fecha <= periodTo) {
+          curCountry.unitsPeriod += units;
+          curCountry.units30 += units;
+        }
         byProductCountry.set(ck, curCountry);
 
         const gk = salesKeyGlobal(pid);
-        const curGlobal = byProductGlobal.get(gk) ?? { units30: 0, units90: 0 };
-        curGlobal.units90 += units;
-        if (row.fecha >= cutoffWindowStr) curGlobal.units30 += units;
+        const curGlobal =
+          byProductGlobal.get(gk) ?? { unitsPeriod: 0, units30: 0, units90: 0 };
+        if (row.fecha >= from90Str) curGlobal.units90 += units;
+        if (row.fecha >= periodFrom && row.fecha <= periodTo) {
+          curGlobal.unitsPeriod += units;
+          curGlobal.units30 += units;
+        }
         byProductGlobal.set(gk, curGlobal);
       }
 
@@ -279,6 +354,236 @@ export async function fetchSalesAggregates(
   }
 
   return { byProductCountry, byProductGlobal };
+}
+
+type RawFbaMarketplaceSalesRow = {
+  producto_id: string | null;
+  sale_date: string | null;
+  quantity: number | null;
+  amount: number | null;
+  ship_to_country: string | null;
+  raw: Record<string, unknown> | null;
+};
+
+function emptyMarketplaceSalesAgg(
+  marketplaceCountry: string,
+): MarketplaceSalesAgg {
+  return {
+    marketplaceCountry,
+    salesChannels: [],
+    units30: 0,
+    units90: 0,
+    amount30: 0,
+    amount90: 0,
+    deliveryBreakdown: [],
+  };
+}
+
+function addMarketplaceDeliveryBreakdown(
+  agg: MarketplaceSalesAgg,
+  shipCountry: string,
+  quantity: number,
+  amount: number,
+  in30d: boolean,
+) {
+  const current =
+    agg.deliveryBreakdown.find((row) => row.shipCountry === shipCountry) ??
+    ({
+      shipCountry,
+      units30: 0,
+      units90: 0,
+      amount30: 0,
+      amount90: 0,
+    } satisfies MarketplaceSalesAgg["deliveryBreakdown"][number]);
+
+  current.units90 += quantity;
+  current.amount90 += amount;
+  if (in30d) {
+    current.units30 += quantity;
+    current.amount30 += amount;
+  }
+
+  if (!agg.deliveryBreakdown.some((row) => row.shipCountry === shipCountry)) {
+    agg.deliveryBreakdown.push(current);
+  }
+}
+
+/**
+ * Ventas FBA agrupadas por marketplace de venta (raw sales-channel).
+ * No usa marketplace_id porque puede venir contaminado en históricos.
+ */
+export async function fetchMarketplaceSalesAggregates(
+  productIds: string[],
+  windows: { window30Days?: number; window90Days?: number } = {},
+): Promise<{
+  byProductMarketplace: MarketplaceSalesByProductCountry;
+}> {
+  const byProductMarketplace: MarketplaceSalesByProductCountry = new Map();
+  if (productIds.length === 0) return { byProductMarketplace };
+
+  const supabase = supabaseAdmin;
+  const safe30 = Math.max(1, Math.min(windows.window30Days ?? 30, 365));
+  const safe90 = Math.max(safe30, Math.min(windows.window90Days ?? 90, 365));
+  const from90 = new Date();
+  from90.setDate(from90.getDate() - safe90);
+  const from90Str = from90.toISOString().slice(0, 10);
+  const from30 = new Date();
+  from30.setDate(from30.getDate() - safe30);
+  const from30Str = from30.toISOString().slice(0, 10);
+
+  for (const chunk of chunkArray(productIds, 120)) {
+    let offset = 0;
+    const pageSize = 1000;
+
+    for (;;) {
+      const { data, error } = await supabase
+        .from("amazon_fba_sales_daily_raw")
+        .select("producto_id, sale_date, quantity, amount, ship_to_country, raw")
+        .gte("sale_date", from90Str)
+        .in("producto_id", chunk)
+        .order("sale_date", { ascending: true })
+        .range(offset, offset + pageSize - 1);
+
+      if (error) throw new Error(error.message);
+
+      const rows = (data ?? []) as RawFbaMarketplaceSalesRow[];
+      for (const row of rows) {
+        const productId = row.producto_id;
+        if (!productId || !row.sale_date) continue;
+
+        const raw = row.raw ?? {};
+        const reportType = String(raw.report_type ?? "");
+        if (reportType !== "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL") {
+          continue;
+        }
+
+        const salesChannel = String(raw["sales-channel"] ?? "").trim();
+        const marketplaceCountry =
+          salesChannelToMarketplaceCountry(salesChannel);
+        if (!marketplaceCountry) continue;
+
+        const quantity = Number(row.quantity ?? 0);
+        if (!Number.isFinite(quantity) || quantity === 0) continue;
+        const amount = Number(row.amount ?? 0);
+        const safeAmount = Number.isFinite(amount) ? amount : 0;
+        const key = salesKey(productId, marketplaceCountry);
+        const agg =
+          byProductMarketplace.get(key) ??
+          emptyMarketplaceSalesAgg(marketplaceCountry);
+        const in30d = row.sale_date >= from30Str;
+
+        agg.units90 += quantity;
+        agg.amount90 += safeAmount;
+        if (in30d) {
+          agg.units30 += quantity;
+          agg.amount30 += safeAmount;
+        }
+        if (salesChannel && !agg.salesChannels.includes(salesChannel)) {
+          agg.salesChannels.push(salesChannel);
+          agg.salesChannels.sort((a, b) => a.localeCompare(b));
+        }
+
+        addMarketplaceDeliveryBreakdown(
+          agg,
+          normalizeShipCountry(row.ship_to_country),
+          quantity,
+          safeAmount,
+          in30d,
+        );
+        byProductMarketplace.set(key, agg);
+      }
+
+      if (rows.length < pageSize) break;
+      offset += pageSize;
+    }
+  }
+
+  for (const agg of Array.from(byProductMarketplace.values())) {
+    agg.deliveryBreakdown.sort((a, b) => {
+      if (b.units30 !== a.units30) return b.units30 - a.units30;
+      if (b.units90 !== a.units90) return b.units90 - a.units90;
+      return a.shipCountry.localeCompare(b.shipCountry);
+    });
+  }
+
+  return { byProductMarketplace };
+}
+
+export async function fetchSalesUnitsLastDays(
+  productIds: string[],
+  days: number[],
+  canal: string = "ALL",
+): Promise<Map<string, Record<number, number>>> {
+  const result = new Map<string, Record<number, number>>();
+  const safeDays = Array.from(new Set(days.filter((day) => day > 0))).sort(
+    (a, b) => a - b,
+  );
+  if (productIds.length === 0 || safeDays.length === 0) return result;
+
+  for (const productId of productIds) {
+    result.set(productId, Object.fromEntries(safeDays.map((day) => [day, 0])));
+  }
+
+  const maxDays = Math.max(...safeDays);
+  const fromDate = new Date();
+  fromDate.setDate(fromDate.getDate() - maxDays);
+  const fromStr = fromDate.toISOString().slice(0, 10);
+  const cutoffs = new Map<number, string>();
+  for (const day of safeDays) {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - day);
+    cutoffs.set(day, cutoff.toISOString().slice(0, 10));
+  }
+
+  const canalNorm =
+    canal === "FBA" || canal === "FBM"
+      ? canal
+      : canal === "AMAZON_FBA"
+        ? "FBA"
+        : canal === "AMAZON_FBM"
+          ? "FBM"
+          : null;
+
+  const supabase = createSupabaseRouteClient();
+  for (const chunk of chunkArray(productIds, 120)) {
+    let offset = 0;
+    const pageSize = 1000;
+
+    for (;;) {
+      let q = supabase
+        .from("ventas_diarias")
+        .select("producto_id, unidades_vendidas, fecha, canal_venta")
+        .gte("fecha", fromStr)
+        .in("producto_id", chunk)
+        .order("fecha", { ascending: true })
+        .range(offset, offset + pageSize - 1);
+
+      if (canalNorm) q = q.eq("canal_venta", canalNorm);
+
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+
+      const rows = (data ?? []) as VentasRow[];
+      for (const row of rows) {
+        const productId = row.producto_id;
+        if (!productId) continue;
+        const units = Number(row.unidades_vendidas ?? 0);
+        const current = result.get(productId) ?? {};
+        for (const day of safeDays) {
+          const cutoff = cutoffs.get(day)!;
+          if (row.fecha >= cutoff) {
+            current[day] = Number(current[day] ?? 0) + units;
+          }
+        }
+        result.set(productId, current);
+      }
+
+      if (rows.length < pageSize) break;
+      offset += pageSize;
+    }
+  }
+
+  return result;
 }
 
 export async function fetchProductDetailsMap(productIds: string[]) {
@@ -899,6 +1204,433 @@ type LatestFbaLedgerStockRpcRow = {
   stock_total: number | null;
 };
 
+type RawPriceRow = {
+  unitPrice: number;
+  units: number;
+  grossAmount: number;
+  lastSaleDate: string | null;
+  source: string;
+  country?: string;
+};
+
+function normalizePriceChannelScope(channelScope: string | null | undefined): InventoryCountryPriceChannel {
+  const raw = String(channelScope ?? "ALL").trim().toUpperCase();
+  if (raw === "FBA" || raw === "AMAZON_FBA") return "FBA";
+  if (raw === "FBM" || raw === "AMAZON_FBM") return "FBM";
+  return "ALL";
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function addPriceRowsToDistribution(
+  grouped: Map<string, InventoryCountryPriceDistributionRow>,
+  rows: RawPriceRow[],
+) {
+  for (const row of rows) {
+    if (!Number.isFinite(row.unitPrice) || row.unitPrice <= 0) continue;
+    if (!Number.isFinite(row.units) || row.units === 0) continue;
+    const unitPrice = roundMoney(row.unitPrice);
+    const key = unitPrice.toFixed(2);
+    const current =
+      grouped.get(key) ??
+      ({
+        unitPrice,
+        units: 0,
+        grossAmount: 0,
+        lastSaleDate: null,
+        source: row.source,
+      } satisfies InventoryCountryPriceDistributionRow);
+    current.units += row.units;
+    current.grossAmount += row.grossAmount;
+    if (!current.lastSaleDate || (row.lastSaleDate && row.lastSaleDate > current.lastSaleDate)) {
+      current.lastSaleDate = row.lastSaleDate;
+    }
+    grouped.set(key, current);
+  }
+}
+
+function sortPriceDistribution(
+  rows: InventoryCountryPriceDistributionRow[],
+): InventoryCountryPriceDistributionRow[] {
+  const totalUnits = rows.reduce((sum, row) => sum + row.units, 0);
+  return rows
+    .map((row) => ({
+      ...row,
+      grossAmount: roundMoney(row.grossAmount),
+      percentageUnits: totalUnits > 0 ? roundMoney((row.units / totalUnits) * 100) : 0,
+    }))
+    .sort((a, b) => {
+      if (b.units !== a.units) return b.units - a.units;
+      const dateCmp = String(b.lastSaleDate ?? "").localeCompare(String(a.lastSaleDate ?? ""));
+      if (dateCmp !== 0) return dateCmp;
+      return b.unitPrice - a.unitPrice;
+    });
+}
+
+async function fetchFbaPriceDistributionRows(params: {
+  productId: string;
+  country: string;
+  fromDate: string;
+  toDate?: string | null;
+}): Promise<RawPriceRow[]> {
+  const supabase = supabaseAdmin;
+  const rows: RawPriceRow[] = [];
+  let offset = 0;
+  const pageSize = 1000;
+  if (!params.productId) return rows;
+
+  for (;;) {
+    const { data, error } = await supabase
+      .from("amazon_fba_sales_daily_raw")
+      .select("sale_date, quantity, amount, raw")
+      .eq("producto_id", params.productId)
+      .gte("sale_date", params.fromDate)
+      .lte("sale_date", normalizeIsoDate(params.toDate) ?? todayIsoDate())
+      .not("amount", "is", null)
+      .neq("quantity", 0)
+      .order("sale_date", { ascending: false })
+      .range(offset, offset + pageSize - 1);
+
+    if (error) {
+      if (process.env.NODE_ENV === "development") {
+        console.warn("[inventory-price-distribution] FBA raw query error", {
+          productId: params.productId,
+          country: params.country,
+          fromDate: params.fromDate,
+          error,
+        });
+      }
+      throw new Error(error.message);
+    }
+
+    if (process.env.NODE_ENV === "development") {
+      console.log("[inventory-price-distribution] FBA raw page", {
+        productId: params.productId,
+        country: params.country,
+        fromDate: params.fromDate,
+        offset,
+        rowsRecovered: data?.length ?? 0,
+        emptyWithoutError: (data?.length ?? 0) === 0,
+      });
+    }
+
+    for (const row of data ?? []) {
+      const raw = (row as { raw?: unknown }).raw;
+      const reportType =
+        raw && typeof raw === "object"
+          ? String((raw as Record<string, unknown>).report_type ?? "")
+          : "";
+      if (reportType !== "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL") {
+        continue;
+      }
+
+      const salesChannel =
+        raw && typeof raw === "object"
+          ? String((raw as Record<string, unknown>)["sales-channel"] ?? "").trim()
+          : "";
+      const marketplaceCountry = salesChannelToMarketplaceCountry(salesChannel);
+      if (marketplaceCountry !== params.country) continue;
+
+      const quantity = Number((row as { quantity?: unknown }).quantity ?? 0);
+      const amount = Number((row as { amount?: unknown }).amount ?? 0);
+      if (!Number.isFinite(quantity) || quantity === 0) continue;
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+
+      rows.push({
+        unitPrice: amount / quantity,
+        units: quantity,
+        grossAmount: amount,
+        lastSaleDate: String((row as { sale_date?: unknown }).sale_date ?? "").slice(0, 10),
+        source: "spapi_fba_customer_shipment_sales",
+        country: marketplaceCountry,
+      });
+    }
+
+    if ((data ?? []).length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return rows;
+}
+
+async function fetchStockagilePriceDistributionRows(params: {
+  productId: string;
+  country: string;
+  fromDate: string;
+  toDate?: string | null;
+}): Promise<RawPriceRow[]> {
+  const supabase = supabaseAdmin;
+  const rows: RawPriceRow[] = [];
+  let offset = 0;
+  const pageSize = 1000;
+  if (!params.productId) return rows;
+
+  for (;;) {
+    const { data, error } = await supabase
+      .from("stockagile_orders_raw")
+      .select("order_date, quantity, gross_amount")
+      .eq("producto_id", params.productId)
+      .eq("country", params.country)
+      .eq("source", "stockagile_fbm_sales")
+      .eq("is_twinly", true)
+      .not("producto_id", "is", null)
+      .gte("order_date", params.fromDate)
+      .lte("order_date", normalizeIsoDate(params.toDate) ?? todayIsoDate())
+      .neq("quantity", 0)
+      .order("order_date", { ascending: false })
+      .range(offset, offset + pageSize - 1);
+
+    if (error) {
+      if (
+        String(error.message ?? "").includes("stockagile_orders_raw") ||
+        String(error.code ?? "") === "42P01"
+      ) {
+        return rows;
+      }
+      throw new Error(error.message);
+    }
+
+    for (const row of data ?? []) {
+      const quantity = Number((row as { quantity?: unknown }).quantity ?? 0);
+      const amount = Number((row as { gross_amount?: unknown }).gross_amount ?? 0);
+      if (!Number.isFinite(quantity) || quantity === 0) continue;
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+
+      rows.push({
+        unitPrice: amount / quantity,
+        units: quantity,
+        grossAmount: amount,
+        lastSaleDate: String((row as { order_date?: unknown }).order_date ?? "").slice(0, 10),
+        source: "stockagile_fbm_sales",
+        country: params.country,
+      });
+    }
+
+    if ((data ?? []).length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return rows;
+}
+
+export async function fetchCountryPriceDistribution(params: {
+  productId: string;
+  country: string;
+  channelScope?: string | null;
+  windowDays?: 30 | 90;
+  fromDate?: string | null;
+  toDate?: string | null;
+  limit?: number;
+}): Promise<InventoryCountryPriceDistributionRow[]> {
+  const safeWindow = params.windowDays === 90 ? 90 : 30;
+  const limit = Math.max(1, Math.min(params.limit ?? 20, 100));
+  const toStr = normalizeIsoDate(params.toDate) ?? todayIsoDate();
+  const fromStr = normalizeIsoDate(params.fromDate) ?? addDaysIso(toStr, -(safeWindow - 1));
+  const channel = normalizePriceChannelScope(params.channelScope);
+  const grouped = new Map<string, InventoryCountryPriceDistributionRow>();
+
+  if (process.env.NODE_ENV === "development") {
+    console.log("[inventory-price-distribution] request", {
+      productId: params.productId,
+      country: params.country,
+      channelScope: params.channelScope ?? "ALL",
+      channel,
+      windowDays: safeWindow,
+      fromDate: fromStr,
+    });
+  }
+
+  if (channel === "ALL" || channel === "FBA") {
+    addPriceRowsToDistribution(
+      grouped,
+      await fetchFbaPriceDistributionRows({
+        productId: params.productId,
+        country: params.country,
+        fromDate: fromStr,
+        toDate: toStr,
+      }),
+    );
+  }
+
+  if (channel === "ALL" || channel === "FBM") {
+    addPriceRowsToDistribution(
+      grouped,
+      await fetchStockagilePriceDistributionRows({
+        productId: params.productId,
+        country: params.country,
+        fromDate: fromStr,
+        toDate: toStr,
+      }),
+    );
+  }
+
+  const sorted = sortPriceDistribution(Array.from(grouped.values())).slice(0, limit);
+  if (process.env.NODE_ENV === "development") {
+    console.log("[inventory-price-distribution] result", {
+      productId: params.productId,
+      country: params.country,
+      channel,
+      windowDays: safeWindow,
+      rows: sorted.length,
+      emptyWithoutError: sorted.length === 0,
+    });
+  }
+  return sorted;
+}
+
+export async function fetchTopPriceByProductCountry(params: {
+  productId: string;
+  countries: string[];
+  channelScope?: string | null;
+  fromDate: string;
+  toDate: string;
+}): Promise<Map<string, InventoryCountryPriceDistributionRow>> {
+  const result = new Map<string, InventoryCountryPriceDistributionRow>();
+  const countries = Array.from(
+    new Set(params.countries.map((country) => country.trim().toUpperCase()).filter(Boolean)),
+  );
+  if (!params.productId || countries.length === 0) return result;
+
+  const channel = normalizePriceChannelScope(params.channelScope);
+  const groupedByCountry = new Map<
+    string,
+    Map<string, InventoryCountryPriceDistributionRow>
+  >();
+
+  function addRows(rows: RawPriceRow[]) {
+    for (const row of rows) {
+      const country = row.country?.trim().toUpperCase();
+      if (!country || !countries.includes(country)) continue;
+      const grouped =
+        groupedByCountry.get(country) ??
+        new Map<string, InventoryCountryPriceDistributionRow>();
+      addPriceRowsToDistribution(grouped, [row]);
+      groupedByCountry.set(country, grouped);
+    }
+  }
+
+  if (channel === "ALL" || channel === "FBA") {
+    const supabase = supabaseAdmin;
+    let offset = 0;
+    const pageSize = 1000;
+
+    for (;;) {
+      const { data, error } = await supabase
+        .from("amazon_fba_sales_daily_raw")
+        .select("sale_date, quantity, amount, raw")
+        .eq("producto_id", params.productId)
+        .gte("sale_date", params.fromDate)
+        .lte("sale_date", params.toDate)
+        .not("amount", "is", null)
+        .neq("quantity", 0)
+        .order("sale_date", { ascending: false })
+        .range(offset, offset + pageSize - 1);
+
+      if (error) throw new Error(error.message);
+
+      addRows(
+        (data ?? []).flatMap((row) => {
+          const raw = (row as { raw?: unknown }).raw;
+          const record =
+            raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+          if (
+            String(record.report_type ?? "") !==
+            "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL"
+          ) {
+            return [];
+          }
+
+          const country = salesChannelToMarketplaceCountry(
+            String(record["sales-channel"] ?? "").trim(),
+          );
+          const quantity = Number((row as { quantity?: unknown }).quantity ?? 0);
+          const amount = Number((row as { amount?: unknown }).amount ?? 0);
+          if (!country || !Number.isFinite(quantity) || quantity === 0) return [];
+          if (!Number.isFinite(amount) || amount <= 0) return [];
+
+          return [
+            {
+              unitPrice: amount / quantity,
+              units: quantity,
+              grossAmount: amount,
+              lastSaleDate: String((row as { sale_date?: unknown }).sale_date ?? "").slice(0, 10),
+              source: "spapi_fba_customer_shipment_sales",
+              country,
+            } satisfies RawPriceRow,
+          ];
+        }),
+      );
+
+      if ((data ?? []).length < pageSize) break;
+      offset += pageSize;
+    }
+  }
+
+  if (channel === "ALL" || channel === "FBM") {
+    const supabase = supabaseAdmin;
+    let offset = 0;
+    const pageSize = 1000;
+
+    for (;;) {
+      const { data, error } = await supabase
+        .from("stockagile_orders_raw")
+        .select("order_date, quantity, gross_amount, country")
+        .eq("producto_id", params.productId)
+        .in("country", countries)
+        .eq("source", "stockagile_fbm_sales")
+        .eq("is_twinly", true)
+        .not("producto_id", "is", null)
+        .gte("order_date", params.fromDate)
+        .lte("order_date", params.toDate)
+        .neq("quantity", 0)
+        .order("order_date", { ascending: false })
+        .range(offset, offset + pageSize - 1);
+
+      if (error) {
+        if (
+          String(error.message ?? "").includes("stockagile_orders_raw") ||
+          String(error.code ?? "") === "42P01"
+        ) {
+          break;
+        }
+        throw new Error(error.message);
+      }
+
+      addRows(
+        (data ?? []).flatMap((row) => {
+          const quantity = Number((row as { quantity?: unknown }).quantity ?? 0);
+          const amount = Number((row as { gross_amount?: unknown }).gross_amount ?? 0);
+          if (!Number.isFinite(quantity) || quantity === 0) return [];
+          if (!Number.isFinite(amount) || amount <= 0) return [];
+
+          return [
+            {
+              unitPrice: amount / quantity,
+              units: quantity,
+              grossAmount: amount,
+              lastSaleDate: String((row as { order_date?: unknown }).order_date ?? "").slice(0, 10),
+              source: "stockagile_fbm_sales",
+              country: String((row as { country?: unknown }).country ?? "").trim().toUpperCase(),
+            } satisfies RawPriceRow,
+          ];
+        }),
+      );
+
+      if ((data ?? []).length < pageSize) break;
+      offset += pageSize;
+    }
+  }
+
+  for (const [country, grouped] of Array.from(groupedByCountry.entries())) {
+    const top = sortPriceDistribution(Array.from(grouped.values()))[0];
+    if (top) result.set(country, top);
+  }
+
+  return result;
+}
+
 /**
  * Último snapshot FBA ledger por producto (suma SKUs del día más reciente).
  * Fuente: v_product_fba_stock_daily.
@@ -952,6 +1684,88 @@ type LatestFbaInventorySnapshotRow = {
   unfulfillable_quantity: number | null;
   source: string | null;
 };
+
+type LatestFbaInventoryByCountryViewRow = {
+  producto_id: string | null;
+  pais: string | null;
+  snapshot_date: string | null;
+  last_imported_at: string | null;
+  stock_fba_sellable: number | null;
+  stock_fba_unsellable: number | null;
+  stock_fba_physical_total: number | null;
+  dispositions: unknown;
+  is_stale: boolean | null;
+  stale_days: number | null;
+};
+
+function parseFbaInventoryDispositions(
+  raw: unknown,
+): FbaInventoryCountryStockRow["dispositions"] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const disposition = String(record.disposition ?? "").trim() || "UNKNOWN";
+    const stock = Number(record.stock ?? 0);
+    if (!Number.isFinite(stock)) return [];
+    return [{ disposition, stock }];
+  });
+}
+
+/**
+ * Fuente canónica UI: latest FBA Inventory Ledger by product/country view.
+ * No consulta amazon_fba_inventory_ledger_daily directamente.
+ */
+export async function fetchLatestFbaInventoryByProductCountry(
+  productIds: string[],
+): Promise<Map<string, FbaInventoryCountryStockRow[]>> {
+  const result = new Map<string, FbaInventoryCountryStockRow[]>();
+  if (productIds.length === 0) return result;
+
+  const supabase = createSupabaseRouteClient();
+
+  for (const chunk of chunkArray(productIds, 80)) {
+    const { data, error } = await supabase
+      .from("v_latest_fba_inventory_by_product_country")
+      .select(
+        "producto_id, pais, snapshot_date, last_imported_at, stock_fba_sellable, stock_fba_unsellable, stock_fba_physical_total, dispositions, is_stale, stale_days",
+      )
+      .in("producto_id", chunk)
+      .order("pais", { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    for (const row of (data ?? []) as LatestFbaInventoryByCountryViewRow[]) {
+      if (!row.producto_id || !row.pais || !row.snapshot_date) continue;
+      const item: FbaInventoryCountryStockRow = {
+        productoId: row.producto_id,
+        pais: row.pais,
+        snapshotDate: row.snapshot_date.slice(0, 10),
+        lastImportedAt: row.last_imported_at ?? null,
+        stockSellable: Number(row.stock_fba_sellable ?? 0),
+        stockUnsellable: Number(row.stock_fba_unsellable ?? 0),
+        stockTotal: Number(row.stock_fba_physical_total ?? 0),
+        isStale: row.is_stale === true,
+        staleDays:
+          row.stale_days != null && Number.isFinite(Number(row.stale_days))
+            ? Number(row.stale_days)
+            : null,
+        dispositions: parseFbaInventoryDispositions(row.dispositions),
+      };
+
+      const list = result.get(item.productoId) ?? [];
+      list.push(item);
+      result.set(item.productoId, list);
+    }
+  }
+
+  for (const [productId, rows] of Array.from(result.entries())) {
+    rows.sort((a, b) => a.pais.localeCompare(b.pais));
+    result.set(productId, rows);
+  }
+
+  return result;
+}
 
 export async function fetchLatestFbaInventorySnapshotByProductIds(
   productIds: string[],

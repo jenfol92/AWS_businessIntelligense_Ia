@@ -3,7 +3,10 @@
 // Detalle completo de inventario para un producto seleccionado.
 
 import type { ProductForecastConfigUpsertBody } from "@/modules/planning/types";
-import { fetchAmazonSyncJobStatus } from "../repositories/inventoryRepository";
+import {
+  fetchAmazonSyncJobStatus,
+  fetchTopPriceByProductCountry,
+} from "../repositories/inventoryRepository";
 import type { InventoryProductDetailResponse } from "../types/inventory.types";
 import {
   buildCountryRowsForProduct,
@@ -35,9 +38,15 @@ export type ProductInventoryDetailParams = {
   canal?: string;
   pais?: string;
   windowDays?: number;
+  periodFrom?: string;
+  periodTo?: string;
   forecastOverride?: ProductForecastConfigUpsertBody | null;
   debugStockout?: boolean;
 };
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 export async function buildProductInventoryDetail(
   productId: string,
@@ -53,6 +62,10 @@ export async function buildProductInventoryDetail(
     productId,
     params.canal,
     windowDays,
+    {
+      fromDate: params.periodFrom,
+      toDate: params.periodTo,
+    },
   );
   productIdsCount = ctx.productIds.length;
   logInventoryDetailTiming(
@@ -88,6 +101,39 @@ export async function buildProductInventoryDetail(
     const countries = buildCountryRowsForProduct(targetId, ctx).filter((row) => {
       if (countryScope.countries == null) return true;
       return countryScope.countries.includes(row.pais);
+    });
+    const countryCodes = countries.map((row) => row.pais);
+    const today = todayIsoDate();
+    const [topTodayByCountry, topPeriodByCountry] = await Promise.all([
+      fetchTopPriceByProductCountry({
+        productId: targetId,
+        countries: countryCodes,
+        channelScope: params.canal ?? ctx.canal,
+        fromDate: today,
+        toDate: today,
+      }),
+      fetchTopPriceByProductCountry({
+        productId: targetId,
+        countries: countryCodes,
+        channelScope: params.canal ?? ctx.canal,
+        fromDate: ctx.periodFrom,
+        toDate: ctx.periodTo,
+      }),
+    ]);
+    const countriesWithPriceTop = countries.map((row) => {
+      const topToday = topTodayByCountry.get(row.pais) ?? null;
+      const topPeriod = topPeriodByCountry.get(row.pais) ?? null;
+      return {
+        ...row,
+        priceToday: topToday?.unitPrice ?? null,
+        priceTodayUnits: topToday?.units ?? null,
+        priceTopPeriod: topPeriod?.unitPrice ?? null,
+        priceTopPeriodUnits: topPeriod?.units ?? null,
+        priceTop30d: topPeriod?.unitPrice ?? null,
+        priceTop30dUnits: topPeriod?.units ?? null,
+        priceTop90d: null,
+        priceTop90dUnits: null,
+      };
     });
     logInventoryDetailTiming(
       targetId,
@@ -129,12 +175,15 @@ export async function buildProductInventoryDetail(
       (r) => r.producto_id === targetId,
     );
     const operationalStockStart = Date.now();
+    const operationalStockBase = buildOperationalStockSummary(
+      productInvRows,
+      ctx.fbaLedgerLatest.get(targetId),
+      ctx.fbaInventorySnapshotLatest.get(targetId),
+      { preferLedgerSource: true },
+    );
+
     const operationalStock = {
-      ...buildOperationalStockSummary(
-        productInvRows,
-        ctx.fbaLedgerLatest.get(targetId),
-        ctx.fbaInventorySnapshotLatest.get(targetId),
-      ),
+      ...operationalStockBase,
       fbaInventorySyncStatus,
     };
     logInventoryDetailTiming(
@@ -155,7 +204,7 @@ export async function buildProductInventoryDetail(
         canal: params.canal,
         forecastOverride: params.forecastOverride,
         debugStockout: params.debugStockout,
-        operationalStock,
+        operationalStock: operationalStockBase,
       },
     );
     logInventoryDetailTiming(
@@ -189,7 +238,7 @@ export async function buildProductInventoryDetail(
     return {
       ok: true,
       product: scopedProduct,
-      countries,
+      countries: countriesWithPriceTop,
       inbound,
       inboundUnitsTotal: inboundUnitsConfirmedTotal + inboundUnitsProvisionalTotal,
       inboundUnitsConfirmedTotal,
@@ -199,6 +248,10 @@ export async function buildProductInventoryDetail(
       annualForecast,
       operationalStock,
       recentWindowDays: windowDays,
+      periodLabel: ctx.periodLabel,
+      periodDays: ctx.periodDays,
+      periodFrom: ctx.periodFrom,
+      periodTo: ctx.periodTo,
       simulationActive: params.forecastOverride != null,
       appliedForecastConfig: params.forecastOverride ?? undefined,
     };

@@ -36,6 +36,8 @@ import type { ProductForecastConfigUpsertBody } from "@/modules/planning/types";
 import type {
   InventoryComparisonResponse,
   InventoryCountryStockRow,
+  InventoryCountryPriceDistributionRow,
+  InventoryDiagnosticsResponse,
   InventoryInboundRow,
   InventoryInboundPlanningKind,
   InventoryLotesResponse,
@@ -47,6 +49,28 @@ import { inboundPlanningKindLabel } from "@/modules/planner/services/mapForecast
 import OrderReadonlyModal from "@/modules/orders/components/OrderReadonlyModal";
 
 type DetailFail = { ok: false; error: string };
+
+type PriceDistributionResponse =
+  | {
+      ok: true;
+      productId: string;
+      country: string;
+      channel: "ALL" | "FBA" | "FBM";
+      windowDays?: 30 | 90;
+      periodLabel?: string;
+      rows: InventoryCountryPriceDistributionRow[];
+    }
+  | DetailFail;
+
+type PriceDistributionModalState = {
+  country: string;
+  periodLabel: string;
+  fromDate?: string;
+  toDate?: string;
+  loading: boolean;
+  error: string | null;
+  rows: InventoryCountryPriceDistributionRow[];
+} | null;
 
 type InventoryProductLite = {
   id: string;
@@ -85,6 +109,16 @@ function fmtNum(n: number | null | undefined, digits = 0): string {
   return n.toLocaleString("es-ES", {
     maximumFractionDigits: digits,
     minimumFractionDigits: digits,
+  });
+}
+
+function fmtCurrency(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return "—";
+  return n.toLocaleString("es-ES", {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
   });
 }
 
@@ -137,6 +171,14 @@ function forecastChannelHumanLabel(channel: string): string {
 
 function forecastScopeHumanLabel(country: string, channel: string): string {
   return `${forecastCountryHumanLabel(country)} · ${forecastChannelHumanLabel(channel)}`;
+}
+
+function countryFlag(code: string): string {
+  const country = code.trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(country)) return "";
+  return String.fromCodePoint(
+    ...country.split("").map((char) => 127397 + char.charCodeAt(0)),
+  );
 }
 
 function buildComparisonUrl(filters: {
@@ -194,13 +236,10 @@ export function InventoryPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const locale = resolveLocale(params?.locale);
-  const { canal, pais, windowDays } = useGlobalFilters();
+  const { canal, pais, windowDays, periodFrom, periodTo } = useGlobalFilters();
   const showStockoutDebug =
     process.env.NODE_ENV === "development" &&
     searchParams.get("debugStockout") === "1";
-  const showAmazonImportDiagnostics =
-    process.env.NODE_ENV === "development" ||
-    searchParams.get("debugAmazonImports") === "1";
 
   const [search, setSearch] = useState("");
   const [categoriaFilter, setCategoriaFilter] = useState("ALL");
@@ -233,8 +272,12 @@ export function InventoryPage() {
   const [expandedPais, setExpandedPais] = useState<string | null>(null);
   const [lotesData, setLotesData] = useState<InventoryLotesResponse | null>(null);
   const [lotesLoading, setLotesLoading] = useState(false);
-  const [amazonImportLoading, setAmazonImportLoading] = useState<string | null>(null);
-  const [amazonImportMessage, setAmazonImportMessage] = useState<string | null>(null);
+  const [priceDistributionModal, setPriceDistributionModal] =
+    useState<PriceDistributionModalState>(null);
+  const [inventoryDiagnosticsLoading, setInventoryDiagnosticsLoading] = useState(false);
+  const [inventoryDiagnosticsError, setInventoryDiagnosticsError] = useState<string | null>(null);
+  const [inventoryDiagnostics, setInventoryDiagnostics] =
+    useState<InventoryDiagnosticsResponse | null>(null);
 
   const filterState = useMemo(
     () => ({
@@ -384,6 +427,8 @@ export function InventoryPage() {
           canal,
           pais,
           windowDays,
+          periodFrom,
+          periodTo,
           forecastOverride: forecastOverride ?? undefined,
           debugStockout: showStockoutDebug,
           signal: controller.signal,
@@ -407,7 +452,7 @@ export function InventoryPage() {
         }
       }
     },
-    [canal, pais, windowDays, showStockoutDebug],
+    [canal, pais, windowDays, periodFrom, periodTo, showStockoutDebug],
   );
 
   useEffect(() => {
@@ -458,118 +503,93 @@ export function InventoryPage() {
     }
   }
 
-  type AmazonForecastImportKind = "sales" | "salesAlt" | "snapshot" | "ledger";
+  async function openPriceDistribution(
+    country: string,
+    range: { label: string; fromDate?: string; toDate?: string; windowDays?: 30 | 90 },
+  ) {
+    if (!detail) return;
 
-  function formatAmazonImportResult(
-    label: string,
-    json: {
-      ok: boolean;
-      error?: string;
-      summary?: {
-        reportId?: string;
-        status?: string;
-        processingStatus?: string | null;
-        rowsUpserted?: number;
-        ventasDiariasUpserted?: number;
-        warnings?: string[];
-        error?: string;
-      };
-    },
-  ): string {
-    const summary = json.summary;
-    return [
-      `${label}: ${fmtNum(summary?.rowsUpserted ?? 0)} filas actualizadas`,
-      summary?.ventasDiariasUpserted != null
-        ? `ventas_diarias ${fmtNum(summary.ventasDiariasUpserted)}`
-        : null,
-      summary?.status ? `status ${summary.status}` : null,
-      summary?.processingStatus ? `processing ${summary.processingStatus}` : null,
-      summary?.reportId ? `reportId ${summary.reportId}` : null,
-      json.error || summary?.error ? `error ${json.error ?? summary?.error}` : null,
-      ...(summary?.warnings?.slice(0, 3).map((warning) => `warning ${warning}`) ?? []),
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  }
+    setPriceDistributionModal({
+      country,
+      periodLabel: range.label,
+      fromDate: range.fromDate,
+      toDate: range.toDate,
+      loading: true,
+      error: null,
+      rows: [],
+    });
 
-  async function runAmazonForecastImport(kind: AmazonForecastImportKind) {
-    const labels = {
-      sales: "ventas FBA",
-      salesAlt: "ventas FBA alt.",
-      snapshot: "stock FBA",
-      ledger: "ledger FBA",
-    };
-    const confirmed = window.confirm(
-      `Importar ${labels[kind]} desde SP-API. No se tocará inventario_paises ni stock manual.`,
-    );
-    if (!confirmed) return;
-
-    const toDate = new Date().toISOString().slice(0, 10);
-    const from = new Date();
-    from.setDate(from.getDate() - 30);
-    const fromDate = from.toISOString().slice(0, 10);
-
-    const endpoint =
-      kind === "sales" || kind === "salesAlt"
-        ? "/api/amazon/reports/fba-sales/import"
-        : kind === "snapshot"
-          ? "/api/amazon/inventory/fba-snapshot/import"
-          : "/api/amazon/reports/fba-ledger/import";
-
-    const body =
-      kind === "snapshot"
-        ? {}
-        : {
-            fromDate,
-            toDate,
-            ...(kind === "salesAlt"
-              ? { reportType: "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL" }
-              : {}),
-          };
-
-    setAmazonImportLoading(kind);
-    setAmazonImportMessage(null);
     try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+      const q = new URLSearchParams({
+        country,
+        channel: "ALL",
       });
-      const json = (await res.json()) as {
-        ok: boolean;
-        error?: string;
-        summary?: {
-          rowsParsed?: number;
-          rowsUpserted?: number;
-          ventasDiariasUpserted?: number;
-          reportId?: string;
-          status?: string;
-          processingStatus?: string | null;
-          warnings?: string[];
-          error?: string;
-        };
-      };
-      if (!res.ok || !json.ok) {
-        setAmazonImportMessage(formatAmazonImportResult(labels[kind], json));
+      if (range.fromDate) q.set("fromDate", range.fromDate);
+      if (range.toDate) q.set("toDate", range.toDate);
+      if (range.windowDays) q.set("windowDays", String(range.windowDays));
+      const res = await fetch(
+        `/api/inventory/products/${detail.product.productoId}/country-price-distribution?${q.toString()}`,
+        { cache: "no-store" },
+      );
+      const json = (await res.json()) as PriceDistributionResponse;
+      if (!res.ok || json.ok === false) {
+      setPriceDistributionModal({
+        country,
+        periodLabel: range.label,
+        fromDate: range.fromDate,
+        toDate: range.toDate,
+        loading: false,
+        error: "error" in json ? json.error : `HTTP ${res.status}`,
+          rows: [],
+        });
         return;
       }
-      const summary = json.summary;
-      setAmazonImportMessage(
-        `${labels[kind]}: ${fmtNum(summary?.rowsUpserted ?? 0)} filas actualizadas` +
-          (summary?.ventasDiariasUpserted != null
-            ? ` · ventas_diarias ${fmtNum(summary.ventasDiariasUpserted)}`
-            : "") +
-          (summary?.status ? ` · estado ${summary.status}` : ""),
-      );
-      if (selectedProductId) {
-        await loadDetail(selectedProductId, simulationOverride);
-      }
+      setPriceDistributionModal({
+        country,
+        periodLabel: range.label,
+        fromDate: range.fromDate,
+        toDate: range.toDate,
+        loading: false,
+        error: null,
+        rows: json.rows,
+      });
     } catch (error) {
-      setAmazonImportMessage(
-        error instanceof Error ? error.message : "Importación SP-API fallida.",
+      setPriceDistributionModal({
+        country,
+        periodLabel: range.label,
+        fromDate: range.fromDate,
+        toDate: range.toDate,
+        loading: false,
+        error: error instanceof Error ? error.message : "Error cargando distribucion.",
+        rows: [],
+      });
+    }
+  }
+
+  async function loadInventoryDiagnostics() {
+    setInventoryDiagnosticsLoading(true);
+    setInventoryDiagnosticsError(null);
+    try {
+      const query = new URLSearchParams();
+      if (selectedProductId) query.set("productId", selectedProductId);
+      query.set("limit", selectedProductId ? "20" : "200");
+      const res = await fetch(`/api/inventory/diagnostics?${query.toString()}`, {
+        cache: "no-store",
+      });
+      const json = (await res.json()) as InventoryDiagnosticsResponse | DetailFail;
+      if (!res.ok || json.ok === false) {
+        setInventoryDiagnostics(null);
+        setInventoryDiagnosticsError("error" in json ? json.error : `HTTP ${res.status}`);
+        return;
+      }
+      setInventoryDiagnostics(json);
+    } catch (error) {
+      setInventoryDiagnostics(null);
+      setInventoryDiagnosticsError(
+        error instanceof Error ? error.message : "Error cargando diagnóstico.",
       );
     } finally {
-      setAmazonImportLoading(null);
+      setInventoryDiagnosticsLoading(false);
     }
   }
 
@@ -596,44 +616,45 @@ export function InventoryPage() {
         </Text>
       </div>
 
-      {showAmazonImportDiagnostics ? (
       <Card className="ring-1 ring-amber-100 bg-amber-50/30 p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <Title className="text-base">Diagnóstico SP-API</Title>
+            <Title className="text-base">Herramientas de Inventario</Title>
             <Text className="text-xs text-slate-500">
-              Acción manual de diagnóstico. El stock FBA debe actualizarse por tarea programada.
-              No actualiza inventario_paises ni ejecuta cron.
+              Diagnóstico solo lectura. Las importaciones se hacen desde la página
+              Importar para evitar duplicar procesos.
             </Text>
-            {amazonImportMessage ? (
-              <Text className="mt-1 text-xs text-slate-600">{amazonImportMessage}</Text>
-            ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
-            {[
-              { key: "sales" as const, label: "Importar ventas FBA" },
-              { key: "salesAlt" as const, label: "Importar ventas FBA alt." },
-              { key: "snapshot" as const, label: "Importar stock FBA" },
-              { key: "ledger" as const, label: "Importar ledger FBA" },
-            ].map((action) => (
-              <button
-                key={action.key}
-                type="button"
-                onClick={() => void runAmazonForecastImport(action.key)}
-                disabled={amazonImportLoading != null}
-                className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {amazonImportLoading === action.key ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5" />
-                )}
-                {action.label}
-              </button>
-            ))}
+            <button
+              type="button"
+              onClick={() => void loadInventoryDiagnostics()}
+              disabled={inventoryDiagnosticsLoading}
+              className="inline-flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 shadow-sm hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {inventoryDiagnosticsLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Search className="h-3.5 w-3.5" />
+              )}
+              Diagnóstico Inventario
+            </button>
+            <Link
+              href={`/${locale}/importar`}
+              className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+            >
+              <Package className="h-3.5 w-3.5" />
+              Ir a Importar
+            </Link>
           </div>
         </div>
       </Card>
+      {inventoryDiagnostics || inventoryDiagnosticsError || inventoryDiagnosticsLoading ? (
+        <InventoryDiagnosticsPanel
+          diagnostics={inventoryDiagnostics}
+          error={inventoryDiagnosticsError}
+          loading={inventoryDiagnosticsLoading}
+        />
       ) : null}
 
       {listData?.summary ? (
@@ -933,12 +954,8 @@ export function InventoryPage() {
                     { label: "FBA", value: fmtNum(detail.product.stockFba) },
                     { label: "FBM", value: fmtNum(detail.product.stockFbm) },
                     {
-                      label: `Ventas ${detail.recentWindowDays}d`,
-                      value: fmtNum(detail.product.salesUnits30),
-                    },
-                    {
-                      label: "Ventas 90d",
-                      value: fmtNum(detail.product.salesUnits90),
+                      label: `Ventas ${detail.periodLabel}`,
+                      value: fmtNum(detail.product.salesUnitsPeriod),
                     },
                     {
                       label: "Cobertura",
@@ -983,12 +1000,16 @@ export function InventoryPage() {
 
               <Card className="ring-1 ring-slate-100 p-4">
                 <Title className="text-base mb-3">Stock por país</Title>
-                <CountryStockTable
+                <CountryStockTableV2
                   countries={detail.countries}
                   expandedPais={expandedPais}
                   lotesLoading={lotesLoading}
                   lotesData={lotesData}
+                  periodLabel={detail.periodLabel}
+                  periodFrom={detail.periodFrom}
+                  periodTo={detail.periodTo}
                   onToggleLotes={toggleLotes}
+                  onOpenPriceDistribution={openPriceDistribution}
                 />
               </Card>
 
@@ -1055,6 +1076,10 @@ export function InventoryPage() {
           )}
         </div>
       </div>
+      <PriceDistributionModal
+        state={priceDistributionModal}
+        onClose={() => setPriceDistributionModal(null)}
+      />
     </div>
   );
 }
@@ -1072,6 +1097,130 @@ function operationalFbaSourceLabel(
     default:
       return "sin stock FBA registrado";
   }
+}
+
+function InventoryDiagnosticsPanel({
+  diagnostics,
+  error,
+  loading,
+}: {
+  diagnostics: InventoryDiagnosticsResponse | null;
+  error: string | null;
+  loading: boolean;
+}) {
+  const product = diagnostics?.products[0] ?? null;
+
+  return (
+    <Card className="ring-1 ring-sky-100 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <Title className="text-base">Diagnóstico Inventario</Title>
+          <Text className="text-xs text-slate-500">
+            Solo lectura. No ejecuta SP-API, cron ni importaciones.
+          </Text>
+        </div>
+        {loading ? <Loader2 className="h-4 w-4 animate-spin text-sky-600" /> : null}
+      </div>
+      {error ? (
+        <p className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          {error}
+        </p>
+      ) : null}
+      {product ? (
+        <div className="mt-4 space-y-3 text-sm">
+          <div>
+            <p className="font-semibold text-slate-900">
+              {product.nombre} <span className="font-mono text-xs text-slate-500">{product.sku}</span>
+            </p>
+            <p className="text-xs text-slate-500">
+              Generado: {fmtDateTime(diagnostics?.generatedAt)}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            {[
+              {
+                label: "Snapshot FBA",
+                value: product.hasFbaSnapshot
+                  ? `${fmtNum(product.fbaSnapshotUnits)} uds`
+                  : "No",
+              },
+              {
+                label: "FBA legacy",
+                value: `${fmtNum(product.legacyFbaUnits)} uds`,
+              },
+              {
+                label: "Diferencia FBA",
+                value:
+                  product.fbaDifferenceUnits == null
+                    ? "—"
+                    : `${fmtNum(product.fbaDifferenceUnits)} uds`,
+              },
+              {
+                label: "Ventas 30/60/90",
+                value: `${fmtNum(product.sales30Units)} / ${fmtNum(product.sales60Units)} / ${fmtNum(product.sales90Units)}`,
+              },
+              {
+                label: "Año anterior",
+                value: product.hasSalesPreviousYear
+                  ? `${fmtNum(product.previousYearUnits)} uds`
+                  : "No",
+              },
+              {
+                label: "Ledger",
+                value: product.hasLedger ? `${fmtNum(product.ledgerUnits)} uds` : "No",
+              },
+              {
+                label: "Inbound",
+                value: product.hasInbound ? `${fmtNum(product.inboundUnits)} uds` : "No",
+              },
+              {
+                label: "Amazon inbound",
+                value: product.hasAmazonInbound
+                  ? product.amazonShipmentIds.join(", ")
+                  : "No",
+              },
+            ].map((item) => (
+              <div key={item.label} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                <p className="text-[10px] font-medium uppercase text-slate-400">{item.label}</p>
+                <p className="mt-0.5 text-xs font-medium text-slate-800">{item.value}</p>
+              </div>
+            ))}
+          </div>
+          {product.missingData.length > 0 ? (
+            <div>
+              <p className="text-xs font-semibold text-slate-700">Datos faltantes</p>
+              <p className="mt-1 text-xs text-amber-700">{product.missingData.join(" · ")}</p>
+            </div>
+          ) : null}
+          {product.warnings.length > 0 ? (
+            <div>
+              <p className="text-xs font-semibold text-slate-700">Avisos</p>
+              <p className="mt-1 text-xs text-orange-700">{product.warnings.join(" · ")}</p>
+            </div>
+          ) : null}
+          {product.recommendedActions.length > 0 ? (
+            <div>
+              <p className="text-xs font-semibold text-slate-700">Acciones recomendadas</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-slate-600">
+                {product.recommendedActions.map((action) => (
+                  <li key={action}>{action}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {diagnostics ? (
+            <p className="text-xs text-slate-400">
+              Resumen: {fmtNum(diagnostics.summary.totalProducts)} producto(s) ·{" "}
+              sin snapshot {fmtNum(diagnostics.summary.productsWithoutFbaSnapshot)} ·{" "}
+              sin ventas recientes {fmtNum(diagnostics.summary.productsWithoutRecentSales)}
+            </p>
+          ) : null}
+        </div>
+      ) : !loading && !error ? (
+        <p className="mt-3 text-xs text-slate-500">Sin resultados de diagnóstico.</p>
+      ) : null}
+    </Card>
+  );
 }
 
 function OperationalStockPanel({
@@ -1161,25 +1310,374 @@ function OperationalStockPanel({
   );
 }
 
+function CountryStockTableV2({
+  countries,
+  expandedPais,
+  lotesLoading,
+  lotesData,
+  periodLabel,
+  periodFrom,
+  periodTo,
+  onToggleLotes,
+  onOpenPriceDistribution,
+}: {
+  countries: InventoryCountryStockRow[];
+  expandedPais: string | null;
+  lotesLoading: boolean;
+  lotesData: InventoryLotesResponse | null;
+  periodLabel: string;
+  periodFrom: string;
+  periodTo: string;
+  onToggleLotes: (pais: string) => void;
+  onOpenPriceDistribution: (
+    pais: string,
+    range: { label: string; fromDate?: string; toDate?: string; windowDays?: 30 | 90 },
+  ) => void;
+}) {
+  if (countries.length === 0) {
+    return <Text className="text-sm text-slate-500">Sin inventario por pais.</Text>;
+  }
+
+  const latestSnapshot =
+    countries
+      .map((row) => row.stockFbaLedgerSnapshotDate)
+      .filter((value): value is string => Boolean(value))
+      .sort((a, b) => b.localeCompare(a))[0] ?? null;
+  const staleRows = countries.filter((row) => row.stockFbaLedgerStale);
+  const oldestStaleSnapshot =
+    staleRows
+      .map((row) => row.stockFbaLedgerSnapshotDate)
+      .filter((value): value is string => Boolean(value))
+      .sort()[0] ?? null;
+  const today = new Date().toISOString().slice(0, 10);
+
+  return (
+    <>
+      <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+        <p className="font-medium">
+          Fuente FBA: Inventory Ledger Amazon. Ultimo snapshot:{" "}
+          {latestSnapshot ?? "sin snapshot"}
+        </p>
+        {staleRows.length > 0 ? (
+          <p className="mt-1 text-amber-700">
+            Advertencia: Inventory Ledger FBA no actualizado desde{" "}
+            {oldestStaleSnapshot ?? "fecha desconocida"}.
+          </p>
+        ) : null}
+      </div>
+      <ResponsiveTable
+        desktop={
+          <table className="min-w-full text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-slate-500">
+                <th className="w-8 py-2 pr-2" />
+                <th className="py-2 pr-3">Pais</th>
+                <th className="py-2 pr-3 text-right">FBA vendible</th>
+                <th className="py-2 pr-3 text-right">FBM</th>
+                <th className="py-2 pr-3 text-right" title="FBA vendible + FBM">
+                  Total
+                </th>
+                <th className="py-2 pr-3 text-right">
+                  <span className="block">Ventas</span>
+                  <span className="block text-[10px] font-normal text-slate-400">
+                    {periodLabel}
+                  </span>
+                </th>
+                <th className="py-2 pr-3 text-right">Ultima act. FBA</th>
+                <th className="py-2 pr-3 text-right">Precio hoy</th>
+                <th className="py-2 pr-3 text-right">
+                  <span className="block">Precio top</span>
+                  <span className="block text-[10px] font-normal text-slate-400">
+                    {periodLabel}
+                  </span>
+                </th>
+                <th className="py-2 pr-3 text-right">Cobertura</th>
+                <th className="py-2 pr-3">Riesgo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {countries.map((row) => (
+                <React.Fragment key={row.pais}>
+                  <tr className="border-b border-slate-100 align-middle">
+                    <td className="py-1.5 pr-2">
+                      <button
+                        type="button"
+                        onClick={() => onToggleLotes(row.pais)}
+                        className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                        aria-label="Ver lotes"
+                      >
+                        {expandedPais === row.pais ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </button>
+                    </td>
+                    <td className="py-1.5 pr-3 font-medium">
+                      <div className="flex items-center gap-2">
+                        <span className="text-base leading-none">{countryFlag(row.pais)}</span>
+                        <div className="flex flex-col">
+                          <span>{row.pais.toUpperCase()}</span>
+                          {row.stockFbaLedgerStale ? (
+                            <span className="text-[10px] font-normal text-amber-700">
+                              Ledger {row.stockFbaLedgerSnapshotDate}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-medium">
+                      {fmtNum(row.stockFba)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-medium">
+                      {fmtNum(row.stockFbm)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-semibold text-slate-900">
+                      {fmtNum(row.stockTotal)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-medium">
+                      {fmtNum(row.salesUnitsPeriod)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right text-slate-700">
+                      {row.stockFbaLastImportedAt
+                        ? fmtDateTime(row.stockFbaLastImportedAt)
+                        : row.stockFbaLedgerSnapshotDate
+                          ? fmtDate(row.stockFbaLedgerSnapshotDate)
+                          : "â€”"}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right">
+                      <TopPriceMetric
+                        price={row.priceToday}
+                        units={row.priceTodayUnits}
+                        emptyLabel="Sin ventas hoy"
+                        onClick={() =>
+                          onOpenPriceDistribution(row.pais, {
+                            label: "Hoy",
+                            fromDate: today,
+                            toDate: today,
+                          })
+                        }
+                      />
+                    </td>
+                    <td className="py-1.5 pr-3 text-right">
+                      <TopPriceMetric
+                        price={row.priceTopPeriod}
+                        units={row.priceTopPeriodUnits}
+                        emptyLabel="Sin ventas"
+                        onClick={() =>
+                          onOpenPriceDistribution(row.pais, {
+                            label: periodLabel,
+                            fromDate: periodFrom,
+                            toDate: periodTo,
+                          })
+                        }
+                      />
+                    </td>
+                    <td className="py-1.5 pr-3 text-right">
+                      {row.coverageDays != null ? `${Math.round(row.coverageDays)} d` : "â€”"}
+                    </td>
+                    <td className="py-1.5 pr-3">
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[11px] ring-1 ${riskBadgeClass(row.risk)}`}
+                      >
+                        {riskLabel(row.risk)}
+                      </span>
+                    </td>
+                  </tr>
+                  {expandedPais === row.pais ? (
+                    <tr className="bg-slate-50">
+                      <td colSpan={11} className="p-4">
+                        <CountryLedgerStockDetail row={row} />
+                        <CountryDemandDetail row={row} periodLabel={periodLabel} />
+                        <div className="mt-4">
+                          <LotesPanel loading={lotesLoading} data={lotesData} />
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        }
+        mobile={
+          <div className="space-y-3">
+            {countries.map((row) => (
+              <div key={row.pais}>
+                <ResponsiveDataCard
+                  title={`${countryFlag(row.pais)} ${row.pais.toUpperCase()}`}
+                  badges={
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] ring-1 ${riskBadgeClass(row.risk)}`}
+                    >
+                      {riskLabel(row.risk)}
+                    </span>
+                  }
+                  fields={[
+                    { label: "FBA vendible", value: fmtNum(row.stockFba) },
+                    { label: "FBM", value: fmtNum(row.stockFbm) },
+                    { label: "Total", value: fmtNum(row.stockTotal) },
+                    { label: `Ventas ${periodLabel}`, value: fmtNum(row.salesUnitsPeriod) },
+                    {
+                      label: "Ultima act. FBA",
+                      value: row.stockFbaLastImportedAt
+                        ? fmtDateTime(row.stockFbaLastImportedAt)
+                        : row.stockFbaLedgerSnapshotDate
+                          ? fmtDate(row.stockFbaLedgerSnapshotDate)
+                          : "â€”",
+                    },
+                    {
+                      label: "Precio hoy",
+                      value: (
+                        <TopPriceMetric
+                          price={row.priceToday}
+                          units={row.priceTodayUnits}
+                          emptyLabel="Sin ventas hoy"
+                          onClick={() =>
+                            onOpenPriceDistribution(row.pais, {
+                              label: "Hoy",
+                              fromDate: today,
+                              toDate: today,
+                            })
+                          }
+                        />
+                      ),
+                    },
+                    {
+                      label: `Precio top ${periodLabel}`,
+                      value: (
+                        <TopPriceMetric
+                          price={row.priceTopPeriod}
+                          units={row.priceTopPeriodUnits}
+                          emptyLabel="Sin ventas"
+                          onClick={() =>
+                            onOpenPriceDistribution(row.pais, {
+                              label: periodLabel,
+                              fromDate: periodFrom,
+                              toDate: periodTo,
+                            })
+                          }
+                        />
+                      ),
+                    },
+                    {
+                      label: "Cobertura",
+                      value:
+                        row.coverageDays != null
+                          ? `${Math.round(row.coverageDays)} dias`
+                          : "â€”",
+                    },
+                  ]}
+                  footer={
+                    <button
+                      type="button"
+                      onClick={() => onToggleLotes(row.pais)}
+                      className="text-xs font-medium text-blue-700"
+                    >
+                      {expandedPais === row.pais ? "Ocultar lotes" : "Ver lotes"}
+                    </button>
+                  }
+                />
+                {expandedPais === row.pais ? (
+                  <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <CountryLedgerStockDetail row={row} />
+                    <CountryDemandDetail row={row} periodLabel={periodLabel} />
+                    <div className="mt-4">
+                      <LotesPanel loading={lotesLoading} data={lotesData} />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        }
+      />
+    </>
+  );
+}
+
+function TopPriceMetric({
+  price,
+  units,
+  emptyLabel,
+  onClick,
+}: {
+  price: number | null | undefined;
+  units: number | null | undefined;
+  emptyLabel: string;
+  onClick: () => void;
+}) {
+  if (price == null) {
+    return (
+      <span className="inline-flex flex-col items-end text-right">
+        <span className="text-slate-400">-</span>
+        <span className="text-[10px] font-normal text-slate-400">{emptyLabel}</span>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex flex-col items-end rounded px-1.5 py-0.5 text-right font-medium text-blue-700 hover:bg-blue-50"
+      title="Ver distribucion de precios"
+    >
+      <span>{fmtCurrency(price)}</span>
+      {units != null ? (
+        <span className="text-[10px] font-normal text-slate-500">
+          {fmtNum(units)} uds
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
 function CountryStockTable({
   countries,
   expandedPais,
   lotesLoading,
   lotesData,
   onToggleLotes,
+  onOpenPriceDistribution,
 }: {
   countries: InventoryCountryStockRow[];
   expandedPais: string | null;
   lotesLoading: boolean;
   lotesData: InventoryLotesResponse | null;
   onToggleLotes: (pais: string) => void;
+  onOpenPriceDistribution: (pais: string, windowDays: 30 | 90) => void;
 }) {
   if (countries.length === 0) {
     return <Text className="text-sm text-slate-500">Sin inventario por país.</Text>;
   }
 
+  const latestSnapshot =
+    countries
+      .map((row) => row.stockFbaLedgerSnapshotDate)
+      .filter((value): value is string => Boolean(value))
+      .sort((a, b) => b.localeCompare(a))[0] ?? null;
+  const staleRows = countries.filter((row) => row.stockFbaLedgerStale);
+  const oldestStaleSnapshot =
+    staleRows
+      .map((row) => row.stockFbaLedgerSnapshotDate)
+      .filter((value): value is string => Boolean(value))
+      .sort()[0] ?? null;
+
   return (
     <>
+      <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+        <p className="font-medium">
+          Fuente FBA: Inventory Ledger Amazon. Ultimo snapshot:{" "}
+          {latestSnapshot ?? "sin snapshot"}
+        </p>
+        {staleRows.length > 0 ? (
+          <p className="mt-1 text-amber-700">
+            Advertencia: Inventory Ledger FBA no actualizado desde{" "}
+            {oldestStaleSnapshot ?? "fecha desconocida"}.
+          </p>
+        ) : null}
+      </div>
       <ResponsiveTable
         desktop={
           <table className="min-w-full text-sm">
@@ -1187,11 +1685,42 @@ function CountryStockTable({
             <tr className="border-b border-slate-200 text-left text-slate-500">
               <th className="py-2 pr-2 w-8" />
               <th className="py-2 pr-3">País</th>
-              <th className="py-2 pr-3 text-right">FBA</th>
+              <th
+                className="py-2 pr-3 text-right"
+                title="Stock FBA vendible desde el ultimo Inventory Ledger por ubicacion, disposition SELLABLE."
+              >
+                FBA vendible
+              </th>
+              <th
+                className="py-2 pr-3 text-right"
+                title="Stock FBA no apto desde el ultimo Inventory Ledger por ubicacion: damaged, defective u otras disposiciones no SELLABLE."
+              >
+                FBA no apto
+              </th>
+              <th
+                className="py-2 pr-3 text-right"
+                title="Stock fisico FBA total: vendible + no apto."
+              >
+                FBA fisico
+              </th>
               <th className="py-2 pr-3 text-right">FBM</th>
               <th className="py-2 pr-3 text-right">Total</th>
-              <th className="py-2 pr-3 text-right">V.30d</th>
-              <th className="py-2 pr-3 text-right">V.90d</th>
+
+              <th
+                className="py-2 pr-3 text-right"
+                title="Unidades FBA enviadas agrupadas por marketplace de venta, según sales-channel del informe Amazon."
+              >
+                Ventas 30d
+              </th>
+              <th
+                className="py-2 pr-3 text-right"
+                title="Unidades FBA enviadas agrupadas por marketplace de venta, según sales-channel del informe Amazon."
+              >
+                Ventas 90d
+              </th>
+              <th className="py-2 pr-3 text-right">Ultima act. FBA</th>
+              <th className="py-2 pr-3 text-right">Precio top 30d</th>
+              <th className="py-2 pr-3 text-right">Precio top 90d</th>
               <th className="py-2 pr-3 text-right">Cobertura</th>
               <th className="py-2 pr-3">Riesgo</th>
             </tr>
@@ -1214,12 +1743,44 @@ function CountryStockTable({
                       )}
                     </button>
                   </td>
-                  <td className="py-2 pr-3 font-medium">{row.pais}</td>
+                  <td className="py-2 pr-3 font-medium">
+                    <div className="flex flex-col">
+                      <span>{row.pais}</span>
+                      {row.stockFbaLedgerStale ? (
+                        <span className="text-[11px] font-normal text-amber-700">
+                          Ledger {row.stockFbaLedgerSnapshotDate}
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
                   <td className="py-2 pr-3 text-right">{fmtNum(row.stockFba)}</td>
+                  <td className="py-2 pr-3 text-right">{fmtNum(row.stockFbaUnsellable)}</td>
+                  <td className="py-2 pr-3 text-right">{fmtNum(row.stockFbaPhysicalTotal)}</td>
                   <td className="py-2 pr-3 text-right">{fmtNum(row.stockFbm)}</td>
                   <td className="py-2 pr-3 text-right">{fmtNum(row.stockTotal)}</td>
-                  <td className="py-2 pr-3 text-right">{fmtNum(row.salesUnits30)}</td>
-                  <td className="py-2 pr-3 text-right">{fmtNum(row.salesUnits90)}</td>
+                  <td className="py-2 pr-3 text-right">{fmtNum(row.marketplaceSalesUnits30)}</td>
+                  <td className="py-2 pr-3 text-right">{fmtNum(row.marketplaceSalesUnits90)}</td>
+                  <td className="py-2 pr-3 text-right">
+                    {row.stockFbaLastImportedAt
+                      ? fmtDateTime(row.stockFbaLastImportedAt)
+                      : row.stockFbaLedgerSnapshotDate
+                        ? fmtDate(row.stockFbaLedgerSnapshotDate)
+                        : "â€”"}
+                  </td>
+                  <td className="py-2 pr-3 text-right">
+                    <TopPriceButton
+                      price={row.priceTop30d}
+                      units={row.priceTop30dUnits}
+                      onClick={() => onOpenPriceDistribution(row.pais, 30)}
+                    />
+                  </td>
+                  <td className="py-2 pr-3 text-right">
+                    <TopPriceButton
+                      price={row.priceTop90d}
+                      units={row.priceTop90dUnits}
+                      onClick={() => onOpenPriceDistribution(row.pais, 90)}
+                    />
+                  </td>
                   <td className="py-2 pr-3 text-right">
                     {row.coverageDays != null
                       ? `${Math.round(row.coverageDays)} d`
@@ -1235,8 +1796,12 @@ function CountryStockTable({
                 </tr>
                 {expandedPais === row.pais ? (
                   <tr className="bg-slate-50">
-                    <td colSpan={9} className="p-4">
-                      <LotesPanel loading={lotesLoading} data={lotesData} />
+                    <td colSpan={16} className="p-4">
+                      <CountryLedgerStockDetail row={row} />
+                      <CountryDemandDetail row={row} />
+                      <div className="mt-4">
+                        <LotesPanel loading={lotesLoading} data={lotesData} />
+                      </div>
                     </td>
                   </tr>
                 ) : null}
@@ -1259,11 +1824,51 @@ function CountryStockTable({
                   </span>
                 }
                 fields={[
-                  { label: "FBA", value: fmtNum(row.stockFba) },
+                  { label: "FBA vendible", value: fmtNum(row.stockFba) },
+                  { label: "FBA no apto", value: fmtNum(row.stockFbaUnsellable) },
+                  {
+                    label: "FBA fisico",
+                    value: fmtNum(row.stockFbaPhysicalTotal),
+                  },
                   { label: "FBM", value: fmtNum(row.stockFbm) },
-                  { label: "Total", value: fmtNum(row.stockTotal) },
-                  { label: "Ventas 30d", value: fmtNum(row.salesUnits30) },
-                  { label: "Ventas 90d", value: fmtNum(row.salesUnits90) },
+                  { label: "Total operativo", value: fmtNum(row.stockTotal) },
+
+                  {
+                    label: "Ventas 30d",
+                    value: fmtNum(row.marketplaceSalesUnits30),
+                  },
+                  {
+                    label: "Ventas 90d",
+                    value: fmtNum(row.marketplaceSalesUnits90),
+                  },
+                  {
+                    label: "Ultima act. FBA",
+                    value: row.stockFbaLastImportedAt
+                      ? fmtDateTime(row.stockFbaLastImportedAt)
+                      : row.stockFbaLedgerSnapshotDate
+                        ? fmtDate(row.stockFbaLedgerSnapshotDate)
+                        : "â€”",
+                  },
+                  {
+                    label: "Precio top 30d",
+                    value: (
+                      <TopPriceButton
+                        price={row.priceTop30d}
+                        units={row.priceTop30dUnits}
+                        onClick={() => onOpenPriceDistribution(row.pais, 30)}
+                      />
+                    ),
+                  },
+                  {
+                    label: "Precio top 90d",
+                    value: (
+                      <TopPriceButton
+                        price={row.priceTop90d}
+                        units={row.priceTop90dUnits}
+                        onClick={() => onOpenPriceDistribution(row.pais, 90)}
+                      />
+                    ),
+                  },
                   {
                     label: "Cobertura",
                     value:
@@ -1284,7 +1889,11 @@ function CountryStockTable({
               />
               {expandedPais === row.pais ? (
                 <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <LotesPanel loading={lotesLoading} data={lotesData} />
+                  <CountryLedgerStockDetail row={row} />
+                  <CountryDemandDetail row={row} />
+                  <div className="mt-4">
+                    <LotesPanel loading={lotesLoading} data={lotesData} />
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -1293,6 +1902,281 @@ function CountryStockTable({
       }
       />
     </>
+  );
+}
+
+function CountryLedgerStockDetail({ row }: { row: InventoryCountryStockRow }) {
+  const hasLedger = row.stockFbaLedgerSnapshotDate != null;
+  const appDiff = row.stockFbaApp - row.stockFba;
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">
+            Stock FBA Inventory Ledger
+          </p>
+          <p className="text-xs text-slate-500">
+            Vendible usa solo disposition SELLABLE. No apto queda separado y no
+            alimenta cobertura.
+          </p>
+        </div>
+        <div className="text-left text-xs text-slate-600 sm:text-right">
+          <p>
+            Snapshot: {row.stockFbaLedgerSnapshotDate ?? "sin ledger por ubicacion"}
+          </p>
+          <p>
+            Ultima importacion:{" "}
+            {row.stockFbaLastImportedAt
+              ? fmtDateTime(row.stockFbaLastImportedAt)
+              : "sin fecha"}
+          </p>
+          {row.stockFbaLedgerStale ? (
+            <p className="font-medium text-amber-700">
+              Ledger FBA desactualizado: ultimo snapshot{" "}
+              {row.stockFbaLedgerSnapshotDate}
+              {row.stockFbaLedgerStaleDays != null
+                ? ` (${fmtNum(row.stockFbaLedgerStaleDays)} dias)`
+                : ""}
+            </p>
+          ) : null}
+          <p>
+            inventario_paises.stock_fba: {fmtNum(row.stockFbaApp)} uds
+            {hasLedger ? ` | diff vs vendible: ${fmtNum(appDiff)} uds` : ""}
+          </p>
+        </div>
+      </div>
+
+      {hasLedger ? (
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <div className="rounded-lg bg-slate-50 px-3 py-2">
+            <p className="text-xs text-slate-500">FBA vendible</p>
+            <p className="text-sm font-semibold text-slate-900">
+              {fmtNum(row.stockFba)} uds
+            </p>
+          </div>
+          <div className="rounded-lg bg-slate-50 px-3 py-2">
+            <p className="text-xs text-slate-500">FBA no apto</p>
+            <p className="text-sm font-semibold text-slate-900">
+              {fmtNum(row.stockFbaUnsellable)} uds
+            </p>
+          </div>
+          <div className="rounded-lg bg-slate-50 px-3 py-2">
+            <p className="text-xs text-slate-500">FBA fisico</p>
+            <p className="text-sm font-semibold text-slate-900">
+              {fmtNum(row.stockFbaPhysicalTotal)} uds
+            </p>
+          </div>
+        </div>
+      ) : (
+        <p className="mt-3 text-xs text-amber-700">
+          Sin ledger por ubicacion para este pais; se conserva el fallback de
+          inventario_paises.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function CountryDemandDetail({
+  row,
+  periodLabel,
+}: {
+  row: InventoryCountryStockRow;
+  periodLabel?: string;
+}) {
+  const channelLabel =
+    row.marketplaceSalesChannels.length > 0
+      ? row.marketplaceSalesChannels.join(", ")
+      : `Marketplace ${row.pais}`;
+  const hasMarketplaceDemand =
+    row.marketplaceSalesUnits30 !== 0 || row.marketplaceSalesUnits90 !== 0;
+  const label = periodLabel ?? "periodo";
+
+  return (
+    <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">
+            Marketplace vs entrega
+          </p>
+          <p className="text-xs text-slate-500">
+            Marketplace agrupa por sales-channel; entrega agrupa por pais del
+            cliente.
+          </p>
+        </div>
+        <div className="text-left text-xs text-slate-600 sm:text-right">
+          <p>
+            {channelLabel}: {fmtNum(row.marketplaceSalesUnits30)} uds {label} /{" "}
+            {fmtNum(row.marketplaceSalesUnits90)} uds 90d
+          </p>
+          <p>
+            Entregado a {row.pais}: {fmtNum(row.salesUnitsPeriod)} uds {label} /{" "}
+            {fmtNum(row.salesUnits90)} uds 90d
+          </p>
+        </div>
+      </div>
+
+      {hasMarketplaceDemand && row.marketplaceDeliveryBreakdown.length > 0 ? (
+        <div className="mt-3 overflow-x-auto">
+          <table className="min-w-full text-xs">
+            <thead>
+              <tr className="border-b border-slate-100 text-left text-slate-500">
+                <th className="py-1.5 pr-3">Entrega cliente</th>
+                <th className="py-1.5 pr-3 text-right">30d</th>
+                <th className="py-1.5 pr-3 text-right">90d</th>
+                <th className="py-1.5 pr-3 text-right">Importe 30d</th>
+                <th className="py-1.5 pr-3 text-right">Importe 90d</th>
+              </tr>
+            </thead>
+            <tbody>
+              {row.marketplaceDeliveryBreakdown.map((breakdown) => (
+                <tr
+                  key={breakdown.shipCountry}
+                  className="border-b border-slate-50 last:border-0"
+                >
+                  <td className="py-1.5 pr-3 font-medium text-slate-700">
+                    {breakdown.shipCountry}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {fmtNum(breakdown.units30)}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {fmtNum(breakdown.units90)}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {fmtCurrency(breakdown.amount30)}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {fmtCurrency(breakdown.amount90)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="mt-3 text-xs text-slate-500">
+          Sin ventas FBA raw por marketplace para este pais en la ventana
+          reciente.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TopPriceButton({
+  price,
+  units,
+  emptyLabel = "Sin ventas",
+  onClick,
+}: {
+  price: number | null | undefined;
+  units: number | null | undefined;
+  emptyLabel?: string;
+  onClick: () => void;
+}) {
+  if (price == null) {
+    return <span className="text-slate-400">—</span>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex flex-col items-end rounded px-1.5 py-0.5 text-right font-medium text-blue-700 hover:bg-blue-50"
+      title="Ver distribucion de precios"
+    >
+      <span>{fmtCurrency(price)}</span>
+      {units != null ? (
+        <span className="text-[10px] font-normal text-slate-500">
+          {fmtNum(units)} uds
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function PriceDistributionModal({
+  state,
+  onClose,
+}: {
+  state: PriceDistributionModalState;
+  onClose: () => void;
+}) {
+  if (!state) return null;
+
+  const totalUnits = state.rows.reduce((sum, row) => sum + row.units, 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+      <div className="w-full max-w-3xl rounded-lg bg-white shadow-xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              Distribucion de precios marketplace {state.country} - {state.periodLabel}
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              FBA: precio unitario calculado desde item-price del informe GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL, agrupado por marketplace de venta (sales-channel), no por pais de entrega.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded px-2 py-1 text-sm font-medium text-slate-600 hover:bg-slate-100"
+          >
+            Cerrar
+          </button>
+        </div>
+
+        <div className="max-h-[70vh] overflow-auto p-4">
+          {state.loading ? (
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Cargando distribucion...
+            </div>
+          ) : state.error ? (
+            <p className="text-sm text-rose-700">{state.error}</p>
+          ) : state.rows.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              Sin precio real disponible para este pais y ventana. No se usa promedio diario.
+            </p>
+          ) : (
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-slate-500">
+                  <th className="py-2 pr-3 text-right">Precio</th>
+                  <th className="py-2 pr-3 text-right">Unidades</th>
+                  <th className="py-2 pr-3 text-right">Bruto</th>
+                  <th className="py-2 pr-3 text-right">%</th>
+                  <th className="py-2 pr-3">Ultima venta</th>
+                  <th className="py-2 pr-3">Fuente</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.rows.map((row) => (
+                  <tr
+                    key={`${row.source}-${row.unitPrice}-${row.lastSaleDate ?? ""}`}
+                    className="border-b border-slate-100"
+                  >
+                    <td className="py-2 pr-3 text-right font-medium">
+                      {fmtCurrency(row.unitPrice)}
+                    </td>
+                    <td className="py-2 pr-3 text-right">{fmtNum(row.units)}</td>
+                    <td className="py-2 pr-3 text-right">{fmtCurrency(row.grossAmount)}</td>
+                    <td className="py-2 pr-3 text-right">
+                      {fmtNum(row.percentageUnits ?? (totalUnits ? (row.units / totalUnits) * 100 : 0), 1)}%
+                    </td>
+                    <td className="py-2 pr-3">{fmtDate(row.lastSaleDate)}</td>
+                    <td className="py-2 pr-3 text-xs text-slate-500">{row.source}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

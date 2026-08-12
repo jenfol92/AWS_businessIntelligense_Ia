@@ -70,6 +70,10 @@ export async function GET(req: Request, { params }: RouteContext) {
 
       windowDays: parseWindowDays(url.searchParams.get("windowDays")),
 
+      periodFrom: url.searchParams.get("periodFrom") ?? undefined,
+
+      periodTo: url.searchParams.get("periodTo") ?? undefined,
+
       forecastOverride,
 
       debugStockout: url.searchParams.get("debugStockout") === "1",

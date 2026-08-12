@@ -8,6 +8,8 @@ export type FetchInventoryDetailParams = {
   canal?: string | null;
   pais?: string | null;
   windowDays?: number;
+  periodFrom?: string | null;
+  periodTo?: string | null;
   forecastOverride?: ProductForecastConfigUpsertBody | null;
   debugStockout?: boolean;
   signal?: AbortSignal;
@@ -21,6 +23,8 @@ export async function fetchInventoryProductDetail(
   if (params.canal && params.canal !== "ALL") q.set("canal", params.canal);
   if (params.pais && params.pais !== "ALL") q.set("pais", params.pais);
   if (params.windowDays) q.set("windowDays", String(params.windowDays));
+  if (params.periodFrom) q.set("periodFrom", params.periodFrom);
+  if (params.periodTo) q.set("periodTo", params.periodTo);
   if (params.forecastOverride) {
     appendForecastConfigOverrideToSearchParams(q, params.forecastOverride);
   }

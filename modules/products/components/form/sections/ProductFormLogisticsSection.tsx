@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { useProductForm } from "../../../hooks/useProductForm";
+import { InheritanceOverrideControl } from "../InheritanceOverrideControl";
 import { calculateCubicajeUnitarioM3 } from "../../../utils/calculateCubicajeUnitarioM3";
 import {
   pfCard,
@@ -62,6 +63,7 @@ export function ProductFormLogisticsSection({ form }: Props) {
                 updateField("unidadesPorCaja", toNum(e.target.value))
               }
             />
+            <InheritanceOverrideControl form={form} field="unidadesPorCaja" />
           </div>
           <div>
             <label className={pfLabel} htmlFor="pf-pedido-min">
@@ -76,6 +78,7 @@ export function ProductFormLogisticsSection({ form }: Props) {
                 updateField("pedidoMinimoUnidades", toNum(e.target.value))
               }
             />
+            <InheritanceOverrideControl form={form} field="pedidoMinimoUnidades" />
           </div>
           <div className={pfSpan2}>
             <label className={pfLabel}>Cubicaje unitario</label>

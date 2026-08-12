@@ -1,6 +1,7 @@
 "use client";
 
 import type { useProductForm } from "../../../hooks/useProductForm";
+import { InheritanceOverrideControl } from "../InheritanceOverrideControl";
 import {
   pfCard,
   pfCardBody,
@@ -45,6 +46,7 @@ export function ProductFormIdentifiersSection({ form, embedded = false }: Props)
                 updateField("referenciaFabricante", e.target.value)
               }
             />
+            <InheritanceOverrideControl form={form} field="referenciaFabricante" />
           </div>
           <div className="sm:col-span-2">
             <label className={pfLabel} htmlFor="pf-cod-prov">

@@ -8,6 +8,7 @@ import type {
   ProductAmazonSetupFormValues,
 } from "./product-amazon.types";
 import type { CategoryCamposConfig } from "@/modules/categories/types/category.types";
+import type { ProductInheritanceOverrides } from "./product-inheritance.types";
 
 export type { AmazonListingStatus, ProductAmazonSetupFormValues };
 
@@ -79,6 +80,7 @@ export type ProductFormValues = {
   heredarPrecio: boolean;
   heredarCosteUnitarioTotal: boolean;
   applyCostChangeToVariants: boolean;
+  inheritanceOverrides: ProductInheritanceOverrides;
 
   // —— Logística comercial (`producto_logistica`)
   unidadesPorCaja: number;

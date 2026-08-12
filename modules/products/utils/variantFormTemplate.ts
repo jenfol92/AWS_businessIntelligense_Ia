@@ -35,6 +35,7 @@ export function buildVariantFormFromParent(
     parentId,
     heredarPrecio: true,
     heredarCosteUnitarioTotal: false,
+    inheritanceOverrides: { fields: {}, categorySpecifications: {} },
 
     proveedorId: parent.proveedorId,
     stockSeguridadMinimo: parent.stockSeguridadMinimo,
@@ -43,6 +44,8 @@ export function buildVariantFormFromParent(
     categoria: parent.categoria,
     categoryDynamicFields: { ...parent.categoryDynamicFields },
     categoryActiveFieldKeys: [...parent.categoryActiveFieldKeys],
+
+    referenciaFabricante: parent.referenciaFabricante,
 
     marca: parent.marca,
     modelo: parent.modelo,

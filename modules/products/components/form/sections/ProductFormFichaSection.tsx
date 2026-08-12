@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { useProductForm } from "../../../hooks/useProductForm";
+import { InheritanceOverrideControl } from "../InheritanceOverrideControl";
 import { calculateCubicajeUnitarioM3 } from "../../../utils/calculateCubicajeUnitarioM3";
 import {
   pfCard,
@@ -66,6 +67,7 @@ export function ProductFormFichaSection({ form }: Props) {
                 updateField("materialEstructura", e.target.value)
               }
             />
+            <InheritanceOverrideControl form={form} field="materialEstructura" />
           </div>
           <div>
             <label className={pfLabel} htmlFor="pf-mat-tap">
@@ -79,6 +81,19 @@ export function ProductFormFichaSection({ form }: Props) {
                 updateField("materialTapizado", e.target.value)
               }
             />
+            <InheritanceOverrideControl form={form} field="materialTapizado" />
+          </div>
+          <div>
+            <label className={pfLabel} htmlFor="pf-mat-ruedas">
+              Material ruedas
+            </label>
+            <input
+              id="pf-mat-ruedas"
+              className={pfFieldClass(false)}
+              value={values.materialRuedas}
+              onChange={(e) => updateField("materialRuedas", e.target.value)}
+            />
+            <InheritanceOverrideControl form={form} field="materialRuedas" />
           </div>
         </div>
 
@@ -99,6 +114,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("pesoNetoKg", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="pesoNetoKg" />
             </div>
             <div>
               <label className={pfLabel} htmlFor="pf-peso-bruto">
@@ -114,6 +130,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("pesoBrutoKg", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="pesoBrutoKg" />
             </div>
           </div>
         </div>
@@ -135,6 +152,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("altoCajaCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="altoCajaCm" />
             </div>
             <div>
               <label className={pfLabel} htmlFor="pf-ancho-caja">
@@ -150,6 +168,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("anchoCajaCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="anchoCajaCm" />
             </div>
             <div>
               <label className={pfLabel} htmlFor="pf-largo-caja">
@@ -165,6 +184,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("largoCajaCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="largoCajaCm" />
             </div>
           </div>
           {cbmPreview != null && (
@@ -194,6 +214,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("altoAbiertoCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="altoAbiertoCm" />
             </div>
             <div>
               <label className={pfLabel} htmlFor="pf-ancho-abierto">
@@ -209,6 +230,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("anchoAbiertoCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="anchoAbiertoCm" />
             </div>
             <div>
               <label className={pfLabel} htmlFor="pf-fondo-abierto">
@@ -224,6 +246,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("fondoAbiertoCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="fondoAbiertoCm" />
             </div>
           </div>
         </div>
@@ -245,6 +268,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("altoPlegadoCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="altoPlegadoCm" />
             </div>
             <div>
               <label className={pfLabel} htmlFor="pf-ancho-plegado">
@@ -260,6 +284,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("anchoPlegadoCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="anchoPlegadoCm" />
             </div>
             <div>
               <label className={pfLabel} htmlFor="pf-fondo-plegado">
@@ -275,6 +300,7 @@ export function ProductFormFichaSection({ form }: Props) {
                   updateField("fondoPlegadoCm", toNum(e.target.value))
                 }
               />
+              <InheritanceOverrideControl form={form} field="fondoPlegadoCm" />
             </div>
           </div>
         </div>

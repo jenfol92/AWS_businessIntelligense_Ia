@@ -1,5 +1,6 @@
 import type { ProductFormValues } from "../types/product-form.types";
 import type { ProductAmazonSetupFormValues } from "../types/product-amazon.types";
+import { EMPTY_PRODUCT_INHERITANCE_OVERRIDES } from "../types/product-inheritance.types";
 
 /** Clave única dentro de `productos.especificaciones` para campos del formulario modular. */
 export const PRODUCT_FORM_ESPECIFICACIONES_KEY = "form_extensions_v1";
@@ -34,6 +35,7 @@ export const EMPTY_PRODUCT_FORM: ProductFormValues = {
   heredarPrecio: true,
   heredarCosteUnitarioTotal: false,
   applyCostChangeToVariants: false,
+  inheritanceOverrides: EMPTY_PRODUCT_INHERITANCE_OVERRIDES,
 
   unidadesPorCaja: 0,
   pedidoMinimoUnidades: 0,

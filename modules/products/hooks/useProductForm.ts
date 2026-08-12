@@ -41,6 +41,8 @@ import {
 import { mapCategoryCamposToFormFields } from "@/modules/categories/mappers/categoryFieldMapper";
 import { getPendingCategoryDynamicFields } from "../utils/categoryDynamicFields";
 import { buildVariantFormFromParent } from "../utils/variantFormTemplate";
+import { PRODUCT_INHERITABLE_FIELDS } from "../types/product-inheritance.types";
+import type { ProductInheritableField } from "../types/product-inheritance.types";
 
 import {
 
@@ -143,6 +145,7 @@ export function useProductForm({
     nombre: string;
   } | null>(null);
   const [variantCount, setVariantCount] = useState(0);
+  const [parentValues, setParentValues] = useState<ProductFormValues | null>(null);
 
   const [documents, setDocuments] = useState<ProductFormDocumentRow[]>([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
@@ -341,6 +344,7 @@ export function useProductForm({
         }
 
         const parent = data.product;
+        setParentValues(parent);
         setParentSummary({ sku: parent.sku, nombre: parent.nombre });
         setValues(buildVariantFormFromParent(parent, pid));
       } catch (error) {
@@ -404,6 +408,7 @@ export function useProductForm({
           try {
             const parentData = await fetchProductFormById(data.product.parentId);
             if (parentData.ok && parentData.product) {
+              setParentValues(parentData.product);
               setParentSummary({
                 sku: parentData.product.sku,
                 nombre: parentData.product.nombre,
@@ -526,6 +531,15 @@ export function useProductForm({
   }
 
   function setCategoryId(newId: string) {
+    if (isVariant) {
+      setValues((current) => ({
+        ...current,
+        inheritanceOverrides: {
+          ...current.inheritanceOverrides,
+          fields: { ...current.inheritanceOverrides.fields, categoriaId: true },
+        },
+      }));
+    }
     if (!newId) {
       setValues((current) => ({
         ...current,
@@ -553,6 +567,15 @@ export function useProductForm({
         ...current.categoryDynamicFields,
         [key]: value,
       },
+      inheritanceOverrides: isVariant
+        ? {
+            ...current.inheritanceOverrides,
+            categorySpecifications: {
+              ...current.inheritanceOverrides.categorySpecifications,
+              [key]: true,
+            },
+          }
+        : current.inheritanceOverrides,
     }));
 
     setErrors((current) => {
@@ -615,6 +638,14 @@ export function useProductForm({
 
       [field]: value,
 
+      inheritanceOverrides:
+        isVariant && PRODUCT_INHERITABLE_FIELDS.includes(field as ProductInheritableField)
+          ? {
+              ...current.inheritanceOverrides,
+              fields: { ...current.inheritanceOverrides.fields, [field]: true },
+            }
+          : current.inheritanceOverrides,
+
     }));
 
 
@@ -627,6 +658,57 @@ export function useProductForm({
 
     }));
 
+  }
+
+  function personalizeInheritedField(field: ProductInheritableField) {
+    setValues((current) => ({
+      ...current,
+      inheritanceOverrides: {
+        ...current.inheritanceOverrides,
+        fields: { ...current.inheritanceOverrides.fields, [field]: true },
+      },
+    }));
+  }
+
+  function inheritFieldFromParent(field: ProductInheritableField) {
+    setValues((current) => ({
+      ...current,
+      [field]: parentValues?.[field] ?? EMPTY_PRODUCT_FORM[field],
+      inheritanceOverrides: {
+        ...current.inheritanceOverrides,
+        fields: { ...current.inheritanceOverrides.fields, [field]: false },
+      },
+    }));
+  }
+
+  function personalizeCategorySpecification(key: string) {
+    setValues((current) => ({
+      ...current,
+      inheritanceOverrides: {
+        ...current.inheritanceOverrides,
+        categorySpecifications: {
+          ...current.inheritanceOverrides.categorySpecifications,
+          [key]: true,
+        },
+      },
+    }));
+  }
+
+  function inheritCategorySpecificationFromParent(key: string) {
+    setValues((current) => ({
+      ...current,
+      categoryDynamicFields: {
+        ...current.categoryDynamicFields,
+        [key]: parentValues?.categoryDynamicFields[key] ?? null,
+      },
+      inheritanceOverrides: {
+        ...current.inheritanceOverrides,
+        categorySpecifications: {
+          ...current.inheritanceOverrides.categorySpecifications,
+          [key]: false,
+        },
+      },
+    }));
   }
 
 
@@ -907,6 +989,7 @@ export function useProductForm({
     variantCount,
 
     parentSummary,
+    parentValues,
 
     selectedSupplierLogistics,
 
@@ -949,6 +1032,10 @@ export function useProductForm({
     createCategoryAndSelect,
 
     updateField,
+    personalizeInheritedField,
+    inheritFieldFromParent,
+    personalizeCategorySpecification,
+    inheritCategorySpecificationFromParent,
 
     handleImageUpload,
 

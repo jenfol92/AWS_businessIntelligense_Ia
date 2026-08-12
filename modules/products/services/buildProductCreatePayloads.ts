@@ -82,6 +82,8 @@ function inheritCorePayload(
         ? (cloneJsonLike(parentExtension.identifiers) as Record<string, unknown>)
         : {}),
       ean: childIdentifiers.ean ?? null,
+      referencia_fabricante: childIdentifiers.referencia_fabricante ?? null,
+      codigo_proveedor: childIdentifiers.codigo_proveedor ?? null,
     },
     amazon: {
       ...(isRecord(parentExtension.amazon)
@@ -112,9 +114,7 @@ function inheritCorePayload(
   };
   for (const [key, value] of Object.entries(childSpecs)) {
     if (key === PRODUCT_FORM_ESPECIFICACIONES_KEY) continue;
-    if (key.trim().toLowerCase() === "color") {
-      inheritedSpecs[key] = cloneJsonLike(value);
-    }
+    inheritedSpecs[key] = cloneJsonLike(value);
   }
 
   return {
@@ -147,6 +147,10 @@ function inheritDetailPayload(
       "marca",
       "descripcion_tecnica",
     ]),
+    categoria_id: child.categoria_id,
+    categoria: child.categoria,
+    marca: child.marca,
+    descripcion_tecnica: child.descripcion_tecnica,
     imagen_url: child.imagen_url,
     color: child.color,
   };
@@ -166,16 +170,23 @@ function inheritLogisticsPayload(
       "ancho_cm",
       "alto_cm",
     ]),
+    unidades_por_caja: child.unidades_por_caja,
+    peso_kg_bruto: child.peso_kg_bruto,
+    pedido_minimo_unidades: child.pedido_minimo_unidades,
+    largo_cm: child.largo_cm,
+    ancho_cm: child.ancho_cm,
+    alto_cm: child.alto_cm,
     ean_upc: child.ean_upc,
   };
 }
 
 function inheritTechnicalSheetPayload(
-  _child: Record<string, unknown>,
+  child: Record<string, unknown>,
   parent: Record<string, unknown> | null,
 ): Record<string, unknown> {
-  if (!parent) return _child;
-  return pickInheritedColumns(parent, [
+  if (!parent) return child;
+  return {
+    ...pickInheritedColumns(parent, [
     "modelo",
     "peso_neto_kg",
     "alto_abierto_cm",
@@ -189,7 +200,9 @@ function inheritTechnicalSheetPayload(
     "material_ruedas",
     "edad_minima_aplicable",
     "edad_maxima_aplicable",
-  ]);
+    ]),
+    ...child,
+  };
 }
 
 export function buildProductCreatePayloads(
@@ -221,14 +234,62 @@ export function buildProductCreatePayloads(
     };
   }
 
+  const overrides = values.inheritanceOverrides;
+  const inheritedCore = inheritCorePayload(corePayload, parent.core);
+  const specs = asSpecs(inheritedCore.especificaciones);
+  for (const key of Object.keys(specs)) {
+    if (key === PRODUCT_FORM_ESPECIFICACIONES_KEY) continue;
+    if (!overrides.categorySpecifications[key]) delete specs[key];
+  }
+  const extension = isRecord(specs[PRODUCT_FORM_ESPECIFICACIONES_KEY])
+    ? { ...(specs[PRODUCT_FORM_ESPECIFICACIONES_KEY] as Record<string, unknown>) }
+    : {};
+  const identifiers = isRecord(extension.identifiers) ? { ...extension.identifiers } : {};
+  if (!overrides.fields.referenciaFabricante) delete identifiers.referencia_fabricante;
+  extension.identifiers = identifiers;
+  specs[PRODUCT_FORM_ESPECIFICACIONES_KEY] = extension;
+
+  const inheritedDetail = inheritDetailPayload(detailPayload, parent.detail);
+  if (!overrides.fields.categoriaId) {
+    inheritedDetail.categoria_id = null;
+    inheritedDetail.categoria = null;
+  }
+
+  const inheritedLogistics = inheritLogisticsPayload(logisticsPayload, parent.logistics);
+  const logisticsFields = {
+    unidadesPorCaja: "unidades_por_caja",
+    pedidoMinimoUnidades: "pedido_minimo_unidades",
+    pesoBrutoKg: "peso_kg_bruto",
+    largoCajaCm: "largo_cm",
+    anchoCajaCm: "ancho_cm",
+    altoCajaCm: "alto_cm",
+  } as const;
+  for (const [field, column] of Object.entries(logisticsFields)) {
+    if (!overrides.fields[field as keyof typeof overrides.fields]) inheritedLogistics[column] = null;
+  }
+
+  const inheritedTechnical = inheritTechnicalSheetPayload(technicalSheetPayload, parent.technicalSheet);
+  const technicalFields = {
+    materialEstructura: "material_estructura",
+    materialTapizado: "material_tapizado",
+    materialRuedas: "material_ruedas",
+    pesoNetoKg: "peso_neto_kg",
+    altoAbiertoCm: "alto_abierto_cm",
+    anchoAbiertoCm: "ancho_abierto_cm",
+    fondoAbiertoCm: "fondo_abierto_cm",
+    altoPlegadoCm: "alto_plegado_cm",
+    anchoPlegadoCm: "ancho_plegado_cm",
+    fondoPlegadoCm: "fondo_plegado_cm",
+  } as const;
+  for (const [field, column] of Object.entries(technicalFields)) {
+    if (!overrides.fields[field as keyof typeof overrides.fields]) inheritedTechnical[column] = null;
+  }
+
   return {
-    corePayload: inheritCorePayload(corePayload, parent.core),
-    detailPayload: inheritDetailPayload(detailPayload, parent.detail),
-    logisticsPayload: inheritLogisticsPayload(logisticsPayload, parent.logistics),
+    corePayload: { ...inheritedCore, especificaciones: specs },
+    detailPayload: inheritedDetail,
+    logisticsPayload: inheritedLogistics,
     financePayload,
-    technicalSheetPayload: inheritTechnicalSheetPayload(
-      technicalSheetPayload,
-      parent.technicalSheet,
-    ),
+    technicalSheetPayload: inheritedTechnical,
   };
 }

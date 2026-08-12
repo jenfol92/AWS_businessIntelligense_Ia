@@ -15,6 +15,7 @@ import {
   type ProductoCoreForInheritance,
   type ProductoDetalleRow,
 } from "../mappers/productInheritanceMapper";
+import { resolveProductVariantInheritance } from "./resolveProductVariantInheritance";
 
 export type ApplyProductDetailInheritanceParams = {
   /** Fila completa `productos` del hijo (se respeta salvo `especificaciones` fusionada). */
@@ -110,28 +111,25 @@ export function applyProductDetailInheritance(
     };
   }
 
-  const hijoCore = toCoreInheritance(producto);
-  const padreCore = toCoreInheritance(parentCore);
-  const coreMerged = mergeProductoEspecificaciones(hijoCore, padreCore);
-  const productoMerged = mergeEspecificacionesEnProducto(producto, coreMerged);
-
-  const detalleMerged = mergeDetalleConPadre(
-    params.detalle as ProductoDetalleRow | null,
-    params.parentDetalle as ProductoDetalleRow | null,
-    hijoId
-  );
-
-  const logisticaMerged = mergeRegistroHijoPadre(
-    params.logistica as Record<string, unknown> | null,
-    params.parentLogistica as Record<string, unknown> | null,
-    hijoId
-  );
-
-  const fichaMerged = mergeRegistroHijoPadre(
-    params.fichaTecnica as Record<string, unknown> | null,
-    params.parentFicha as Record<string, unknown> | null,
-    hijoId
-  );
+  const resolved = resolveProductVariantInheritance({
+    productId: hijoId,
+    child: {
+      core: producto,
+      detail: params.detalle as Record<string, unknown> | null,
+      logistics: params.logistica as Record<string, unknown> | null,
+      technicalSheet: params.fichaTecnica as Record<string, unknown> | null,
+    },
+    parent: {
+      core: parentCore,
+      detail: params.parentDetalle as Record<string, unknown> | null,
+      logistics: params.parentLogistica as Record<string, unknown> | null,
+      technicalSheet: params.parentFicha as Record<string, unknown> | null,
+    },
+  });
+  const productoMerged = resolved.core ?? producto;
+  const detalleMerged = resolved.detail;
+  const logisticaMerged = resolved.logistics;
+  const fichaMerged = resolved.technicalSheet;
 
   const costosH = Array.isArray(params.costos) ? params.costos : [];
   const costosMerged = mergeCostosLista(costosH, []);

@@ -51,6 +51,7 @@ export type {
   ProductAmazonSetupFormValues,
   ProductAmazonSetupLoadResult,
 } from "./form.types";
+export type { ProductInheritableField, ProductInheritanceOverrides } from "./product-inheritance.types";
 
 export type {
   CompetitorSelectionFilterResult,

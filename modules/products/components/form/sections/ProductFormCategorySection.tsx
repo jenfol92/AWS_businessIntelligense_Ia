@@ -3,6 +3,7 @@
 import type { useProductForm } from "../../../hooks/useProductForm";
 import { ProductFieldRenderer } from "../ProductFieldRenderer";
 import { NewCategoryModal } from "../NewCategoryModal";
+import { InheritanceOverrideControl } from "../InheritanceOverrideControl";
 import {
   pfCard,
   pfCardBody,
@@ -64,7 +65,22 @@ export function ProductFormCategorySection({ form, mode = "all" }: Props) {
         value={values.categoryDynamicFields[field.key] ?? null}
         onChange={(v) => updateCategoryDynamicField(field.key, v)}
         requiredIndicator={field.required ? "informative" : "none"}
+        inherited={form.isVariant && values.inheritanceOverrides.categorySpecifications[field.key] !== true}
+        inheritedValue={form.parentValues?.categoryDynamicFields[field.key]}
       />
+      {form.isVariant ? (
+        <button
+          type="button"
+          className="mt-1 text-xs font-medium text-blue-700 hover:underline"
+          onClick={() => values.inheritanceOverrides.categorySpecifications[field.key]
+            ? form.inheritCategorySpecificationFromParent(field.key)
+            : form.personalizeCategorySpecification(field.key)}
+        >
+          {values.inheritanceOverrides.categorySpecifications[field.key]
+            ? "Volver a heredar"
+            : "Personalizar"}
+        </button>
+      ) : null}
       {errors.dynamicFields?.[field.key] ? (
         <p className="mt-1 text-xs text-red-600">
           {errors.dynamicFields[field.key]}
@@ -111,6 +127,7 @@ export function ProductFormCategorySection({ form, mode = "all" }: Props) {
                       </option>
                     ))}
                   </select>
+                  <InheritanceOverrideControl form={form} field="categoriaId" />
                   {errors.categoriaId ? (
                     <p className="mt-1 text-xs text-red-600">
                       {errors.categoriaId}

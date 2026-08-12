@@ -10,6 +10,7 @@ import {
   mapProductFormToCorePayload,
   mapProductFormToDetailPayload,
   mapProductFormToFinancePayload,
+  mapProductFormToLogisticsPayload,
   mapProductFormToTechnicalSheetPayload,
 } from "../mappers/productFormMapper";
 
@@ -26,7 +27,7 @@ import {
   propagateFactoryCostToVariants,
   saveProductManualCost,
 } from "./saveProductCosts";
-import { resolveProductLogisticsPayloadForSave } from "./resolveProductLogisticsPayloadForSave";
+import { PRODUCT_FORM_ESPECIFICACIONES_KEY } from "../constants";
 
 /**
  * Caso de uso: actualizar producto completo.
@@ -48,18 +49,53 @@ export async function updateProduct(
 
   const existing = await findProductCoreById(productId);
 
-  const updatedProduct = await updateProductCoreById(
-    productId,
-    mapProductFormToCorePayload(
-      values,
-      existing?.especificaciones ?? null,
-    ),
-  );
+  const corePayload = mapProductFormToCorePayload(values, existing?.especificaciones ?? null);
+  const detailPayload = mapProductFormToDetailPayload(values);
+  const logisticsPayload = mapProductFormToLogisticsPayload(values);
+  const technicalPayload = mapProductFormToTechnicalSheetPayload(values);
+  if (values.parentId.trim()) {
+    const overrides = values.inheritanceOverrides;
+    const specs = corePayload.especificaciones as Record<string, unknown>;
+    for (const key of Object.keys(specs)) {
+      if (key === PRODUCT_FORM_ESPECIFICACIONES_KEY) continue;
+      if (!overrides.categorySpecifications[key]) delete specs[key];
+    }
+    const extension = (specs[PRODUCT_FORM_ESPECIFICACIONES_KEY] ?? {}) as Record<string, unknown>;
+    const identifiers = { ...((extension.identifiers ?? {}) as Record<string, unknown>) };
+    if (!overrides.fields.referenciaFabricante) delete identifiers.referencia_fabricante;
+    extension.identifiers = identifiers;
+    specs[PRODUCT_FORM_ESPECIFICACIONES_KEY] = extension;
+    if (!overrides.fields.categoriaId) {
+      detailPayload.categoria_id = null;
+      detailPayload.categoria = null;
+    }
+    const masks: Array<[string, Record<string, unknown>, string]> = [
+      ["unidadesPorCaja", logisticsPayload, "unidades_por_caja"],
+      ["pedidoMinimoUnidades", logisticsPayload, "pedido_minimo_unidades"],
+      ["pesoBrutoKg", logisticsPayload, "peso_kg_bruto"],
+      ["largoCajaCm", logisticsPayload, "largo_cm"],
+      ["anchoCajaCm", logisticsPayload, "ancho_cm"],
+      ["altoCajaCm", logisticsPayload, "alto_cm"],
+      ["materialEstructura", technicalPayload, "material_estructura"],
+      ["materialTapizado", technicalPayload, "material_tapizado"],
+      ["materialRuedas", technicalPayload, "material_ruedas"],
+      ["pesoNetoKg", technicalPayload, "peso_neto_kg"],
+      ["altoAbiertoCm", technicalPayload, "alto_abierto_cm"],
+      ["anchoAbiertoCm", technicalPayload, "ancho_abierto_cm"],
+      ["fondoAbiertoCm", technicalPayload, "fondo_abierto_cm"],
+      ["altoPlegadoCm", technicalPayload, "alto_plegado_cm"],
+      ["anchoPlegadoCm", technicalPayload, "ancho_plegado_cm"],
+      ["fondoPlegadoCm", technicalPayload, "fondo_plegado_cm"],
+    ];
+    for (const [field, payload, column] of masks) {
+      if (!overrides.fields[field as keyof typeof overrides.fields]) payload[column] = null;
+    }
+  }
 
-  const logisticsPayload = await resolveProductLogisticsPayloadForSave(values);
+  const updatedProduct = await updateProductCoreById(productId, corePayload);
 
   await Promise.all([
-    upsertProductDetail(productId, mapProductFormToDetailPayload(values)),
+    upsertProductDetail(productId, detailPayload),
     upsertProductLogistics(productId, logisticsPayload),
     ...(values.heredarPrecio && values.parentId.trim()
       ? []
@@ -71,7 +107,7 @@ export async function updateProduct(
         ]),
     upsertProductTechnicalSheet(
       productId,
-      mapProductFormToTechnicalSheetPayload(values)
+      technicalPayload
     ),
   ]);
 

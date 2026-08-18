@@ -6,7 +6,7 @@ const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABA
 async function allRows(table, select) {
   const out = [];
   for (let offset = 0; ; offset += 1000) {
-    const { data, error } = await db.from(table).select(select).range(offset, offset + 999);
+    const { data, error } = await db.from(table).select(select).order("id", { ascending: true }).range(offset, offset + 999);
     if (error) throw new Error(`${table}: ${error.message}`);
     out.push(...(data ?? []));
     if (!data || data.length < 1000) return out;
@@ -58,6 +58,10 @@ function add(map, key, value) { const s = map.get(key) ?? new Set(); s.add(value
     const values = [...bySku.values()];
     if (bySku.size > 1 && new Set(values).size > 1) conflicts.push({ key, sellerSkuQuantities: Object.fromEntries(bySku) });
   }
+  const targetConflicts = conflicts.filter((item) => item.key.startsWith("614e8e63-b23a-4c4f-8915-abf19a86702f|"));
+  const targetMulti = [...fnskuToSeller.entries()]
+    .filter(([fnsku]) => targetFnsku.has(fnsku) && fnskuToSeller.get(fnsku)?.size > 1)
+    .map(([fnsku, s]) => ({ fnsku, sellerSkus: [...s].sort() }));
   console.log(JSON.stringify({
     rowCounts: { ledger: ledger.length, byCountry: country.length },
     target: { sellerSkus: [...targetSeller].sort(), fnskus: [...targetFnsku].sort() },
@@ -68,6 +72,9 @@ function add(map, key, value) { const s = map.get(key) ?? new Set(); s.add(value
       fnskuAsinProductConflicts: [...fnskuToAsinProduct.entries()].filter(([, s]) => s.size > 1).map(([fnsku, s]) => ({ fnsku, asinProducts: [...s].sort() })),
       sameProductPoolFnskuQuantityConflicts: conflicts.slice(0, 100),
       sameProductPoolFnskuQuantityConflictCount: conflicts.length,
+      targetMultiSellerSkuFnskus: targetMulti,
+      targetSameProductPoolFnskuQuantityConflicts: targetConflicts,
+      targetSameProductPoolFnskuQuantityConflictCount: targetConflicts.length,
     },
   }, null, 2));
 })().catch((e) => { console.error(JSON.stringify({ error: e.message }, null, 2)); process.exitCode = 1; });

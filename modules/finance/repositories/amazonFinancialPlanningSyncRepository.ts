@@ -82,7 +82,9 @@ export type AmazonTreasuryObservation = {
   fundTransferAt?:string|null; expectedAvailabilityDate?:string|null;
   expectedRequestDate?:string|null; expectedBankDate?:string|null;
   confidence:string; estimationMethod:string; fxSource:string;
-  fxObservedAt?:string|null; source:string; evidence:Record<string,unknown>;
+  fxObservedAt?:string|null; fxKind:"AMAZON_REALIZED_FX"|"ERP_ESTIMATED_FX"|"UNAVAILABLE";
+  estimatedFxRate?:number|null; realizedFxRate?:number|null; realizedAmountEur?:number|null;
+  source:string; evidence:Record<string,unknown>;
 };
 
 export async function insertAmazonTreasuryObservationAdmin(item:AmazonTreasuryObservation){
@@ -98,7 +100,8 @@ export async function insertAmazonTreasuryObservationAdmin(item:AmazonTreasuryOb
     p_expected_availability_date:item.expectedAvailabilityDate??null,
     p_expected_request_date:item.expectedRequestDate??null,p_expected_bank_date:item.expectedBankDate??null,
     p_confidence:item.confidence,p_estimation_method:item.estimationMethod,
-    p_fx_source:item.fxSource,p_fx_observed_at:item.fxObservedAt??null,
+    p_fx_source:item.fxSource,p_fx_observed_at:item.fxObservedAt??null,p_fx_kind:item.fxKind,
+    p_estimated_fx_rate:item.estimatedFxRate??null,p_realized_fx_rate:item.realizedFxRate??null,p_realized_amount_eur:item.realizedAmountEur??null,
     p_source:item.source,p_evidence:item.evidence,
   });fail(error);return data;
 }

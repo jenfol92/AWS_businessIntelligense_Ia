@@ -41,10 +41,17 @@ test("economic precedence removes Open/Deferred duplicates and RECEIVED future",
   assert.equal(scenarioAmount(item({state:"RECEIVED"}),"base"),0);
 });
 
-test("75 percent is never applied to AVAILABLE or PENDING_BANK and negative Open contributes zero",()=>{
-  assert.equal(scenarioAmount(item({state:"AVAILABLE",officialAmountEur:100}),"base"),100);
+test("AVAILABLE is mobilizable liquidity, never automatic bank cash",()=>{
+  assert.equal(scenarioAmount(item({state:"AVAILABLE",officialAmountEur:100}),"base"),0);
   assert.equal(scenarioAmount(item({state:"PENDING_BANK",officialAmountEur:100}),"conservative"),100);
   assert.equal(scenarioAmount(item({state:"AVAILABLE",officialAmountEur:-10,originalAmount:-10}),"base"),0);
+});
+
+test("cards separate AVAILABLE conditional dates from PENDING_BANK actual request",()=>{
+  const [card]=buildMarketplaceCashCards([item({identity:"a",state:"AVAILABLE",expectedRequestDate:"2026-08-12"}),item({identity:"p",state:"PENDING_BANK",actualRequestDate:"2026-08-11T09:00:00Z",expectedBankDate:"2026-08-12"})]);
+  assert.equal(card.expectedBankDate,"2026-08-12");assert.equal(card.availableExpectedRequestDate,"2026-08-12");
+  assert.equal(card.availableArrivalBase,"2026-08-13");assert.equal(card.availableArrivalConservative,"2026-08-14");assert.equal(card.availableTiming,"ESTIMATED_CONDITIONAL");
+  assert.equal(card.pendingBankArrivalBase,"2026-08-12");assert.equal(card.pendingBankArrivalConservative,"2026-08-13");
 });
 
 test("DEFERRED and FUTURE are unavailable without evidence-derived scenarios",()=>{

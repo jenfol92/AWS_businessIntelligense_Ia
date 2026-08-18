@@ -16,22 +16,22 @@ test("observation key uses UTC day bucket and material hash",async()=>{
   assert.match(source,/amount,currency,marketplace/);assert.match(source,/fundTransferStatus/);
 });
 
-test("AVAILABLE retains negative observations and uses configured weekday plus lag",async()=>{
+test("AVAILABLE retains negative observations and uses configured weekday only as conditional simulation",async()=>{
   const source=await read("modules/finance/services/amazonTreasuryObservations.ts");
   assert.match(source,/ProcessingStatus!=="Open"/);assert.doesNotMatch(source,/amount\s*<=\s*0[^\n]*return/);
-  assert.match(source,/nextTransferRequestDate\(now,weekdays\)/);assert.match(source,/addBusinessDays\(request,lag\)/);
+  assert.match(source,/availablePayoutSimulation\(now,weekdays\)/);assert.match(source,/expectedBankDate=pending\?expectedBankDateForPending\([^)]*\):null/);
 });
 
-test("PENDING_BANK is only Closed Processing and uses FundTransferDate plus lag",async()=>{
+test("PENDING_BANK is only Closed Processing and uses real FundTransferDate",async()=>{
   const source=await read("modules/finance/services/amazonTreasuryObservations.ts");
   assert.match(source,/ProcessingStatus==="Closed"&&group\.FundTransferStatus==="Processing"/);
-  assert.match(source,/expectedBankDateForPending\(group\.FundTransferDate\?\?null,lag\)/);assert.match(source,/expectedRequestDate:pending\?null/);
+  assert.match(source,/expectedBankDateForPending\(group\.FundTransferDate\?\?null\)/);assert.match(source,/expectedRequestDate:pending\?null/);
 });
 
 test("DEFERRED uses transaction identity, unresolved is explicit, and FX is never zero",async()=>{
   const source=await read("modules/finance/services/amazonTreasuryObservations.ts");
   assert.match(source,/transactionStatus:"DEFERRED"/);assert.match(source,/amazonTransactionId:value\.id/);assert.match(source,/"UNRESOLVED"/);
-  assert.match(source,/fxSource:"unavailable"/);assert.match(source,/amountEur:null,officialAmountEur:null/);assert.doesNotMatch(source,/amountEur:0|officialAmountEur:0/);
+  const fx=await read("modules/finance/services/ecbFxService.ts");assert.match(fx,/fxSource:"UNAVAILABLE"/);assert.match(fx,/amountEur:null,officialAmountEur:null/);assert.doesNotMatch(fx,/amountEur:0|officialAmountEur:0/);
 });
 
 test("cron and manual sales endpoint reuse the canonical importer",async()=>{

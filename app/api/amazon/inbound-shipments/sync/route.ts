@@ -1,10 +1,6 @@
-/**
- * Módulo: Amazon AGL.
- * Responsabilidad: lanzar manualmente la sincronización SP-API inbound hacia `amazon_envios`.
- * No debe ejecutarse por cron, crear envíos Amazon, vincular contenedores ni tocar stock.
- */
-
+/** Sincronizacion manual del workflow independiente Inbound Shipments. */
 import { NextRequest, NextResponse } from "next/server";
+
 import { getMissingSpApiEnvKeys } from "@/modules/amazon-sp-api/config";
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
 import { syncInboundShipmentsToAmazonEnvios } from "@/modules/amazon-sp-api/syncInboundShipmentsToAmazonEnviosService";
@@ -37,53 +33,36 @@ function parseYear(request: NextRequest, body: SyncBody): number | null {
   return Number.isInteger(raw) ? raw : null;
 }
 
-/**
- * POST /api/amazon/inbound-shipments/sync
- *
- * Sincroniza envíos creados en Seller Central hacia `amazon_envios`.
- */
 export async function POST(request: NextRequest) {
   const supabase = createSupabaseRouteClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
-  }
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
 
   const missing = getMissingSpApiEnvKeys();
   if (missing.length > 0) {
     return NextResponse.json(
-      {
-        ok: false,
-        error: `Faltan variables de entorno: ${missing.join(", ")}`,
-      },
+      { ok: false, error: `Faltan variables de entorno: ${missing.join(", ")}` },
       { status: 400 },
     );
   }
 
   try {
     const body = ((await request.json().catch(() => ({}))) ?? {}) as SyncBody;
-    const includeClosedCurrentYear =
-      boolFrom(body.includeClosedCurrentYear) ||
-      request.nextUrl.searchParams.get("includeClosedCurrentYear")?.toLowerCase() === "true";
-    const includeClosed =
-      boolFrom(body.includeClosed) ||
-      request.nextUrl.searchParams.get("includeClosed")?.toLowerCase() === "true" ||
-      includeClosedCurrentYear;
-    const includeReadyToShip =
-      body.includeReadyToShip == null &&
+    const includeClosedCurrentYear = boolFrom(
+      body.includeClosedCurrentYear ?? request.nextUrl.searchParams.get("includeClosedCurrentYear"),
+    );
+    const includeClosed = includeClosedCurrentYear || boolFrom(
+      body.includeClosed ?? request.nextUrl.searchParams.get("includeClosed"),
+    );
+    const includeReadyToShip = body.includeReadyToShip == null &&
       request.nextUrl.searchParams.get("includeReadyToShip") == null
-        ? true
-        : boolFrom(body.includeReadyToShip ?? request.nextUrl.searchParams.get("includeReadyToShip"));
+      ? true
+      : boolFrom(body.includeReadyToShip ?? request.nextUrl.searchParams.get("includeReadyToShip"));
 
     const summary = await syncInboundShipmentsToAmazonEnvios({
       userId: user.id,
       limit: parseLimit(request, body),
-      fromDate:
-        body.fromDate ??
-        body.lastUpdatedAfter ??
+      fromDate: body.fromDate ?? body.lastUpdatedAfter ??
         request.nextUrl.searchParams.get("fromDate") ??
         request.nextUrl.searchParams.get("lastUpdatedAfter"),
       toDate: body.toDate ?? request.nextUrl.searchParams.get("toDate"),
@@ -93,20 +72,11 @@ export async function POST(request: NextRequest) {
       includeReadyToShip,
     });
 
-    return NextResponse.json({
-      ok: true,
-      summary,
-      warnings: summary.warnings,
-      errors: summary.errors,
-    });
+    return NextResponse.json({ ok: true, summary, warnings: summary.warnings, errors: summary.errors });
   } catch (error: unknown) {
     const mapped = mapGenericError(error);
     return NextResponse.json(
-      {
-        ok: false,
-        error: mapped.message,
-        code: mapped.code,
-      },
+      { ok: false, error: mapped.message, code: mapped.code },
       { status: mapped.status ?? 400 },
     );
   }

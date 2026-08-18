@@ -1,6 +1,7 @@
 import { loadSpApiConfig } from "./config";
 import {
-  createReportJob,
+  claimReportRequestJob,
+  findBlockingAmazonReportJob,
   getReportContentFromJob,
   getReportJobById,
   storeReportContentOnJob,
@@ -13,38 +14,29 @@ import {
   getReportDocument,
   mapAmazonProcessingToJobStatus,
 } from "./reportsClient";
-import { createWaitAndDownloadReport } from "./spApiReportImportUtils";
 import { importAmazonFbaLedgerSummaryFromText } from "@/modules/imports/amazon-fba-ledger-summary/service";
+import { countLedgerRowsByDocumentIdentity } from "@/modules/imports/amazon-fba-ledger-summary/repository";
+import {
+  runWithFbaLedgerExecutionLock,
+  unwrapFbaLedgerExecution,
+} from "./fbaLedgerExecutionLock";
+import {
+  fbaLedgerUtcDayBounds,
+  lastCompleteFbaLedgerUtcDay,
+} from "./fbaLedgerSchedulePolicy";
 
 export const FBA_LEDGER_REPORT_TYPE = "GET_LEDGER_SUMMARY_VIEW_DATA";
-
-function isoDate(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function lastCompleteUtcDay(now = new Date()): string {
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  d.setUTCDate(d.getUTCDate() - 1);
-  return isoDate(d);
-}
-
-function dayBounds(date: string): { dataStartTime: string; dataEndTime: string } {
-  return {
-    dataStartTime: `${date}T00:00:00Z`,
-    dataEndTime: `${date}T23:59:59Z`,
-  };
-}
 
 function ledgerPayload(params: {
   date?: string | null;
   marketplaceIds?: string[] | null;
 }) {
   const config = loadSpApiConfig();
-  const requestedDate = params.date?.trim() || lastCompleteUtcDay();
+  const requestedDate = params.date?.trim() || lastCompleteFbaLedgerUtcDay();
   const marketplaceIds =
     params.marketplaceIds?.map((id) => id.trim()).filter(Boolean) ??
     config.marketplaceIds;
-  const { dataStartTime, dataEndTime } = dayBounds(requestedDate);
+  const { dataStartTime, dataEndTime } = fbaLedgerUtcDayBounds(requestedDate);
   return {
     reportType: FBA_LEDGER_REPORT_TYPE,
     marketplaceIds,
@@ -57,17 +49,59 @@ function ledgerPayload(params: {
   };
 }
 
-export async function requestFbaLedgerReportJob(params: {
+async function requestFbaLedgerReportJobUnlocked(params: {
   date?: string | null;
   marketplaceIds?: string[] | null;
   source?: "manual" | "scheduler";
+  onJobClaimed?: (jobId: string) => Promise<void>;
 } = {}) {
   const payload = ledgerPayload(params);
-  const job = await createReportJob({
+  const blocking = await findBlockingAmazonReportJob({
+    reportType: FBA_LEDGER_REPORT_TYPE,
+    recentSince: new Date(Date.now() - 24 * 60 * 60 * 1000),
+    marketplaceIds: payload.marketplaceIds,
+    requestKey: {
+      dataStartTime: payload.dataStartTime,
+      dataEndTime: payload.dataEndTime,
+      reportOptions: payload.reportOptions,
+    },
+  });
+  if (blocking) {
+    await params.onJobClaimed?.(blocking.job.id);
+    return {
+      ok: true,
+      job: blocking.job,
+      jobId: blocking.job.id,
+      reportId: blocking.job.report_id ?? null,
+      marketplaceIds: payload.marketplaceIds,
+      requestedCreateReportPayload: payload,
+      reusedExistingJob: true,
+    };
+  }
+  const claim = await claimReportRequestJob({
     reportType: FBA_LEDGER_REPORT_TYPE,
     marketplaceIds: payload.marketplaceIds,
     source: params.source ?? "manual",
+    requestKey: {
+      dataStartTime: payload.dataStartTime,
+      dataEndTime: payload.dataEndTime,
+      reportOptions: payload.reportOptions,
+    },
+    requestedCreateReportPayload: payload,
   });
+  const job = claim.job;
+  await params.onJobClaimed?.(job.id);
+  if (!claim.acquired) {
+    return {
+      ok: true,
+      job,
+      jobId: job.id,
+      reportId: job.report_id ?? null,
+      marketplaceIds: payload.marketplaceIds,
+      requestedCreateReportPayload: payload,
+      reusedExistingJob: true,
+    };
+  }
 
   try {
     const { reportId } = await createReport(payload);
@@ -88,6 +122,7 @@ export async function requestFbaLedgerReportJob(params: {
       reportId,
       marketplaceIds: payload.marketplaceIds,
       requestedCreateReportPayload: payload,
+      reusedExistingJob: false,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -103,7 +138,21 @@ export async function requestFbaLedgerReportJob(params: {
   }
 }
 
-export async function refreshFbaLedgerReportJobStatus(jobId: string) {
+export async function requestFbaLedgerReportJob(params: {
+  date?: string | null;
+  marketplaceIds?: string[] | null;
+  source?: "manual" | "scheduler";
+} = {}) {
+  return unwrapFbaLedgerExecution(await runWithFbaLedgerExecutionLock({
+    operation: "REQUEST",
+    execute: ({ setJobId }) => requestFbaLedgerReportJobUnlocked({
+      ...params,
+      onJobClaimed: setJobId,
+    }),
+  }));
+}
+
+async function refreshFbaLedgerReportJobStatusUnlocked(jobId: string) {
   const job = await getReportJobById(jobId);
   if (!job) throw new Error("Job SP-API no encontrado.");
   if (job.report_type !== FBA_LEDGER_REPORT_TYPE) {
@@ -139,23 +188,64 @@ export async function refreshFbaLedgerReportJobStatus(jobId: string) {
   };
 }
 
-export async function commitFbaLedgerReportJob(jobId: string) {
+export async function refreshFbaLedgerReportJobStatus(jobId: string) {
+  return unwrapFbaLedgerExecution(await runWithFbaLedgerExecutionLock({
+    operation: "POLL",
+    jobId,
+    execute: () => refreshFbaLedgerReportJobStatusUnlocked(jobId),
+  }));
+}
+
+async function commitFbaLedgerReportJobUnlocked(jobId: string) {
   let job = await getReportJobById(jobId);
   if (!job) throw new Error("Job SP-API no encontrado.");
   if (job.report_type !== FBA_LEDGER_REPORT_TYPE) {
     throw new Error("El job no es un Inventory Ledger diario.");
   }
   if (job.status === "IMPORTED" || job.raw?.importedAt) {
-    throw new Error("Este Ledger ya fue importado anteriormente.");
+    if (!job.report_document_id) {
+      throw new Error("El Ledger importado no conserva reportDocumentId.");
+    }
+    const documentIdentity = `report:${job.report_document_id}`;
+    const persistedDocumentRows = await countLedgerRowsByDocumentIdentity(documentIdentity);
+    if (persistedDocumentRows === 0) {
+      throw new Error("El job figura importado pero no existen filas para su document_identity.");
+    }
+    const previousSummary =
+      job.raw?.importSummary && typeof job.raw.importSummary === "object"
+        ? job.raw.importSummary
+        : {};
+    const commit = {
+      ...previousSummary,
+      insertedOrUpdated: 0,
+      reportDocumentId: job.report_document_id,
+    };
+    const updated = await updateReportJob(job.id, {
+      raw: {
+        ...(job.raw ?? {}),
+        importOutcome: "ALREADY_IMPORTED",
+        lastIdempotencyCheckAt: new Date().toISOString(),
+      },
+    });
+    return {
+      ok: true,
+      code: "ALREADY_IMPORTED" as const,
+      job: updated,
+      jobId: updated.id,
+      commit,
+    };
   }
 
   if (job.processing_status !== "DONE" || !job.report_document_id) {
-    const refreshed = await refreshFbaLedgerReportJobStatus(jobId);
+    const refreshed = await refreshFbaLedgerReportJobStatusUnlocked(jobId);
     job = refreshed.job;
   }
+
   if (job.processing_status !== "DONE" || !job.report_document_id) {
     throw new Error("El Ledger aun no esta DONE o no tiene reportDocumentId.");
   }
+  const documentIdentity = `report:${job.report_document_id}`;
+  const persistedDocumentRows = await countLedgerRowsByDocumentIdentity(documentIdentity);
 
   let reportContent = getReportContentFromJob(job);
   if (!reportContent) {
@@ -183,14 +273,35 @@ export async function commitFbaLedgerReportJob(jobId: string) {
     raw: {
       ...(job.raw ?? {}),
       importedAt: new Date().toISOString(),
+      importOutcome:
+        persistedDocumentRows > 0 && commit.insertedOrUpdated === 0
+          ? "ALREADY_IMPORTED"
+          : "IMPORTED",
       importSummary: commit,
     },
   });
 
-  return { ok: true, job: updated, jobId: updated.id, commit };
+  return {
+    ok: true,
+    code:
+      persistedDocumentRows > 0 && commit.insertedOrUpdated === 0
+        ? "ALREADY_IMPORTED"
+        : "IMPORTED",
+    job: updated,
+    jobId: updated.id,
+    commit,
+  };
 }
 
-export async function downloadAndPreviewFbaLedgerReportJob(jobId: string) {
+export async function commitFbaLedgerReportJob(jobId: string) {
+  return unwrapFbaLedgerExecution(await runWithFbaLedgerExecutionLock({
+    operation: "COMMIT",
+    jobId,
+    execute: () => commitFbaLedgerReportJobUnlocked(jobId),
+  }));
+}
+
+async function downloadAndPreviewFbaLedgerReportJobUnlocked(jobId: string) {
   let job = await getReportJobById(jobId);
   if (!job) throw new Error("Job SP-API no encontrado.");
   if (job.report_type !== FBA_LEDGER_REPORT_TYPE) {
@@ -201,7 +312,7 @@ export async function downloadAndPreviewFbaLedgerReportJob(jobId: string) {
   }
 
   if (job.processing_status !== "DONE" || !job.report_document_id) {
-    const refreshed = await refreshFbaLedgerReportJobStatus(jobId);
+    const refreshed = await refreshFbaLedgerReportJobStatusUnlocked(jobId);
     job = refreshed.job;
   }
   if (job.processing_status !== "DONE" || !job.report_document_id) {
@@ -251,57 +362,10 @@ export async function downloadAndPreviewFbaLedgerReportJob(jobId: string) {
   return { ok: true, job: updated, preview };
 }
 
-export async function importLatestDailyFbaLedgerFromSpApi(params: {
-  date?: string | null;
-  marketplaceIds?: string[] | null;
-} = {}) {
-  const payload = ledgerPayload(params);
-
-  const report = await createWaitAndDownloadReport({
-    ...payload,
-    maxWaitMs: 120_000,
-    pollIntervalMs: 5_000,
-  });
-
-  if (!report.documentText) {
-    return {
-      ok: false,
-      reportType: FBA_LEDGER_REPORT_TYPE,
-      status: report.status,
-      processingStatus: report.processingStatus,
-      reportId: report.reportId,
-      reportDocumentId: report.report?.reportDocumentId ?? null,
-      requestedCreateReportPayload: report.requestedCreateReportPayload,
-      imported: null,
-      error:
-        report.error ??
-        `Amazon no entrego documento Ledger. Estado: ${report.status}`,
-      diagnosticDocumentExcerpt: report.diagnosticDocumentExcerpt ?? null,
-      warnings: report.warnings ?? [],
-    };
-  }
-
-  const imported = await importAmazonFbaLedgerSummaryFromText({
-    text: report.documentText,
-    mode: "commit",
-    source: "amazon_spapi_ledger_summary_daily",
-    sourceFileName: `sp-api-ledger-${report.reportId}.csv`,
-    reportDocumentId: report.report?.reportDocumentId ?? report.reportId,
-    skipUnlinkedProducts: true,
-  });
-
-  return {
-    ok: imported.ok,
-    reportType: FBA_LEDGER_REPORT_TYPE,
-    status: report.status,
-    processingStatus: report.processingStatus,
-    reportId: report.reportId,
-    reportDocumentId: report.report?.reportDocumentId ?? null,
-    requestedCreateReportPayload: report.requestedCreateReportPayload,
-    dataStartTime: report.report?.dataStartTime ?? payload.dataStartTime,
-    dataEndTime: report.report?.dataEndTime ?? payload.dataEndTime,
-    imported,
-    error: null,
-    warnings: report.warnings ?? [],
-  };
+export async function downloadAndPreviewFbaLedgerReportJob(jobId: string) {
+  return unwrapFbaLedgerExecution(await runWithFbaLedgerExecutionLock({
+    operation: "PREVIEW",
+    jobId,
+    execute: () => downloadAndPreviewFbaLedgerReportJobUnlocked(jobId),
+  }));
 }

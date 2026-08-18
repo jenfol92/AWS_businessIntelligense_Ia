@@ -179,7 +179,6 @@ export async function buildProductInventoryDetail(
       productInvRows,
       ctx.fbaLedgerLatest.get(targetId),
       ctx.fbaInventorySnapshotLatest.get(targetId),
-      { preferLedgerSource: true },
     );
 
     const operationalStock = {

@@ -1,6 +1,7 @@
 import {
   loadProductIdsBySkuAndAsin,
   loadLatestFbaCountryConditionByIdentity,
+  loadLedgerLocationEvidence,
 
   mapLedgerRowsToDbPayload,
 
@@ -9,7 +10,7 @@ import {
 } from "./repository";
 
 import {
-  manualLedgerReportDocumentIdFromContent,
+  resolveLedgerDocumentIdentity,
 } from "./ledgerCanonicalIdentity";
 
 import {
@@ -40,16 +41,6 @@ import type {
 
 
 const DEFAULT_SOURCE: AmazonFbaLedgerSource = "amazon_fba_ledger_summary_manual";
-
-function resolveLedgerReportDocumentId(params: {
-  reportDocumentId?: string | null;
-  text: string;
-}): string {
-  const explicit = params.reportDocumentId?.trim();
-  return explicit || manualLedgerReportDocumentIdFromContent(params.text);
-}
-
-
 
 function computeImportStats(
 
@@ -91,7 +82,10 @@ async function importParsedAmazonFbaLedgerSummary(params: {
   source?: string;
   skipUnlinkedProducts?: boolean;
   sourceFileName?: string | null;
-  reportDocumentId: string;
+  reportDocumentId: string | null;
+  manualDocumentHash: string | null;
+  documentIdentityType: "REPORT_DOCUMENT_ID" | "MANUAL_SHA256";
+  documentIdentity: string;
 }): Promise<AmazonFbaLedgerPreviewResponse | AmazonFbaLedgerCommitResponse> {
 
   const source = params.source?.trim() || DEFAULT_SOURCE;
@@ -109,22 +103,35 @@ async function importParsedAmazonFbaLedgerSummary(params: {
   const skus = parsed.validRows.flatMap((r) => [r.skuLimpio, ...r.mskuAliases]);
   const asins = parsed.validRows.map((r) => r.asin).filter(Boolean);
 
-  const productMatches = await loadProductIdsBySkuAndAsin({ skus, asins });
+  const productMatches = await loadProductIdsBySkuAndAsin({
+    skus,
+    asins,
+    fnskus: parsed.validRows.map((row) => row.fnsku).filter(Boolean),
+  });
   const productoBySku = productMatches.bySku;
   const conditionByIdentity = await loadLatestFbaCountryConditionByIdentity(
     parsed.validRows.map((row) => ({ fnsku: row.fnsku, asin: row.asin })),
   );
+  const locationEvidence = await loadLedgerLocationEvidence();
 
   const previewMapped = mapLedgerRowsToDbPayload({
     rows: parsed.validRows,
     productoBySku,
     productoByAsin: productMatches.byAsin,
+    productoByFnsku: productMatches.byFnsku,
+    productoByExistingAlias: productMatches.byExistingAlias,
     skuByProductId: productMatches.skuByProductId,
     ambiguousAsins: productMatches.ambiguousAsins,
+    ambiguousFnskus: productMatches.ambiguousFnskus,
+    ambiguousAliases: productMatches.ambiguousAliases,
     conditionByIdentity,
     source,
     sourceFileName: params.sourceFileName ?? null,
     reportDocumentId: params.reportDocumentId,
+    manualDocumentHash: params.manualDocumentHash,
+    documentIdentityType: params.documentIdentityType,
+    documentIdentity: params.documentIdentity,
+    locationEvidence,
   });
   const unlinkedProductRows = previewMapped.unlinkedProductRows;
   const unlinkedCounts = new Map<string, number>();
@@ -201,14 +208,22 @@ async function importParsedAmazonFbaLedgerSummary(params: {
 
     productoBySku,
     productoByAsin: productMatches.byAsin,
+    productoByFnsku: productMatches.byFnsku,
+    productoByExistingAlias: productMatches.byExistingAlias,
     skuByProductId: productMatches.skuByProductId,
     ambiguousAsins: productMatches.ambiguousAsins,
+    ambiguousFnskus: productMatches.ambiguousFnskus,
+    ambiguousAliases: productMatches.ambiguousAliases,
     conditionByIdentity,
 
     source,
 
     sourceFileName: params.sourceFileName ?? null,
     reportDocumentId: params.reportDocumentId,
+    manualDocumentHash: params.manualDocumentHash,
+    documentIdentityType: params.documentIdentityType,
+    documentIdentity: params.documentIdentity,
+    locationEvidence,
 
   });
 
@@ -289,16 +304,17 @@ export async function importAmazonFbaLedgerSummary(params: {
 }): Promise<AmazonFbaLedgerPreviewResponse | AmazonFbaLedgerCommitResponse> {
   const text = await params.file.text();
   const parsed = await parseAmazonFbaLedgerSummaryText(text);
+  const identity = resolveLedgerDocumentIdentity({
+    reportDocumentId: params.reportDocumentId,
+    text,
+  });
   return importParsedAmazonFbaLedgerSummary({
     parsed,
     mode: params.mode,
     source: params.source,
     skipUnlinkedProducts: params.skipUnlinkedProducts,
     sourceFileName: params.sourceFileName ?? params.file.name ?? null,
-    reportDocumentId: resolveLedgerReportDocumentId({
-      reportDocumentId: params.reportDocumentId,
-      text,
-    }),
+    ...identity,
   });
 }
 
@@ -311,16 +327,17 @@ export async function importAmazonFbaLedgerSummaryFromText(params: {
   reportDocumentId?: string | null;
 }): Promise<AmazonFbaLedgerPreviewResponse | AmazonFbaLedgerCommitResponse> {
   const parsed = await parseAmazonFbaLedgerSummaryText(params.text);
+  const identity = resolveLedgerDocumentIdentity({
+    reportDocumentId: params.reportDocumentId,
+    text: params.text,
+  });
   return importParsedAmazonFbaLedgerSummary({
     parsed,
     mode: params.mode,
     source: params.source,
     skipUnlinkedProducts: params.skipUnlinkedProducts,
     sourceFileName: params.sourceFileName ?? null,
-    reportDocumentId: resolveLedgerReportDocumentId({
-      reportDocumentId: params.reportDocumentId,
-      text: params.text,
-    }),
+    ...identity,
   });
 }
 

@@ -1,5 +1,5 @@
 import Papa from "papaparse";
-import { extractTwinlySkuFromMsku } from "@/modules/imports/shared/twinlySku";
+import { extractTwinlySkuFromMsku } from "../shared/twinlySku.ts";
 import type {
   AmazonFbaLedgerParseResult,
   AmazonFbaLedgerParseWarning,

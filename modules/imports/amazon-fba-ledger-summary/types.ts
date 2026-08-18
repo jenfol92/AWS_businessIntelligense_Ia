@@ -129,7 +129,7 @@ export type AmazonFbaLedgerDbRow = {
   sku_limpio: string;
   fnsku: string;
   asin: string;
-  condition_type: string | null;
+  condition_type: string;
   title: string | null;
   snapshot_date: string;
   disposition: string;
@@ -148,10 +148,18 @@ export type AmazonFbaLedgerDbRow = {
   ending_warehouse_balance: number;
   unknown_events: number;
   location: string;
+  location_raw: string;
+  location_type: "COUNTRY" | "FC" | "OTHER" | "UNKNOWN";
+  physical_country: string | null;
+  location_evidence_source: string | null;
+  location_evidence_confidence: "HIGH" | "MEDIUM" | "LOW" | null;
   location_country: string | null;
   source: string;
   source_file_name: string | null;
-  report_document_id: string;
+  report_document_id: string | null;
+  manual_document_hash: string | null;
+  document_identity_type: "REPORT_DOCUMENT_ID" | "MANUAL_SHA256";
+  document_identity: string;
   raw: Record<string, unknown>;
   updated_at: string;
 };

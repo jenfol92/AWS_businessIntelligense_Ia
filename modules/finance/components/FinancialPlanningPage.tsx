@@ -201,13 +201,15 @@ function eventCategoryLabel(event: FinancePlanningEvent): string {
   if (event.type === "supplier_balance" || event.obligationCategory === "balances") return "PROVEEDOR · BALANCE";
   if (event.isLegacyOpeningBalance && ["credit_line_maturity", "credit_line_repayment_settlement"].includes(event.type)) return "CRÉDITO · DEUDA INICIAL";
   if (["credit_line_maturity", "credit_line_planned_maturity", "credit_line_repayment_settlement"].includes(event.type)) return "CRÉDITO · VENCIMIENTO";
-  if (event.type === "amazon_income") return `AMAZON · ${{RECEIVED:"RECIBIDO",PENDING_BANK:"PENDIENTE DE BANCO",AVAILABLE:"DISPONIBLE",DEFERRED:"DIFERIDO",FUTURE:"FUTURO",LEGACY_CONFIRMED:"HISTORICO SIN CLASIFICAR"}[event.amazonStatus??"FUTURE"]}`;
+  if (event.type === "amazon_income") return `AMAZON · ${{RECEIVED:"RECIBIDO",PENDING_BANK:"TRANSFERENCIA EN CURSO",AVAILABLE:"DISPONIBLE PARA SOLICITAR",DEFERRED:"DIFERIDO",FUTURE:"FUTURO",LEGACY_CONFIRMED:"HISTORICO SIN CLASIFICAR"}[event.amazonStatus??"FUTURE"]}`;
   return "OTROS · OBLIGACIÓN";
 }
 
 function knownEur(value: number | null | undefined): string {
-  return value == null ? "Pendiente" : eur(value);
+  return value == null ? "EUR unavailable" : eur(value);
 }
+
+function originalMoney(value:number,currency:string){return `${new Intl.NumberFormat("es-ES",{minimumFractionDigits:2,maximumFractionDigits:2}).format(value)} ${currency}`;}
 
 function combinedKnownEur(...values: Array<number | null | undefined>): string {
   const known = values.filter((value): value is number => value != null);
@@ -1121,6 +1123,15 @@ export function FinancialPlanningPage() {
     );
   }
 
+  const amazonCards = data.amazonCashForecast.marketplaceCards;
+  const europeAmazonCard = amazonCards.find((card) => card.marketplace === "EUROPE");
+  const unresolvedAmazonCard = amazonCards.find((card) => card.marketplace === "UNRESOLVED");
+  const marketplaceAmazonCards = amazonCards.filter((card) => !["EUROPE", "UNRESOLVED"].includes(card.marketplace));
+  const pendingBankCards = amazonCards.filter((card) => card.marketplace !== "EUROPE" && card.marketplace !== "UNRESOLVED" && (card.pendingBankEur ?? 0) > 0);
+  const unresolvedAmountEur = unresolvedAmazonCard
+    ? (unresolvedAmazonCard.availablePositiveEur ?? 0) + (unresolvedAmazonCard.deferredEur ?? 0) + (unresolvedAmazonCard.pendingBankEur ?? 0)
+    : 0;
+
   return (
     <main className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-7xl px-4 py-6 space-y-5">
@@ -1179,7 +1190,7 @@ export function FinancialPlanningPage() {
               <div className="mt-1 text-[10px] text-slate-500">{data.summary.treasuryEvaluation.recommendation}</div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-[11px] text-slate-500">Amazon disponible</div>
+              <div className="text-[11px] text-slate-500">Amazon disponible para solicitar (fuera de caja)</div>
               <div className="text-sm font-bold text-slate-900">{eur(data.summary.amazonAvailable)}</div>
               <div className="mt-1 text-[10px] text-slate-500">{data.summary.amazonAvailableSource}</div>
             </div>
@@ -1192,13 +1203,41 @@ export function FinancialPlanningPage() {
         </header>
 
         <section className="rounded-xl border border-slate-200 bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-900">Amazon · previsión de caja por marketplace</h2>
-          <p className="mt-1 text-xs text-slate-500">La fecha bancaria esperada gobierna el mes. DEFERRED y FUTURE sin evidencia histórica quedan fuera de escenarios; no modifican caja real.</p>
-          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {data.amazonCashForecast.marketplaceCards.map(card=><div key={card.marketplace} className="rounded-lg border border-slate-200 p-3 text-xs"><div className="font-bold text-slate-900">{card.marketplace}</div><div className="mt-2">Disponible positivo: <b>{knownEur(card.availablePositiveEur)}</b></div><div>Disponible neto: <b>{knownEur(card.availableEur)}</b></div><div>Diferido conocido: <b>{knownEur(card.deferredEur)}</b></div><div>Pendiente banco: <b>{knownEur(card.pendingBankEur)}</b></div><div>Futuro: <b>{eur(card.futureEur)}</b></div><div className="mt-1 text-[10px] text-slate-500">Banco esperado: {card.expectedBankDate??"no disponible"} · {card.confidence}</div><div className="mt-1 text-[10px] text-slate-500">FX: {card.fxSources.join(", ")||"no disponible"} · snapshot: {card.lastSnapshotAt?new Date(card.lastSnapshotAt).toLocaleString("es-ES"):"no disponible"}</div></div>)}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">Amazon · Estados de liquidez por marketplace</h2>
+              <p className="mt-1 text-xs text-slate-500">AVAILABLE es dinero que puede solicitarse a Amazon, pero todavía no está en banco.</p>
+              <p className="mt-1 text-[11px] text-slate-400">Última actualización: {data.amazonSync?.lastSuccessfulAmazonSyncAt ? new Date(data.amazonSync.lastSuccessfulAmazonSyncAt).toLocaleString("es-ES") : "no disponible"}</p>
+            </div>
+            <button type="button" onClick={() => void reloadPlanning()} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">Actualizar</button>
           </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-3">
-            {data.amazonCashForecast.monthlyScenarios.map(row=><div key={row.month} className="rounded-lg bg-slate-50 p-3 text-xs"><b>{row.month}</b><div>Conservador {eur(row.conservative)} · Base {eur(row.base)} · Optimista {eur(row.optimistic)}</div><div className="text-[10px] text-slate-500">Observado {eur(row.observed)} · estimado con evidencia {eur(row.estimated)}</div></div>)}
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {marketplaceAmazonCards.map((card) => <div key={card.marketplace} className="rounded-lg border border-slate-200 p-3">
+              <div className="text-sm font-bold text-slate-900">{card.marketplace}</div>
+              <div className="mt-3 text-[11px] text-slate-500">Disponible para solicitar</div><div className="text-sm font-semibold text-slate-900">{originalMoney(card.availableOriginal,card.currency)}</div><div className="text-lg font-bold text-emerald-700">{knownEur(card.availablePositiveEur)}</div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs"><div><span className="block text-slate-400">Diferido por Amazon</span><b className="block">{originalMoney(card.deferredOriginal,card.currency)}</b><b>{knownEur(card.deferredEur)}</b></div><div><span className="block text-slate-400">En curso / pendiente banco</span><b className="block">{originalMoney(card.pendingBankOriginal,card.currency)}</b><b>{knownEur(card.pendingBankEur)}</b></div></div>
+              {(card.pendingBankEur ?? 0) > 0 ? <div className="mt-2 text-[11px] text-emerald-700">Llegada estimada: {card.pendingBankArrivalBase ?? card.expectedBankDate ?? "no disponible"}</div> : null}
+              {card.currency!=="EUR"?<div className="mt-3 border-t border-slate-100 pt-2 text-[10px] text-slate-500">FX: {card.fxRate!=null?`1 ${card.currency} = ${card.fxRate.toFixed(6)} EUR`:"EUR unavailable"}<br/>{card.fxSources.join(", ")||"UNAVAILABLE"} · {card.fxObservedAt??"sin fecha FX"}</div>:<div className="mt-3 border-t border-slate-100 pt-2 text-[10px] text-slate-400">EUR · sin conversión</div>}
+            </div>)}
+
+            {europeAmazonCard ? <div className="rounded-lg border-2 border-indigo-200 bg-indigo-50/40 p-4 sm:col-span-2 xl:col-span-2">
+              <div className="text-base font-bold text-indigo-950">Europa · equivalente EUR estimado</div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3 text-xs"><div><span className="block text-slate-500">Disponible para solicitar</span><b className="text-lg text-emerald-700">{knownEur(europeAmazonCard.availablePositiveEur)}</b></div><div><span className="block text-slate-500">Diferido por Amazon</span><b className="text-lg text-slate-900">{knownEur(europeAmazonCard.deferredEur)}</b></div><div><span className="block text-slate-500">En curso / pendiente de banco</span><b className="text-lg text-slate-900">{knownEur(europeAmazonCard.pendingBankEur)}</b></div></div>
+              <div className="mt-3 text-[10px] text-slate-400">EUR oficiales + equivalentes ECB; no es un total exacto Amazon. No incluye UNRESOLVED ni marketplaces de Oriente Próximo · snapshot {europeAmazonCard.lastSnapshotAt ? new Date(europeAmazonCard.lastSnapshotAt).toLocaleString("es-ES") : "no disponible"}</div>
+            </div> : null}
+
+            <div className={`rounded-lg border p-3 ${unresolvedAmountEur > 0 ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-slate-50/60"}`}>
+              <div className="text-sm font-bold text-slate-900">UNRESOLVED</div>
+              <div className="mt-1 text-[11px] text-slate-500">Importes Amazon pendientes de asignar a un marketplace.</div>
+              <div className={`mt-3 text-lg font-bold ${unresolvedAmountEur > 0 ? "text-amber-800" : "text-slate-500"}`}>{eur(unresolvedAmountEur)}</div>
+              <div className="mt-1 text-xs text-slate-500">{unresolvedAmountEur > 0 ? "Pendientes de asignar" : "Sin importes pendientes de asignar"}</div>
+            </div>
+          </div>
+
+          <div className="mt-5 border-t border-slate-200 pt-4">
+            <h3 className="text-sm font-semibold text-slate-900">Próximas transferencias en curso</h3>
+            <div className="mt-2 overflow-x-auto"><table className="min-w-full text-left text-xs"><thead className="text-slate-400"><tr><th className="py-2 pr-4">Marketplace</th><th className="py-2 pr-4">Importe</th><th className="py-2 pr-4">Solicitado/Iniciado</th><th className="py-2 pr-4">Llegada estimada</th><th className="py-2">Estado</th></tr></thead><tbody className="divide-y divide-slate-100">{pendingBankCards.map((card) => <tr key={card.marketplace}><td className="py-2 pr-4 font-semibold">{card.marketplace}</td><td className="py-2 pr-4">{knownEur(card.pendingBankEur)}</td><td className="py-2 pr-4">Evidencia Amazon</td><td className="py-2 pr-4">{card.pendingBankArrivalBase ?? card.expectedBankDate ?? "no disponible"}</td><td className="py-2 text-emerald-700">PENDING_BANK</td></tr>)}{pendingBankCards.length === 0 ? <tr><td colSpan={5} className="py-4 text-center text-slate-400">No hay transferencias en curso.</td></tr> : null}</tbody></table></div>
           </div>
         </section>
 

@@ -4,6 +4,7 @@ import type {
   ResolvedCountryScope,
 } from "./inventoryScope";
 import { stockForChannelRow } from "./inventoryScope";
+import { isInventoryTimestampNotStale } from "./inventoryFreshnessPolicy";
 
 export type LatestFbaLedgerStock = {
   snapshotDate: string;
@@ -30,6 +31,7 @@ export type InventarioPaisStockRow = {
 export type OperationalStockFbaSource =
   | "fba_inventory_snapshot"
   | "country_inventory"
+  /** Compatibilidad de presentaciÃ³n; el resolver canÃ³nico nunca lo elige. */
   | "ledger"
   | "none";
 
@@ -65,8 +67,8 @@ export type OperationalStockSummary = {
 };
 
 export type BuildOperationalStockOptions = {
-  /** Vista de auditoría ledger: fuerza ledger como fuente operativa si existe. */
-  preferLedgerSource?: boolean;
+  /** Hora de referencia inyectable para evaluar freshness. */
+  now?: Date;
 };
 
 function sumInventarioFba(rows: InventoryRow[]): number {
@@ -124,26 +126,12 @@ function isCountryInventoryNewerThanLedger(
 
 function resolveOperationalFbaSource(params: {
   hasSnapshot: boolean;
-  hasLedger: boolean;
   hasCountryRows: boolean;
-  countryNewerThanLedger: boolean;
-  preferLedgerSource: boolean;
 }): OperationalStockFbaSource {
-  const {
-    hasSnapshot,
-    hasLedger,
-    hasCountryRows,
-    countryNewerThanLedger,
-    preferLedgerSource,
-  } = params;
-
-  if (preferLedgerSource && hasLedger) return "ledger";
+  const { hasSnapshot, hasCountryRows } = params;
   if (hasSnapshot) return "fba_inventory_snapshot";
-  if (!hasCountryRows && !hasLedger) return "none";
-  if (!hasCountryRows && hasLedger) return "ledger";
-  if (hasCountryRows && !hasLedger) return "country_inventory";
-  if (countryNewerThanLedger) return "country_inventory";
-  return "ledger";
+  if (hasCountryRows) return "country_inventory";
+  return "none";
 }
 
 function resolveOperationalFba(
@@ -157,8 +145,6 @@ function resolveOperationalFba(
       return stockFbaLatestSnapshot ?? 0;
     case "country_inventory":
       return stockFbaApp;
-    case "ledger":
-      return stockFbaLatestLedger ?? stockFbaApp;
     default:
       return 0;
   }
@@ -205,6 +191,7 @@ export function buildOperationalStockSummary(
   snapshot: LatestFbaInventorySnapshotStock | null | undefined,
   options: BuildOperationalStockOptions = {},
 ): OperationalStockSummary {
+  const now = options.now ?? new Date();
   const stockFbaApp = sumInventarioFba(inventoryRows);
   const stockFbmApp = sumInventarioFbm(inventoryRows);
 
@@ -226,10 +213,12 @@ export function buildOperationalStockSummary(
   const stockFbaAppLatestUpdatedAt = latestInventarioPaisesUpdatedAt(inventoryRows);
 
   const hasSnapshot =
-    stockFbaLatestSnapshot != null && stockFbaLatestSnapshotAt != null;
+    stockFbaLatestSnapshot != null && isInventoryTimestampNotStale(stockFbaLatestSnapshotAt, now);
   const hasLedger =
-    stockFbaLatestLedger != null && stockFbaLatestLedgerDate != null;
-  const hasCountryRows = hasCountryInventoryRows(inventoryRows);
+    stockFbaLatestLedger != null &&
+    isInventoryTimestampNotStale(stockFbaLatestLedgerDate ? `${stockFbaLatestLedgerDate}T00:00:00Z` : null, now);
+  const hasCountryRows =
+    hasCountryInventoryRows(inventoryRows) && isInventoryTimestampNotStale(stockFbaAppLatestUpdatedAt, now);
   const countryNewerThanLedger = isCountryInventoryNewerThanLedger(
     stockFbaAppLatestUpdatedAt,
     stockFbaLatestLedgerDate,
@@ -237,10 +226,7 @@ export function buildOperationalStockSummary(
 
   const stockOperationalFbaSource = resolveOperationalFbaSource({
     hasSnapshot,
-    hasLedger,
     hasCountryRows,
-    countryNewerThanLedger,
-    preferLedgerSource: options.preferLedgerSource === true,
   });
 
   const stockOperationalFba = resolveOperationalFba(

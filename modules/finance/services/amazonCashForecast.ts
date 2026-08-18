@@ -1,5 +1,5 @@
 import type { AmazonEconomicState } from "../types/amazonFinancialPlanningSync.types";
-import { addBusinessDays, nextTransferRequestDate, roundMoney } from "./amazonTreasuryModel.ts";
+import { addBusinessDays, nextTransferRequestDate, payoutArrivalWindow, roundMoney } from "./amazonTreasuryModel.ts";
 
 export type AmazonTreasuryScenario = "conservative" | "base" | "optimistic";
 
@@ -49,10 +49,14 @@ export type AmazonCashItem = {
   officialAmountEur: number | null;
   estimatedAmountEur: number | null;
   expectedBankDate: string | null;
+  expectedRequestDate?: string | null;
+  actualRequestDate?: string | null;
   confidence: "exact" | "high" | "medium" | "low" | "unavailable";
   estimationMethod: string;
   snapshotAt?: string | null;
   fxSource?: string | null;
+  fxRate?: number | null;
+  fxObservedAt?: string | null;
   scenarioAmountsEur?: Partial<Record<AmazonTreasuryScenario, number>>;
 };
 
@@ -69,10 +73,19 @@ export type AmazonMarketplaceCashCard = {
   futureEur: number;
   totalEconomicEur: number;
   expectedBankDate: string | null;
+  availableExpectedRequestDate: string | null;
+  availableArrivalBase: string | null;
+  availableArrivalConservative: string | null;
+  availableTiming: "ESTIMATED_CONDITIONAL" | null;
+  pendingBankArrivalBase: string | null;
+  pendingBankArrivalConservative: string | null;
   confidence: string;
   estimationMethod: string;
   lastSnapshotAt: string | null;
   fxSources: string[];
+  fxRate: number | null;
+  fxObservedAt: string | null;
+  containsEstimatedFx: boolean;
 };
 
 const PRECEDENCE: Record<AmazonEconomicState, number> = {
@@ -185,7 +198,7 @@ export function scenarioAmount(item: AmazonCashItem, scenario: AmazonTreasurySce
   const amount = item.officialAmountEur ?? item.estimatedAmountEur;
   if (amount == null || amount <= 0) return 0;
   if (item.state === "PENDING_BANK") return amount;
-  if (item.state === "AVAILABLE") return amount;
+  if (item.state === "AVAILABLE") return 0;
   // DEFERRED/FUTURE are cash only when the caller supplies an estimate derived
   // from observed release/net history. Missing evidence is deliberately zero,
   // never an embedded financial probability.
@@ -207,7 +220,11 @@ export function buildMarketplaceCashCards(items: AmazonCashItem[]): AmazonMarket
       return values.some(value => value == null) ? null : roundMoney(values.reduce((sum, value) => sum + Number(value), 0));
     };
     const economicValues = rows.filter(row => row.state !== "RECEIVED").map(row => row.officialAmountEur ?? row.estimatedAmountEur);
-    const dates = rows.map(row => row.expectedBankDate).filter(Boolean).sort() as string[];
+    const pendingDates = byState("PENDING_BANK").map(row => row.expectedBankDate).filter(Boolean).sort() as string[];
+    const availableRequestDates=byState("AVAILABLE").map(row=>row.expectedRequestDate).filter(Boolean).sort() as string[];
+    const availableArrival=availableRequestDates[0]?payoutArrivalWindow(availableRequestDates[0]):null;
+    const pendingRequestDates=byState("PENDING_BANK").map(row=>row.actualRequestDate).filter(Boolean).sort() as string[];
+    const pendingArrival=pendingRequestDates[0]?payoutArrivalWindow(pendingRequestDates[0]):null;
     return {
       marketplace,
       currency,
@@ -220,11 +237,20 @@ export function buildMarketplaceCashCards(items: AmazonCashItem[]): AmazonMarket
       pendingBankEur: eur("PENDING_BANK"),
       futureEur: eur("FUTURE") ?? 0,
       totalEconomicEur: economicValues.some(value => value == null) ? 0 : roundMoney(economicValues.reduce((sum, value) => sum + Number(value), 0)),
-      expectedBankDate: dates[0] ?? null,
+      expectedBankDate: pendingDates[0] ?? null,
+      availableExpectedRequestDate:availableRequestDates[0]??null,
+      availableArrivalBase:availableArrival?.base??null,
+      availableArrivalConservative:availableArrival?.conservative??null,
+      availableTiming:availableRequestDates[0]?"ESTIMATED_CONDITIONAL" as const:null,
+      pendingBankArrivalBase:pendingArrival?.base??pendingDates[0]??null,
+      pendingBankArrivalConservative:pendingArrival?.conservative??null,
       confidence: rows.map(row => row.confidence).sort()[0] ?? "unavailable",
       estimationMethod: Array.from(new Set(rows.map(row => row.estimationMethod))).join(" + "),
       lastSnapshotAt: rows.map(row=>row.snapshotAt).filter(Boolean).sort().at(-1)??null,
       fxSources: Array.from(new Set(rows.map(row=>row.fxSource).filter((value):value is string=>Boolean(value)))).sort(),
+      fxRate: rows.map(row=>row.fxRate).find((value):value is number=>value!=null)??null,
+      fxObservedAt: rows.map(row=>row.fxObservedAt).filter(Boolean).sort().at(-1)??null,
+      containsEstimatedFx:rows.some(row=>row.fxSource==="ECB"),
     };
   }).sort((a, b) => a.marketplace.localeCompare(b.marketplace));
 }
@@ -236,7 +262,7 @@ export function summarizeAmazonCashByMonth(items: AmazonCashItem[], months: stri
     conservative: roundMoney(exclusive.filter(item => item.expectedBankDate?.startsWith(month)).reduce((sum, item) => sum + scenarioAmount(item, "conservative"), 0)),
     base: roundMoney(exclusive.filter(item => item.expectedBankDate?.startsWith(month)).reduce((sum, item) => sum + scenarioAmount(item, "base"), 0)),
     optimistic: roundMoney(exclusive.filter(item => item.expectedBankDate?.startsWith(month)).reduce((sum, item) => sum + scenarioAmount(item, "optimistic"), 0)),
-    observed: roundMoney(exclusive.filter(item => item.expectedBankDate?.startsWith(month) && ["PENDING_BANK", "AVAILABLE"].includes(item.state)).reduce((sum, item) => sum + scenarioAmount(item, "base"), 0)),
+    observed: roundMoney(exclusive.filter(item => item.expectedBankDate?.startsWith(month) && item.state === "PENDING_BANK").reduce((sum, item) => sum + scenarioAmount(item, "base"), 0)),
     estimated: roundMoney(exclusive.filter(item => item.expectedBankDate?.startsWith(month) && ["DEFERRED", "FUTURE"].includes(item.state)).reduce((sum, item) => sum + scenarioAmount(item, "base"), 0)),
   }));
 }

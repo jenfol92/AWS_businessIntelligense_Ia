@@ -1,5 +1,5 @@
 import type { SpApiConfig } from "./config";
-import { mapLwaError } from "./errors";
+import { mapLwaError, mapUpstreamFetchError } from "./errors";
 import type { LwaTokenResponse } from "./types";
 
 const LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token";
@@ -46,11 +46,16 @@ export async function getLwaAccessToken(
     client_secret: config.lwaClientSecret,
   });
 
-  const res = await fetch(LWA_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
+  let res: Response;
+  try {
+    res = await fetch(LWA_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+  } catch (error) {
+    throw mapUpstreamFetchError(error, "LWA", LWA_TOKEN_URL);
+  }
 
   const json = (await res.json()) as LwaTokenResponse & {
     error?: string;

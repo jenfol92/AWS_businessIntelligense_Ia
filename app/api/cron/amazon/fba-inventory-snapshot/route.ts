@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getMissingSpApiEnvKeys } from "@/modules/amazon-sp-api/config";
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
-import { importFbaInventorySnapshotFromSpApi } from "@/modules/amazon-sp-api/fbaForecastSpApiImportsService";
+import { syncAmazonInventoryCanonical } from "@/modules/amazon-sp-api/amazonInventoryCanonicalSyncService";
 import { supabaseAdmin } from "@/server/supabase/adminClient";
 
 export const dynamic = "force-dynamic";
+const INVENTORY_CRON_GATE_CODE = "INVENTORY_REFRESH_TEMPORARILY_GATED";
 
 const JOB_KEY = "amazon_fba_inventory_snapshot";
 const NEXT_RUN_HINT = "Cada 6 h inicialmente; ajustar a 4 h si hace falta.";
@@ -72,6 +73,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  return NextResponse.json(
+    { ok: false, status: "GATED", code: INVENTORY_CRON_GATE_CODE, error: "Cron Inventory desactivado hasta validar Inventory Summaries filtrado.", startedAt },
+    { status: 503 },
+  );
+
   const missing = getMissingSpApiEnvKeys();
   if (missing.length > 0) {
     const finishedAt = new Date().toISOString();
@@ -89,7 +95,11 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const summary = await importFbaInventorySnapshotFromSpApi({});
+    const canonical = await syncAmazonInventoryCanonical();
+    if (canonical.action !== "synced") {
+      return NextResponse.json({ ok: true, status: canonical.action.toUpperCase(), ...canonical });
+    }
+    const summary = canonical.inventory!;
     const finishedAt = new Date().toISOString();
     await updateSyncJob({
       finishedAt,

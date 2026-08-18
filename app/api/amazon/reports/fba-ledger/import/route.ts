@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMissingSpApiEnvKeys } from "@/modules/amazon-sp-api/config";
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
-import { importFbaLedgerDailyFromSpApi } from "@/modules/amazon-sp-api/fbaForecastSpApiImportsService";
+import { requestFbaLedgerReportJob } from "@/modules/amazon-sp-api/fbaLedgerReportService";
+import { LedgerAlreadyRunningError } from "@/modules/amazon-sp-api/fbaLedgerExecutionLock";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import { isAdminUser } from "@/server/auth/adminAuthorization";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +27,9 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
   }
+  if (!(await isAdminUser(user))) {
+    return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 403 });
+  }
 
   const missing = getMissingSpApiEnvKeys();
   if (missing.length > 0) {
@@ -43,25 +48,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const summary = await importFbaLedgerDailyFromSpApi({
-      fromDate: body.fromDate,
-      toDate: body.toDate,
-      marketplaceIds: body.marketplaceIds,
-    });
-
-    if (!summary.ok) {
+    if (body.fromDate !== body.toDate) {
       return NextResponse.json(
-        {
-          ok: false,
-          error: summary.error ?? "Amazon no pudo generar el informe ledger.",
-          summary,
-        },
-        { status: summary.status === "RATE_LIMITED" ? 429 : 502 },
+        { ok: false, code: "LEDGER_DAILY_RANGE_REQUIRED", error: "El owner canónico Ledger solo admite un día por informe." },
+        { status: 400 },
       );
     }
-
-    return NextResponse.json({ ok: true, summary });
+    const result = await requestFbaLedgerReportJob({
+      date: body.fromDate,
+      marketplaceIds: body.marketplaceIds,
+      source: "manual",
+    });
+    return NextResponse.json(result);
   } catch (error: unknown) {
+    if (error instanceof LedgerAlreadyRunningError) {
+      return NextResponse.json({
+        ok: false,
+        code: error.code,
+        error: error.message,
+        existingRunId: error.existingRunId,
+        existingJobId: error.existingJobId,
+      }, { status: 409 });
+    }
     const mapped = mapGenericError(error);
     return NextResponse.json(
       { ok: false, error: mapped.message, code: mapped.code },

@@ -1,0 +1,10 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { resolveCanonicalInventorySyncGate } from "./amazonInventorySyncGate.ts";
+const now=new Date("2026-08-13T12:00:00Z");
+test("fresh snapshots skip Amazon calls for four hours",()=>assert.equal(resolveCanonicalInventorySyncGate({now,lastSuccessAt:"2026-08-13T10:00:00Z",lastRunAt:null,lastStatus:"SUCCESS"}),"skipped_fresh"));
+test("a recent 429 starts cooldown even without a successful snapshot",()=>assert.equal(resolveCanonicalInventorySyncGate({now,lastSuccessAt:null,lastRunAt:"2026-08-13T11:45:00Z",lastStatus:"RATE_LIMITED"}),"skipped_rate_limit"));
+test("expired cooldown permits a controlled retry",()=>assert.equal(resolveCanonicalInventorySyncGate({now,lastSuccessAt:null,lastRunAt:"2026-08-13T11:00:00Z",lastStatus:"RATE_LIMITED"}),null));
+test("RUNNING lease blocks another process",()=>assert.equal(resolveCanonicalInventorySyncGate({now,lastSuccessAt:null,lastRunAt:"2026-08-13T11:50:00Z",lastStatus:"RUNNING"}),"skipped_running"));
+test("expired RUNNING lease can be recovered",()=>assert.equal(resolveCanonicalInventorySyncGate({now,lastSuccessAt:null,lastRunAt:"2026-08-13T11:40:00Z",lastStatus:"RUNNING"}),null));
+test("force cannot steal a live RUNNING lease",()=>assert.equal(resolveCanonicalInventorySyncGate({now,force:true,lastSuccessAt:null,lastRunAt:"2026-08-13T11:50:00Z",lastStatus:"RUNNING"}),"skipped_running"));

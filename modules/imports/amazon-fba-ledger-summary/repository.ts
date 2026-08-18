@@ -6,9 +6,62 @@ import type {
   AmazonFbaLedgerDbRow,
   ParsedAmazonFbaLedgerRow,
 } from "./types";
-import { dedupeLedgerRowsForUpsert } from "./ledgerCanonicalIdentity";
+import {
+  dedupeLedgerRowsForUpsert,
+  prepareLedgerRowsAgainstPersisted,
+} from "./ledgerCanonicalIdentity";
+import {
+  classifyLedgerLocation,
+  type LedgerLocationEvidence,
+} from "./ledgerLocationContract";
 
 const UPSERT_BATCH_SIZE = 200;
+
+export async function loadLedgerLocationEvidence(): Promise<LedgerLocationEvidence> {
+  const [{ data: countries, error: countriesError }, { data: inbound, error: inboundError }] =
+    await Promise.all([
+      supabaseAdmin.from("paises").select("code").eq("activo", true),
+      supabaseAdmin
+        .from("amazon_inbound_shipments")
+        .select("destination_center,destination_country")
+        .not("destination_center", "is", null),
+    ]);
+  if (countriesError) throw new Error(countriesError.message);
+  if (inboundError) throw new Error(inboundError.message);
+
+  const knownCountryCodes = new Set(
+    (countries ?? []).map((row) => normalizeLedgerIdentity((row as { code?: string }).code)).filter(Boolean),
+  );
+  const centers = new Set<string>();
+  const countriesByCenter = new Map<string, Set<string>>();
+  for (const row of inbound ?? []) {
+    const center = normalizeLedgerIdentity(
+      (row as { destination_center?: string | null }).destination_center,
+    );
+    if (!center) continue;
+    centers.add(center);
+    const country = normalizeLedgerIdentity(
+      (row as { destination_country?: string | null }).destination_country,
+    );
+    if (!country) continue;
+    const values = countriesByCenter.get(center) ?? new Set<string>();
+    values.add(country);
+    countriesByCenter.set(center, values);
+  }
+  const physicalCountryByCenter = new Map<string, string>();
+  const evidenceSourceByCenter = new Map<string, string>();
+  for (const center of Array.from(centers)) {
+    const values = Array.from(countriesByCenter.get(center) ?? []);
+    if (values.length === 1 && values[0]) physicalCountryByCenter.set(center, values[0]);
+    evidenceSourceByCenter.set(center, "INBOUND_DESTINATION");
+  }
+  return {
+    knownCountryCodes,
+    fulfillmentCenters: centers,
+    physicalCountryByCenter,
+    evidenceSourceByCenter,
+  };
+}
 
 function normalizeLedgerIdentity(value: string | null | undefined): string {
   return String(value ?? "").trim().toUpperCase();
@@ -20,11 +73,6 @@ function normalizeLedgerText(value: string | null | undefined): string {
 
 function normalizeLedgerDisposition(value: string | null | undefined): string {
   return normalizeLedgerIdentity(value) || "UNKNOWN";
-}
-
-function normalizeLedgerCountry(value: string | null | undefined): string {
-  const normalized = normalizeLedgerIdentity(value) || "UNKNOWN";
-  return normalized === "UK" ? "GB" : normalized;
 }
 
 export async function loadProductIdsBySku(
@@ -57,16 +105,25 @@ export async function loadProductIdsBySku(
 export async function loadProductIdsBySkuAndAsin(params: {
   skus: string[];
   asins: string[];
+  fnskus?: string[];
 }): Promise<{
   bySku: Map<string, string>;
   byAsin: Map<string, string>;
+  byFnsku: Map<string, string>;
+  byExistingAlias: Map<string, string>;
   skuByProductId: Map<string, string>;
   ambiguousAsins: Set<string>;
+  ambiguousFnskus: Set<string>;
+  ambiguousAliases: Set<string>;
 }> {
   const bySku = await loadProductIdsBySku(params.skus);
   const byAsin = new Map<string, string>();
   const skuByProductId = new Map<string, string>();
   const ambiguousAsins = new Set<string>();
+  const byFnsku = new Map<string, string>();
+  const byExistingAlias = new Map<string, string>();
+  const ambiguousFnskus = new Set<string>();
+  const ambiguousAliases = new Set<string>();
   const uniqueAsins = Array.from(
     new Set(params.asins.map((asin) => asin.trim()).filter(Boolean)),
   );
@@ -99,7 +156,64 @@ export async function loadProductIdsBySkuAndAsin(params: {
     }
   }
 
-  return { bySku, byAsin, skuByProductId, ambiguousAsins };
+  const uniqueFnskus = Array.from(
+    new Set((params.fnskus ?? []).map(normalizeLedgerIdentity).filter(Boolean)),
+  );
+  const historicalRows: Array<{
+    producto_id?: string | null;
+    fnsku?: string | null;
+    sku_original?: string | null;
+    sku_limpio?: string | null;
+    msku_aliases?: string[] | null;
+  }> = [];
+  for (let i = 0; i < uniqueFnskus.length; i += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("amazon_fba_inventory_ledger_daily")
+      .select("producto_id,fnsku,sku_original,sku_limpio,msku_aliases")
+      .not("producto_id", "is", null)
+      .in("fnsku", uniqueFnskus.slice(i, i + 500));
+    if (error) throw new Error(error.message);
+    historicalRows.push(...((data ?? []) as typeof historicalRows));
+  }
+  const collectUnique = (
+    target: Map<string, string>,
+    ambiguous: Set<string>,
+    key: string,
+    productId: string,
+  ) => {
+    if (!key || !productId || ambiguous.has(key)) return;
+    const existing = target.get(key);
+    if (existing && existing !== productId) {
+      target.delete(key);
+      ambiguous.add(key);
+      return;
+    }
+    target.set(key, productId);
+  };
+  for (const row of historicalRows) {
+    const productId = normalizeLedgerText(row.producto_id);
+    if (!productId) continue;
+    collectUnique(byFnsku, ambiguousFnskus, normalizeLedgerIdentity(row.fnsku), productId);
+    for (const alias of [row.sku_original, row.sku_limpio, ...(row.msku_aliases ?? [])]) {
+      collectUnique(
+        byExistingAlias,
+        ambiguousAliases,
+        normalizeLedgerIdentity(alias),
+        productId,
+      );
+    }
+  }
+
+  return {
+    bySku,
+    byAsin,
+    byFnsku,
+    byExistingAlias,
+    skuByProductId,
+    ambiguousAsins,
+    ambiguousFnskus,
+    ambiguousAliases,
+  };
 }
 
 type ConditionLookupValue = {
@@ -209,12 +323,20 @@ export function mapLedgerRowsToDbPayload(params: {
   rows: ParsedAmazonFbaLedgerRow[];
   productoBySku: Map<string, string>;
   productoByAsin?: Map<string, string>;
+  productoByFnsku?: Map<string, string>;
+  productoByExistingAlias?: Map<string, string>;
   skuByProductId?: Map<string, string>;
   ambiguousAsins?: Set<string>;
+  ambiguousFnskus?: Set<string>;
+  ambiguousAliases?: Set<string>;
   conditionByIdentity?: Map<string, ConditionLookupValue>;
   source: string;
   sourceFileName: string | null;
-  reportDocumentId?: string | null;
+  reportDocumentId: string | null;
+  manualDocumentHash: string | null;
+  documentIdentityType: "REPORT_DOCUMENT_ID" | "MANUAL_SHA256";
+  documentIdentity: string;
+  locationEvidence?: LedgerLocationEvidence;
 }): {
   dbRows: AmazonFbaLedgerDbRow[];
   unlinkedProductRows: number;
@@ -232,16 +354,36 @@ export function mapLedgerRowsToDbPayload(params: {
       asin && !params.ambiguousAsins?.has(asin)
         ? params.productoByAsin?.get(asin)
         : null;
+    const fnsku = normalizeLedgerIdentity(row.fnsku);
+    const fnskuProductId =
+      fnsku && !params.ambiguousFnskus?.has(fnsku)
+        ? params.productoByFnsku?.get(fnsku)
+        : null;
     const aliasProductIds = Array.from(
       new Set(
         row.mskuAliases
-          .map((alias) => params.productoBySku.get(alias) ?? params.productoBySku.get(row.skuLimpio))
+          .map((alias) => params.productoBySku.get(alias))
           .filter(Boolean) as string[],
       ),
     );
     const skuProductId = params.productoBySku.get(row.skuLimpio) ?? null;
+    const existingAliasProductIds = Array.from(
+      new Set(
+        row.mskuAliases
+          .map((alias) => normalizeLedgerIdentity(alias))
+          .filter((alias) => !params.ambiguousAliases?.has(alias))
+          .map((alias) => params.productoByExistingAlias?.get(alias))
+          .filter(Boolean) as string[],
+      ),
+    );
     const candidateIds = Array.from(
-      new Set([asinProductId, skuProductId, ...aliasProductIds].filter(Boolean) as string[]),
+      new Set([
+        asinProductId,
+        fnskuProductId,
+        skuProductId,
+        ...aliasProductIds,
+        ...existingAliasProductIds,
+      ].filter(Boolean) as string[]),
     );
     if (candidateIds.length > 1) {
       conflictRows++;
@@ -259,6 +401,7 @@ export function mapLedgerRowsToDbPayload(params: {
       normalizeLedgerIdentity(row.conditionType) ||
       conditionLookup?.conditionType ||
       null;
+    const storedConditionType = conditionType || "UNKNOWN";
     if (!conditionType || conditionType === "UNKNOWN" || conditionLookup?.conflict) {
       unknownConditionRows++;
     }
@@ -267,6 +410,22 @@ export function mapLedgerRowsToDbPayload(params: {
       productoId && params.skuByProductId?.get(productoId)
         ? params.skuByProductId.get(productoId)!
         : row.skuLimpio;
+    const location = classifyLedgerLocation(row.location, params.locationEvidence);
+    const matchedBy = productoId == null
+      ? null
+      : asinProductId === productoId && fnskuProductId === productoId
+        ? "ASIN_FNSKU"
+        : fnskuProductId === productoId
+          ? "FNSKU_UNIQUE"
+          : asinProductId === productoId
+            ? "ASIN_UNIQUE"
+            : existingAliasProductIds.includes(productoId)
+              ? "EXISTING_ALIAS"
+              : aliasProductIds.includes(productoId)
+                ? "SELLER_SKU_EXACT"
+                : skuProductId === productoId
+                  ? "SELLER_SKU_NORMALIZED"
+                  : null;
 
     return [{
       producto_id: productoId,
@@ -277,7 +436,7 @@ export function mapLedgerRowsToDbPayload(params: {
       sku_limpio: skuLimpio,
       fnsku: normalizeLedgerIdentity(row.fnsku),
       asin,
-      condition_type: conditionType,
+      condition_type: storedConditionType,
       title: row.title,
       snapshot_date: row.snapshotDate,
       disposition: normalizeLedgerDisposition(row.disposition),
@@ -295,20 +454,34 @@ export function mapLedgerRowsToDbPayload(params: {
       other_events: row.otherEvents,
       ending_warehouse_balance: row.endingWarehouseBalance,
       unknown_events: row.unknownEvents,
-      location: normalizeLedgerCountry(row.location),
-      location_country: null,
+      // `location` remains populated for temporary compatibility. It contains
+      // the same non-destructive Amazon value as `location_raw`.
+      location: location.locationRaw,
+      location_raw: location.locationRaw,
+      location_type: location.locationType,
+      physical_country: location.physicalCountry,
+      location_evidence_source: location.evidenceSource,
+      location_evidence_confidence: location.evidenceConfidence,
+      location_country: location.physicalCountry,
       source: params.source,
       source_file_name: params.sourceFileName,
-      report_document_id: params.reportDocumentId ?? params.sourceFileName ?? "",
+      report_document_id: params.reportDocumentId,
+      manual_document_hash: params.manualDocumentHash,
+      document_identity_type: params.documentIdentityType,
+      document_identity: params.documentIdentity,
       raw: {
         ...row.raw,
         msku_aliases: row.mskuAliases,
-        condition_type_resolved: conditionType,
+        condition_type_resolved: storedConditionType,
         condition_source_date: conditionLookup?.sourceDate ?? null,
         condition_conflict: conditionLookup?.conflict === true,
         condition_conflict_types: conditionLookup?.conflictConditionTypes ?? [],
+        location_classification: location,
         match_by_asin: asinProductId != null,
         match_alias_product_ids: aliasProductIds,
+        matched_by: matchedBy,
+        match_candidates: candidateIds,
+        match_ambiguous: candidateIds.length > 1,
       },
       updated_at: now,
     }];
@@ -323,15 +496,30 @@ export async function upsertAmazonFbaLedgerDailyRows(
   const dedupedRows = dedupeLedgerRowsForUpsert(rows);
   if (dedupedRows.length === 0) return 0;
 
+  const documentIdentities = Array.from(
+    new Set(dedupedRows.map((row) => row.document_identity)),
+  );
+  const { data: persisted, error: persistedError } = await supabaseAdmin
+    .from("amazon_fba_inventory_ledger_daily")
+    .select("*")
+    .in("document_identity", documentIdentities);
+  if (persistedError) throw new Error(persistedError.message);
+
+  const rowsToWrite = prepareLedgerRowsAgainstPersisted(
+    dedupedRows,
+    (persisted ?? []) as AmazonFbaLedgerDbRow[],
+  );
+  if (rowsToWrite.length === 0) return 0;
+
   let affected = 0;
 
-  for (let i = 0; i < dedupedRows.length; i += UPSERT_BATCH_SIZE) {
-    const batch = dedupedRows.slice(i, i + UPSERT_BATCH_SIZE);
+  for (let i = 0; i < rowsToWrite.length; i += UPSERT_BATCH_SIZE) {
+    const batch = rowsToWrite.slice(i, i + UPSERT_BATCH_SIZE);
     const { error } = await supabaseAdmin
       .from("amazon_fba_inventory_ledger_daily")
       .upsert(batch, {
         onConflict:
-          "report_document_id,fnsku,asin,snapshot_date,disposition,location",
+          "document_identity,snapshot_date,asin,fnsku,location_raw,disposition,condition_type",
       });
 
     if (error) throw new Error(error.message);
@@ -339,4 +527,15 @@ export async function upsertAmazonFbaLedgerDailyRows(
   }
 
   return affected;
+}
+
+export async function countLedgerRowsByDocumentIdentity(
+  documentIdentity: string,
+): Promise<number> {
+  const { count, error } = await supabaseAdmin
+    .from("amazon_fba_inventory_ledger_daily")
+    .select("id", { count: "exact", head: true })
+    .eq("document_identity", documentIdentity);
+  if (error) throw new Error(error.message);
+  return count ?? 0;
 }

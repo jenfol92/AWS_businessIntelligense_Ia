@@ -17,6 +17,7 @@ import {
   commitFbaLedgerReportJob,
   downloadAndPreviewFbaLedgerReportJob,
   FBA_LEDGER_REPORT_TYPE,
+  refreshFbaLedgerReportJobStatus,
   requestFbaLedgerReportJob,
 } from "./fbaLedgerReportService";
 import {
@@ -276,9 +277,11 @@ async function requestDueAmazonReportSchedule(
       schedule.report_type === FBA_LEDGER_REPORT_TYPE
         ? FBA_LEDGER_REPORT_TYPE
         : FBA_COUNTRY_REPORT_TYPE;
+    const scheduleSpecificMarketplaceIds = scheduleMarketplaceIds(schedule);
     const blockingJob = await findBlockingAmazonReportJob({
       reportType,
       recentSince: blockingJobRecentSince(schedule),
+      marketplaceIds: scheduleSpecificMarketplaceIds ?? undefined,
     });
 
     if (blockingJob) {
@@ -328,7 +331,6 @@ async function requestDueAmazonReportSchedule(
       };
     }
 
-    const scheduleSpecificMarketplaceIds = scheduleMarketplaceIds(schedule);
     const usesManualDefaultMarketplaceIds = scheduleSpecificMarketplaceIds == null;
 
     console.info("[amazon-report-scheduler] createReport input resolved", {
@@ -459,6 +461,26 @@ export async function pollPendingAmazonReportJobs(): Promise<AmazonReportPollSum
     const beforeProcessingStatus = job.processing_status;
 
     try {
+      if (job.report_type === FBA_LEDGER_REPORT_TYPE) {
+        const refreshed = await refreshFbaLedgerReportJobStatus(job.id);
+        const updated = refreshed.job;
+        const isDone = updated.processing_status === "DONE";
+        const isFailed =
+          updated.processing_status === "FATAL" ||
+          updated.processing_status === "CANCELLED";
+        results.push({
+          jobId: updated.id,
+          reportId: updated.report_id,
+          beforeStatus,
+          afterStatus: updated.status,
+          beforeProcessingStatus,
+          afterProcessingStatus: updated.processing_status,
+          reportDocumentId: updated.report_document_id,
+          action: isDone ? "done" : isFailed ? "failed" : "updated",
+          error: isFailed ? updated.error_message ?? undefined : undefined,
+        });
+        continue;
+      }
       const report = await getReport(reportId);
       const processingStatus = report.processingStatus;
       const mappedStatus = mapAmazonProcessingToJobStatus(processingStatus);

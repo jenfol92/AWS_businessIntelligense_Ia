@@ -86,6 +86,29 @@ type InventoryProductsLiteResponse = {
   products: InventoryProductLite[];
 };
 
+type AmazonInventoryHealth = {
+  status: "FRESH" | "AGING" | "STALE" | "UNKNOWN" | "ERROR" | "RUNNING";
+  freshnessStatus: "FRESH" | "AGING" | "STALE" | "UNKNOWN";
+  sourceTimestamp: string | null;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  rows: number | null;
+  nextRunHint: string | null;
+  runtimeMode: "DEPLOYED" | "LOCAL_MANUAL";
+};
+
+type AmazonInventoryHealthResponse = { ok: true; health: AmazonInventoryHealth } | DetailFail;
+type AmazonCanonicalSyncResponse = {
+  ok: true;
+  summary: {
+    action: "synced" | "skipped_fresh" | "skipped_rate_limit" | "skipped_running";
+    finishedAt: string;
+    inventory?: { rowsUpserted: number; rowsParsed: number; warnings?: string[] };
+    inbound?: { linesUpserted: number; shipmentsProcessed: number; warnings: string[]; errors: string[] };
+  };
+};
+
 function resolveLocale(raw: string | string[] | undefined): string {
   const value = Array.isArray(raw) ? raw[0] : raw;
   return isLocale(value) ? value : DEFAULT_LOCALE;
@@ -278,6 +301,10 @@ export function InventoryPage() {
   const [inventoryDiagnosticsError, setInventoryDiagnosticsError] = useState<string | null>(null);
   const [inventoryDiagnostics, setInventoryDiagnostics] =
     useState<InventoryDiagnosticsResponse | null>(null);
+  const [amazonHealth, setAmazonHealth] = useState<AmazonInventoryHealth | null>(null);
+  const [amazonRefreshLoading, setAmazonRefreshLoading] = useState(false);
+  const [amazonRefreshMessage, setAmazonRefreshMessage] = useState<string | null>(null);
+  const [amazonRefreshError, setAmazonRefreshError] = useState<string | null>(null);
 
   const filterState = useMemo(
     () => ({
@@ -593,6 +620,68 @@ export function InventoryPage() {
     }
   }
 
+  async function loadAmazonHealth() {
+    try {
+      const res = await fetch("/api/inventory/amazon-canonical?limit=1", { cache: "no-store" });
+      const json = (await res.json()) as AmazonInventoryHealthResponse;
+      if (res.ok && json.ok) setAmazonHealth(json.health);
+    } catch {
+      // Conserva el último health conocido; el refresh muestra los errores operativos.
+    }
+  }
+
+  async function refreshAmazonInventory() {
+    if (amazonRefreshLoading) return;
+    setAmazonRefreshLoading(true);
+    setAmazonRefreshMessage(null);
+    setAmazonRefreshError(null);
+    try {
+      const res = await fetch("/api/amazon/inventory/fba-snapshot/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const json = (await res.json().catch(() => ({}))) as
+        | AmazonCanonicalSyncResponse
+        | (DetailFail & { code?: string });
+      if (!res.ok || json.ok === false) {
+        const raw = "error" in json ? json.error : `HTTP ${res.status}`;
+        setAmazonRefreshError(
+          res.status === 429 || ("code" in json && json.code === "rate_limited")
+            ? "Amazon ha limitado temporalmente las consultas. Se mantiene el último snapshot válido."
+            : raw,
+        );
+        await loadAmazonHealth();
+        return;
+      }
+      const result = json.summary;
+      setAmazonRefreshMessage(
+        result.action === "skipped_rate_limit"
+          ? "Amazon sigue en cooldown por rate limit. Se mantiene el último snapshot válido."
+          : result.action === "skipped_running"
+          ? "Ya hay una actualización de Amazon en curso. No se ha iniciado una segunda petición."
+          : result.action === "skipped_fresh"
+          ? "El snapshot sigue fresco; no se ha vuelto a consultar Amazon."
+          : `Actualizado: ${result.inventory?.rowsUpserted ?? 0} filas de stock y ${result.inbound?.linesUpserted ?? 0} líneas inbound.`,
+      );
+      await Promise.all([
+        loadList(),
+        loadAmazonHealth(),
+        selectedProductId ? loadDetail(selectedProductId, simulationOverride) : Promise.resolve(),
+      ]);
+    } catch (error) {
+      setAmazonRefreshError(
+        error instanceof Error ? error.message : "Error de red actualizando Amazon.",
+      );
+    } finally {
+      setAmazonRefreshLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadAmazonHealth();
+  }, []);
+
   const flatProducts = listData ? flattenProducts(listData.products) : [];
   const showLiteProducts = !listData && liteProducts.length > 0;
   const visibleProductsCount = listData ? flatProducts.length : liteProducts.length;
@@ -621,8 +710,8 @@ export function InventoryPage() {
           <div>
             <Title className="text-base">Herramientas de Inventario</Title>
             <Text className="text-xs text-slate-500">
-              Diagnóstico solo lectura. Las importaciones se hacen desde la página
-              Importar para evitar duplicar procesos.
+              Diagnóstico solo lectura. La actualización operativa se ejecuta
+              exclusivamente desde Inventario mediante el servicio canónico.
             </Text>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -639,15 +728,17 @@ export function InventoryPage() {
               )}
               Diagnóstico Inventario
             </button>
-            <Link
-              href={`/${locale}/importar`}
-              className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
-            >
-              <Package className="h-3.5 w-3.5" />
-              Ir a Importar
-            </Link>
           </div>
         </div>
+        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+          <div><span className="text-slate-500">Amazon inventory:</span> <strong>{amazonHealth?.status ?? "UNKNOWN"}</strong></div>
+          <div><span className="text-slate-500">Última actualización:</span> <strong>{fmtDateTime(amazonHealth?.lastSuccessAt)}</strong></div>
+          <div><span className="text-slate-500">Modo:</span> <strong>{amazonHealth?.runtimeMode === "DEPLOYED" ? "DEPLOYED" : "LOCAL / MANUAL"}</strong></div>
+        </div>
+        <Text className="mt-2 text-xs text-slate-500">
+          En local, el refresh es manual. Tras deployment, el cron existente usará este mismo servicio.
+        </Text>
+        {amazonHealth?.lastError ? <Text className="mt-2 text-xs text-rose-700">Último error: {amazonHealth.lastError}</Text> : null}
       </Card>
       {inventoryDiagnostics || inventoryDiagnosticsError || inventoryDiagnosticsLoading ? (
         <InventoryDiagnosticsPanel
@@ -722,14 +813,17 @@ export function InventoryPage() {
           <div className="flex items-end">
             <button
               type="button"
-              onClick={() => void loadList()}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50"
+              onClick={() => undefined}
+              disabled
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <RefreshCw className={`h-4 w-4 ${listLoading ? "animate-spin" : ""}`} />
-              Actualizar
+              <RefreshCw className="h-4 w-4" />
+              ACTUALIZACIÓN TEMPORALMENTE BLOQUEADA
             </button>
           </div>
         </div>
+        {amazonRefreshMessage ? <Text className="mt-3 text-xs text-emerald-700">{amazonRefreshMessage}</Text> : null}
+        {amazonRefreshError ? <Text className="mt-3 text-xs text-rose-700">{amazonRefreshError}</Text> : null}
         <div className="mt-3 flex flex-wrap gap-2">
           {[
             { key: "criticos", label: "Solo críticos", value: soloCriticos, set: setSoloCriticos },
@@ -1240,15 +1334,18 @@ function OperationalStockPanel({
         <p>
           <span className="text-slate-500">Stock FBA operativo usado: </span>
           <span className="font-semibold text-slate-900">
-            {fmtNum(stock.stockOperationalFba)} uds
+            {stock.stockOperationalFbaSource === "none"
+              ? "NO DISPONIBLE"
+              : `${fmtNum(stock.stockOperationalFba)} uds`}
           </span>
         </p>
         <p className="text-xs text-slate-500">
           Fuente: {operationalFbaSourceLabel(stock.stockOperationalFbaSource)}
         </p>
         <p className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-950">
-          El stock FBA se actualiza automáticamente por tarea programada. Esta
-          pantalla muestra el último snapshot disponible.
+          {syncStatus?.lastSuccessAt
+            ? "Stock operativo procedente del último snapshot COMPLETE."
+            : "Amazon ha limitado temporalmente la actualización. Todavía no existe un snapshot operativo válido."}
         </p>
         {stock.stockFbaLatestSnapshot != null && stock.stockFbaLatestSnapshotAt ? (
           <p className="text-xs text-slate-500">
@@ -1260,14 +1357,14 @@ function OperationalStockPanel({
           </p>
         ) : (
           <p className="text-xs text-slate-500">
-            Sin snapshot FBA operativo importado. Se usa fallback ledger/stock por país.
+            NO DISPONIBLE / SIN SNAPSHOT. El Ledger físico sigue visible por país, pero no sustituye el stock operativo actual.
           </p>
         )}
         {syncStatus ? (
           <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
             <p className="font-medium text-slate-800">Sincronización automática FBA</p>
             <p>Última ejecución: {fmtDateTime(syncStatus.lastRunAt)}</p>
-            <p>Último éxito: {fmtDateTime(syncStatus.lastSuccessAt)}</p>
+            <p>{syncStatus.lastSuccessAt ? `Último éxito: ${fmtDateTime(syncStatus.lastSuccessAt)}` : "Sin snapshot COMPLETE"}</p>
             <p>Estado: {syncStatus.lastStatus ?? "—"}</p>
             <p>Filas actualizadas: {fmtNum(syncStatus.lastRowsUpserted)}</p>
             {syncStatus.nextRunHint ? <p>Próxima ejecución: {syncStatus.nextRunHint}</p> : null}

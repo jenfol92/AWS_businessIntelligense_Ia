@@ -61,6 +61,80 @@ export async function startAmazonReportSyncRun(
   return { started: true, runId: row.run_id };
 }
 
+export async function findActiveAmazonReportSyncRun(params: {
+  reportType: string;
+  marketplaceCountry?: string | null;
+  marketplaceId?: string | null;
+}): Promise<AmazonReportSyncRunRow | null> {
+  let query = supabaseAdmin
+    .from("amazon_report_sync_runs")
+    .select("*")
+    .eq("report_type", params.reportType)
+    .eq("status", "RUNNING")
+    .gt("lock_expires_at", new Date().toISOString())
+    .order("started_at", { ascending: false })
+    .limit(1);
+  query = params.marketplaceCountry == null
+    ? query.is("marketplace_country", null)
+    : query.eq("marketplace_country", params.marketplaceCountry);
+  query = params.marketplaceId == null
+    ? query.is("marketplace_id", null)
+    : query.eq("marketplace_id", params.marketplaceId);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as AmazonReportSyncRunRow | null) ?? null;
+}
+
+export async function markExpiredAmazonReportSyncRunsFailed(params: {
+  reportType: string;
+  now?: Date;
+}): Promise<number> {
+  const nowIso = (params.now ?? new Date()).toISOString();
+  const { data, error } = await supabaseAdmin
+    .from("amazon_report_sync_runs")
+    .update({
+      status: "ERROR",
+      finished_at: nowIso,
+      error: "STALE_LOCK_EXPIRED",
+    })
+    .eq("report_type", params.reportType)
+    .eq("status", "RUNNING")
+    .is("marketplace_country", null)
+    .is("marketplace_id", null)
+    .lte("lock_expires_at", nowIso)
+    .select("id");
+  if (error) throw new Error(error.message);
+  return data?.length ?? 0;
+}
+
+export async function heartbeatAmazonReportSyncRun(params: {
+  runId: string;
+  leaseMinutes: number;
+  amazonReportJobId?: string | null;
+}): Promise<AmazonReportSyncRunRow> {
+  const now = new Date();
+  const lockExpiresAt = new Date(
+    now.getTime() + params.leaseMinutes * 60_000,
+  ).toISOString();
+  const { data, error } = await supabaseAdmin
+    .from("amazon_report_sync_runs")
+    .update({
+      locked_at: now.toISOString(),
+      lock_expires_at: lockExpiresAt,
+      ...(params.amazonReportJobId
+        ? { amazon_report_job_id: params.amazonReportJobId }
+        : {}),
+    })
+    .eq("id", params.runId)
+    .eq("status", "RUNNING")
+    .gt("lock_expires_at", now.toISOString())
+    .select("*")
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("LEDGER_EXECUTION_LOCK_LOST");
+  return data as AmazonReportSyncRunRow;
+}
+
 export async function markAmazonReportScheduleRequested(
   scheduleId: string,
   requestedAt: Date = new Date(),

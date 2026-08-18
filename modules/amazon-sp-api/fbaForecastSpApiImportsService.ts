@@ -1,6 +1,15 @@
 import { supabaseAdmin } from "@/server/supabase/adminClient";
 import { loadSpApiConfig } from "./config";
-import { spApiRequest } from "./spApiClient";
+import { spApiRequest, type SpApiResponseMetadata } from "./spApiClient";
+import { SpApiError } from "./errors";
+import {
+  assertInventorySummaryPageBudget,
+  assertInventorySummaryRequestBudget,
+  assertInventorySummaryRuntimeBudget,
+  inventorySummaryMaxPagesPerBatch,
+  inventorySummaryMaxRequestsPerRun,
+  inventorySummaryMaxRuntimeMs,
+} from "./inventorySummaryRequestPolicy";
 import {
   createWaitAndDownloadReport,
   getField,
@@ -21,6 +30,23 @@ import {
   salesChannelToMarketplaceId,
 } from "./marketplaceMapping";
 import type { SpApiReport } from "./types";
+import { importAmazonFbaLedgerSummaryFromText } from "@/modules/imports/amazon-fba-ledger-summary/service";
+import {
+  buildCanonicalInventorySnapshot,
+  type InventorySummaryObservation,
+} from "./inventorySummaryCanonicalSnapshot";
+import {
+  InventorySummaryRequestPacer,
+  inventorySummarySellerSkuBatchSize,
+  normalizedConfirmedSellerSkus,
+  requestFilteredInventorySummaries,
+  splitSellerSkuBatches,
+} from "./inventorySummaryFilteredRequest";
+import { inventoryOperationalPool, newInventoryAttemptId, sellerSkusSafeHash } from "./inventorySummaryTelemetryUtils";
+import {
+  persistInventorySummaryRequestTelemetry,
+  type InventorySummaryRequestTelemetry,
+} from "./inventorySummaryRequestTelemetry";
 
 const AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE =
   "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL";
@@ -115,19 +141,6 @@ function addUtcDaysToDateOnly(date: string, days: number): string {
   const parsed = new Date(`${date}T00:00:00.000Z`);
   parsed.setUTCDate(parsed.getUTCDate() + days);
   return parsed.toISOString().slice(0, 10);
-}
-
-function countryFromMarketplaceId(marketplaceId: string): string {
-  const known: Record<string, string> = {
-    A1RKKUPIHCS9HS: "ES",
-    A13V1IB3VIYZZH: "FR",
-    A1PA6795UKMFR9: "DE",
-    APJ6JRA9NG5V4: "IT",
-    A1F83G8C2ARO7P: "GB",
-    A1C3SOZRARQ6R3: "PL",
-    A2NODRKZP88ZB9: "SE",
-  };
-  return known[marketplaceId] ?? "UNKNOWN";
 }
 
 function firstNonEmpty(...values: string[]): string {
@@ -658,12 +671,16 @@ type InventorySummary = {
   sellerSku?: string;
   fnSku?: string;
   asin?: string;
+  lastUpdatedTime?: string;
   condition?: string;
   totalQuantity?: number;
   inventoryDetails?: {
     fulfillableQuantity?: number;
     reservedQuantity?: {
       totalReservedQuantity?: number;
+      pendingCustomerOrderQuantity?: number;
+      pendingTransshipmentQuantity?: number;
+      fcProcessingQuantity?: number;
     };
     inboundWorkingQuantity?: number;
     inboundShippedQuantity?: number;
@@ -678,89 +695,210 @@ type InventorySummary = {
 };
 
 type InventorySummariesResponse = {
+  payload?: { inventorySummaries?: InventorySummary[] };
   inventorySummaries?: InventorySummary[];
   pagination?: { nextToken?: string };
 };
 
 export async function importFbaInventorySnapshotFromSpApi(params: {
   marketplaceIds?: string[];
-}): Promise<Omit<ImportSummary, "reportId" | "status">> {
+  sellerSkus?: string[];
+  sellerSkuBatchSize?: number;
+  paginationMode?: "normal" | "diagnostic-stop";
+  persistTelemetry?: (row: InventorySummaryRequestTelemetry) => Promise<void>;
+  requestFiltered?: typeof requestFilteredInventorySummaries;
+}): Promise<Omit<ImportSummary, "reportId" | "status"> & {
+  requestMetrics: {
+    marketplacesAttempted: string[];
+    marketplacesCompleted: string[];
+    pages: number;
+    amazonHttpCalls: number;
+    requestBudget: number;
+    rateLimitedMarketplace: string | null;
+    retryAfter: string | null;
+    observedRateLimits: string[];
+    durationMs: number;
+  };
+}> {
   const marketplaceIds = marketplaceIdsFromInput(params.marketplaceIds);
+  const sellerSkus = normalizedConfirmedSellerSkus(params.sellerSkus ?? []);
+  if (sellerSkus.length === 0) {
+    throw new Error("FILTERED_INVENTORY_REQUIRES_CONFIRMED_SELLER_SKUS");
+  }
+  const batchSize = params.sellerSkuBatchSize ?? inventorySummarySellerSkuBatchSize();
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 50) {
+    throw new Error(`INVALID_INVENTORY_SUMMARY_BATCH_SIZE:${batchSize}`);
+  }
+  const sellerSkuBatches = splitSellerSkuBatches(sellerSkus, batchSize);
+  const pacer = new InventorySummaryRequestPacer();
+  const startedMs = Date.now();
   const warnings: string[] = [];
   const snapshotAt = new Date().toISOString();
   const summaries: Array<InventorySummary & { marketplaceId: string }> = [];
+  const maxPagesPerBatch = inventorySummaryMaxPagesPerBatch();
+  const configuredRequestBudget = inventorySummaryMaxRequestsPerRun();
+  const requestBudget = Math.min(
+    configuredRequestBudget,
+    Math.max(1, marketplaceIds.length * sellerSkuBatches.length * maxPagesPerBatch),
+  );
+  const maxRuntimeMs = inventorySummaryMaxRuntimeMs();
+  const marketplacesAttempted: string[] = [];
+  const marketplacesCompleted: string[] = [];
+  const responseMetadata: SpApiResponseMetadata[] = [];
+  let pages = 0;
+  let amazonHttpCalls = 0;
+  let activeMarketplace: string | null = null;
+  const attemptId = newInventoryAttemptId();
+  const persistTelemetry = params.persistTelemetry ?? persistInventorySummaryRequestTelemetry;
+  const requestFiltered = params.requestFiltered ?? requestFilteredInventorySummaries;
+  let requestSequence = 0;
+
+  const metrics = () => ({
+    marketplacesAttempted,
+    marketplacesCompleted,
+    pages,
+    amazonHttpCalls,
+    requestBudget,
+    rateLimitedMarketplace: activeMarketplace,
+    retryAfter: responseMetadata.at(-1)?.retryAfter ?? null,
+    observedRateLimits: Array.from(new Set(responseMetadata.map((item) => item.observedRateLimit).filter((value): value is string => Boolean(value)))),
+    durationMs: Date.now() - startedMs,
+  });
 
   for (const marketplaceId of marketplaceIds) {
-    let nextToken: string | undefined;
-    do {
-      const result = await spApiRequest<InventorySummariesResponse>({
-        method: "GET",
-        path: "/fba/inventory/v1/summaries",
-        query: {
-          details: "true",
-          granularityType: "Marketplace",
-          granularityId: marketplaceId,
-          marketplaceIds: marketplaceId,
+    activeMarketplace = marketplaceId;
+    marketplacesAttempted.push(marketplaceId);
+    for (const sellerSkuBatch of sellerSkuBatches) {
+      let nextToken: string | undefined;
+      let previousNextToken: string | undefined;
+      let batchPageNumber = 0;
+      do {
+      assertInventorySummaryRuntimeBudget({ startedAtMs: startedMs, maxRuntimeMs });
+      assertInventorySummaryPageBudget({ pageNumber: batchPageNumber + 1, maxPagesPerBatch });
+      assertInventorySummaryRequestBudget({ amazonHttpCalls, requestBudget });
+      const requestStartedAt = new Date().toISOString();
+      const requestStartedMs = Date.now();
+      const pageNumber = batchPageNumber + 1;
+      const sequence = ++requestSequence;
+      let result: InventorySummariesResponse;
+      let requestOutcome: InventorySummaryRequestTelemetry["outcome"] = "FAILED";
+      try {
+        amazonHttpCalls += 1;
+        result = await pacer.run(() => requestFiltered({
+          marketplaceId,
+          sellerSkus: sellerSkuBatch,
           nextToken,
-        },
-      });
-      for (const summary of result.inventorySummaries ?? []) {
+          onResponseMetadata(metadata) {
+            pacer.observeRateLimit(metadata.observedRateLimit);
+            responseMetadata.push(metadata);
+            console.info("[amazon-inventory] response", {
+              marketplaceId,
+              page: pages + 1,
+              status: metadata.status,
+              observedRateLimit: metadata.observedRateLimit,
+              retryAfter: metadata.retryAfter,
+              requestId: metadata.requestId,
+              observedAt: metadata.observedAt,
+            });
+          },
+        })) as InventorySummariesResponse;
+        const rows = result.inventorySummaries ?? result.payload?.inventorySummaries ?? [];
+        const nextTokenPresent = Boolean(result.pagination?.nextToken);
+        requestOutcome = nextTokenPresent && params.paginationMode === "diagnostic-stop"
+          ? "UNEXPECTED_FILTERED_PAGINATION"
+          : "SUCCESS";
+        await persistTelemetry({
+          attemptId, requestSequence: sequence, startedAt: requestStartedAt,
+          finishedAt: new Date().toISOString(), durationMs: Date.now() - requestStartedMs,
+          marketplaceId, operationalPool: inventoryOperationalPool(marketplaceId), batchNumber: sellerSkuBatches.indexOf(sellerSkuBatch) + 1,
+          sellerSkuCount: sellerSkuBatch.length, sellerSkusHash: sellerSkusSafeHash(sellerSkuBatch), pageNumber,
+          httpStatus: responseMetadata.at(-1)?.status ?? 200, amazonRequestId: responseMetadata.at(-1)?.requestId ?? null,
+          observedRateLimit: responseMetadata.at(-1)?.observedRateLimit ?? null, retryAfter: responseMetadata.at(-1)?.retryAfter ?? null,
+          nextTokenPresent, resultCount: rows.length, outcome: requestOutcome,
+        });
+        if (requestOutcome === "UNEXPECTED_FILTERED_PAGINATION") {
+          throw new Error("UNEXPECTED_FILTERED_PAGINATION");
+        }
+      } catch (error) {
+        const metadata = responseMetadata.at(-1);
+        if (requestOutcome === "FAILED") {
+          try {
+            await persistTelemetry({
+              attemptId, requestSequence: sequence, startedAt: requestStartedAt,
+              finishedAt: new Date().toISOString(), durationMs: Date.now() - requestStartedMs,
+              marketplaceId, operationalPool: inventoryOperationalPool(marketplaceId), batchNumber: sellerSkuBatches.indexOf(sellerSkuBatch) + 1,
+              sellerSkuCount: sellerSkuBatch.length, sellerSkusHash: sellerSkusSafeHash(sellerSkuBatch), pageNumber,
+              httpStatus: metadata?.status ?? (error instanceof SpApiError ? error.status ?? null : null),
+              amazonRequestId: metadata?.requestId ?? null, observedRateLimit: metadata?.observedRateLimit ?? null,
+              retryAfter: metadata?.retryAfter ?? null, nextTokenPresent: null, resultCount: null,
+              outcome: error instanceof SpApiError && error.code === "rate_limited" ? "RATE_LIMITED" : "FAILED",
+            });
+          } catch (telemetryError) {
+            console.error("[amazon-inventory] request telemetry persistence failed", telemetryError);
+          }
+        }
+        if (error instanceof SpApiError && error.code === "rate_limited") {
+          const snapshot = metrics();
+          const lastResponse = responseMetadata.at(-1);
+          throw new SpApiError(
+            `${error.message} [operation=getInventorySummaries marketplace=${marketplaceId} retryAfter=${snapshot.retryAfter ?? "unavailable"} observedLimit=${lastResponse?.observedRateLimit ?? "unavailable"} requestId=${lastResponse?.requestId ?? "unavailable"} calls=${snapshot.amazonHttpCalls}]`,
+            error.code,
+            error.status,
+            { original: error.details, requestMetrics: snapshot },
+          );
+        }
+        throw error;
+      }
+      pages += 1;
+      batchPageNumber += 1;
+      const responseRows = result.inventorySummaries ?? result.payload?.inventorySummaries ?? [];
+      for (const summary of responseRows) {
         summaries.push({ ...summary, marketplaceId });
       }
       nextToken = result.pagination?.nextToken;
-    } while (nextToken);
+      if (nextToken && nextToken === previousNextToken) {
+        throw new Error("INVENTORY_SUMMARY_PAGINATION_TOKEN_REPEATED");
+      }
+      if (nextToken && responseRows.length === 0) {
+        throw new Error("INVENTORY_SUMMARY_PAGINATION_NO_PROGRESS");
+      }
+      previousNextToken = nextToken;
+      } while (nextToken);
+    }
+    marketplacesCompleted.push(marketplaceId);
+    activeMarketplace = null;
   }
 
   const skuValues = summaries.map((s) => s.sellerSku ?? "");
   const matches = await resolveProductMatchesBySku(skuValues);
-  let matchedRows = 0;
-  let unmatchedRows = 0;
-
-  const dbRows = summaries.map((summary) => {
+  const matchedRows = summaries.filter((summary) => matches.get(String(summary.sellerSku ?? "").trim())?.productoId).length;
+  const unmatchedRows = summaries.length - matchedRows;
+  for (const summary of summaries) {
     const skuOriginal = String(summary.sellerSku ?? "").trim();
-    const match = matches.get(skuOriginal);
-    if (match?.productoId) matchedRows += 1;
-    else {
-      unmatchedRows += 1;
+    if (!matches.get(skuOriginal)?.productoId) {
       warnings.push(`Sin match de producto para snapshot FBA SKU ${skuOriginal}.`);
     }
-    const details = summary.inventoryDetails ?? {};
-    const reserved = Number(details.reservedQuantity?.totalReservedQuantity ?? 0);
-    const inbound =
-      Number(details.inboundWorkingQuantity ?? 0) +
-      Number(details.inboundShippedQuantity ?? 0) +
-      Number(details.inboundReceivingQuantity ?? 0);
-    const unfulfillable = Number(
-      details.unfulfillableQuantity?.totalUnfulfillableQuantity ?? 0,
-    );
-    const researching = Number(
-      details.researchingQuantity?.totalResearchingQuantity ?? 0,
-    );
+  }
 
-    return {
-      snapshot_at: snapshotAt,
-      marketplace_id: summary.marketplaceId,
-      country: countryFromMarketplaceId(summary.marketplaceId),
-      sku_original: skuOriginal,
-      sku_limpio: match?.skuLimpio ?? skuOriginal,
-      producto_id: match?.productoId ?? null,
-      fulfillable_quantity: Number(details.fulfillableQuantity ?? 0),
-      reserved_quantity: reserved,
-      inbound_quantity: inbound,
-      unfulfillable_quantity: unfulfillable,
-      researching_quantity: researching,
-      source: "spapi_fba_inventory_summaries",
-      row_fingerprint: sha256([snapshotAt, summary.marketplaceId, skuOriginal].join("|")),
-      raw: summary,
-      imported_at: snapshotAt,
-    };
+  // No se escribe hasta que todas las llamadas, paginas y reconciliaciones
+  // hayan terminado. La RPC publica el run completo en una sola transaccion.
+  const canonical = buildCanonicalInventorySnapshot({
+    observations: summaries as InventorySummaryObservation[],
+    productMatches: matches,
+    observedAt: snapshotAt,
   });
-
-  const rowsUpserted = await upsertRows(
-    "amazon_fba_inventory_snapshots",
-    dbRows,
-    "row_fingerprint",
+  const { data: committedRows, error: commitError } = await supabaseAdmin.rpc(
+    "commit_amazon_fba_inventory_snapshot_run",
+    {
+      p_run_id: canonical.snapshotRunId,
+      p_observed_at: canonical.observedAt,
+      p_marketplace_ids: marketplaceIds,
+      p_raw_row_count: summaries.length,
+      p_rows: canonical.rows,
+    },
   );
+  if (commitError) throw new Error(commitError.message);
+  const rowsUpserted = Number(committedRows ?? canonical.rows.length);
 
   return {
     ok: true,
@@ -769,12 +907,15 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     matchedRows,
     unmatchedRows,
     warnings: warnings.slice(0, 100),
+    requestMetrics: metrics(),
   };
 }
 
-export async function importFbaLedgerDailyFromSpApi(
+async function legacyFbaLedgerDailyFromSpApiDisabled(
   params: ImportDateRange,
 ): Promise<ImportSummary & { reportId: string }> {
+  throw new Error("LEDGER_LEGACY_PATH_DISABLED_USE_CANONICAL_OWNER");
+  /* Legacy implementation retained temporarily only as migration history.
   const marketplaceIds = marketplaceIdsFromInput(params.marketplaceIds);
   const warnings: string[] = [];
   const report = await createWaitAndDownloadReport({
@@ -822,96 +963,32 @@ export async function importFbaLedgerDailyFromSpApi(
     };
   }
 
-  const rawRows = parseReportRows(report.documentText);
-  const skuValues = rawRows.map((row) =>
-    firstNonEmpty(getField(row, ["msku", "seller-sku", "sku", "MSKU"])),
-  );
-  const matches = await resolveProductMatchesBySku(skuValues);
-  const importedAt = new Date().toISOString();
-  let matchedRows = 0;
-  let unmatchedRows = 0;
-
-  const dbRows = rawRows.flatMap((row, index) => {
-    const skuOriginal = skuValues[index] ?? "";
-    const snapshotDate = parseDateOnly(getField(row, ["date", "snapshot-date"]));
-    const match = matches.get(skuOriginal);
-    if (!skuOriginal || !snapshotDate) return [];
-    if (match?.productoId) matchedRows += 1;
-    else {
-      unmatchedRows += 1;
-      warnings.push(`Sin match de producto para ledger FBA SKU ${skuOriginal}.`);
-    }
-
-    const disposition = firstNonEmpty(getField(row, ["disposition"]), "SELLABLE");
-    const location = firstNonEmpty(
-      getField(row, ["country", "location", "location-country"]),
-      countryFromMarketplaceId(marketplaceIds[0] ?? ""),
-    );
-
-    return [
-      {
-        producto_id: match?.productoId ?? null,
-        sku_original: skuOriginal,
-        sku_limpio: match?.skuLimpio ?? skuOriginal,
-        fnsku: firstNonEmpty(getField(row, ["fnsku"])),
-        asin: firstNonEmpty(getField(row, ["asin"])),
-        title: firstNonEmpty(getField(row, ["title", "product-name"])) || null,
-        snapshot_date: snapshotDate,
-        disposition,
-        starting_warehouse_balance: parseInteger(
-          getField(row, ["starting warehouse balance", "starting-balance"]),
-        ),
-        in_transit_between_warehouses: parseInteger(
-          getField(row, ["in transit between warehouses"]),
-        ),
-        receipts: parseInteger(getField(row, ["receipts", "received"])),
-        customer_shipments: parseInteger(
-          getField(row, ["customer shipments", "customer-shipments"]),
-        ),
-        customer_returns: parseInteger(getField(row, ["customer returns"])),
-        vendor_returns: parseInteger(getField(row, ["vendor returns"])),
-        warehouse_transfer_in_out: parseInteger(
-          getField(row, ["warehouse transfer in/out", "warehouse transfer in out"]),
-        ),
-        found: parseInteger(getField(row, ["found"])),
-        lost: parseInteger(getField(row, ["lost"])),
-        damaged: parseInteger(getField(row, ["damaged"])),
-        disposed: parseInteger(getField(row, ["disposed"])),
-        other_events: parseInteger(getField(row, ["other events", "adjustments"])),
-        ending_warehouse_balance: parseInteger(
-          getField(row, ["ending warehouse balance", "ending-balance"]),
-        ),
-        unknown_events: parseInteger(getField(row, ["unknown events"])),
-        location,
-        location_country: location,
-        source: "spapi_get_ledger_summary_view_data",
-        source_file_name: report.reportId,
-        raw: {
-          ...row,
-          report_id: report.reportId,
-          sku_limpio: match?.skuLimpio ?? null,
-          match_candidates: match?.candidates ?? [],
-          matched_by: match?.matchedBy ?? null,
-        },
-        updated_at: importedAt,
-      },
-    ];
+  const commit = await importAmazonFbaLedgerSummaryFromText({
+    text: report.documentText,
+    mode: "commit",
+    source: "spapi_get_ledger_summary_view_data",
+    sourceFileName: report.reportId,
+    reportDocumentId: report.report?.reportDocumentId ?? null,
+    skipUnlinkedProducts: false,
   });
-
-  const rowsUpserted = await upsertRows(
-    "amazon_fba_inventory_ledger_daily",
-    dbRows,
-    "sku_original,fnsku,asin,snapshot_date,disposition,location,source",
-  );
+  if (commit.mode !== "commit") {
+    throw new Error("Inventory Ledger canonical writer returned preview unexpectedly");
+  }
 
   return {
     ok: true,
     reportId: report.reportId,
     status: report.status,
-    rowsParsed: rawRows.length,
-    rowsUpserted,
-    matchedRows,
-    unmatchedRows,
-    warnings: warnings.slice(0, 100),
+    rowsParsed: commit.validRows,
+    rowsUpserted: commit.insertedOrUpdated,
+    matchedRows: commit.validRows - commit.unlinkedProductRows,
+    unmatchedRows: commit.unlinkedProductRows,
+    warnings: [
+      ...warnings,
+      ...commit.warnings.map((warning) => `Fila ${warning.row}: ${warning.message}`),
+    ].slice(0, 100),
   };
+  */
 }
+
+void legacyFbaLedgerDailyFromSpApiDisabled;

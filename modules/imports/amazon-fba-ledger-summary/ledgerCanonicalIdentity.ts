@@ -36,14 +36,54 @@ export function manualLedgerReportDocumentIdFromContent(content: string): string
   return `manual:${createHash("sha256").update(content).digest("hex")}`;
 }
 
+export function manualLedgerDocumentHashFromContent(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+export function resolveLedgerDocumentIdentity(params: {
+  reportDocumentId?: string | null;
+  text: string;
+}) {
+  const explicit = params.reportDocumentId?.trim();
+  if (explicit) {
+    return {
+      reportDocumentId: explicit,
+      manualDocumentHash: null,
+      documentIdentityType: "REPORT_DOCUMENT_ID" as const,
+      documentIdentity: `report:${explicit}`,
+    };
+  }
+  const manualDocumentHash = manualLedgerDocumentHashFromContent(params.text);
+  return {
+    reportDocumentId: null,
+    manualDocumentHash,
+    documentIdentityType: "MANUAL_SHA256" as const,
+    documentIdentity: manualLedgerReportDocumentIdFromContent(params.text),
+  };
+}
+
 export function ledgerCanonicalKey(row: AmazonFbaLedgerDbRow): string {
+  if (!row.document_identity.trim()) {
+    throw new Error("LEDGER_DOCUMENT_CONFLICT: document_identity is required");
+  }
+  const missing = [
+    ["asin", row.asin],
+    ["fnsku", row.fnsku],
+    ["location_raw", row.location_raw],
+  ].filter(([, value]) => !String(value ?? "").trim());
+  if (missing.length > 0) {
+    throw new Error(
+      `LEDGER_IDENTITY_CONFLICT: missing ${missing.map(([field]) => field).join(", ")}`,
+    );
+  }
   return [
-    row.report_document_id,
-    row.fnsku,
-    row.asin,
+    row.document_identity,
     row.snapshot_date,
+    row.asin,
+    row.fnsku,
+    row.location_raw,
     row.disposition,
-    row.location,
+    normalizedConditionType(row),
   ].join("||");
 }
 
@@ -88,9 +128,7 @@ export function dedupeLedgerRowsForUpsert(
   for (const [key, group] of Array.from(map.entries())) {
     const differing = differingLedgerFields(group);
     if (differing.length > 0) {
-      throw new Error(
-        `Inventory Ledger duplicate grain has conflicting fields (${differing.join(", ")}): ${key}`,
-      );
+      throw new Error(`LEDGER_IDENTITY_CONFLICT (${differing.join(", ")}): ${key}`);
     }
 
     const [first, ...duplicates] = group;
@@ -108,4 +146,72 @@ export function dedupeLedgerRowsForUpsert(
   }
 
   return deduped;
+}
+
+const LEDGER_DOCUMENT_FIELDS = [
+  "document_identity_type",
+  "report_document_id",
+  "manual_document_hash",
+] as const satisfies readonly (keyof AmazonFbaLedgerDbRow)[];
+
+function differingDocumentFields(
+  incoming: AmazonFbaLedgerDbRow,
+  persisted: AmazonFbaLedgerDbRow,
+): string[] {
+  return LEDGER_DOCUMENT_FIELDS.filter(
+    (field) => String(incoming[field] ?? "") !== String(persisted[field] ?? ""),
+  );
+}
+
+/**
+ * Reconciles one import with rows already stored for the same document.
+ * Exact replays are omitted, new aliases are merged, and any quantitative or
+ * document-identity disagreement fails closed before PostgREST can upsert it.
+ */
+export function prepareLedgerRowsAgainstPersisted(
+  incomingRows: AmazonFbaLedgerDbRow[],
+  persistedRows: AmazonFbaLedgerDbRow[],
+): AmazonFbaLedgerDbRow[] {
+  const incoming = dedupeLedgerRowsForUpsert(incomingRows);
+  const persistedByKey = new Map(
+    persistedRows.map((row) => [ledgerCanonicalKey(row), row]),
+  );
+
+  return incoming.flatMap((row) => {
+    const key = ledgerCanonicalKey(row);
+    const persisted = persistedByKey.get(key);
+    if (!persisted) return [row];
+
+    const documentDifferences = differingDocumentFields(row, persisted);
+    if (documentDifferences.length > 0) {
+      throw new Error(
+        `LEDGER_DOCUMENT_CONFLICT (${documentDifferences.join(", ")}): ${key}`,
+      );
+    }
+
+    const quantitativeDifferences = differingLedgerFields([persisted, row]);
+    if (quantitativeDifferences.length > 0) {
+      throw new Error(
+        `LEDGER_IDENTITY_CONFLICT (${quantitativeDifferences.join(", ")}): ${key}`,
+      );
+    }
+
+    const aliases = Array.from(
+      new Set([...persisted.msku_aliases, ...row.msku_aliases].filter(Boolean)),
+    );
+    const aliasesChanged =
+      aliases.length !== persisted.msku_aliases.length ||
+      aliases.some((alias) => !persisted.msku_aliases.includes(alias));
+
+    if (!aliasesChanged) return [];
+    return [{
+      ...persisted,
+      msku_aliases: aliases,
+      raw: {
+        ...persisted.raw,
+        additionalAliasProvenance: row.raw,
+      },
+      updated_at: row.updated_at,
+    }];
+  });
 }

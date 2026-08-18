@@ -12,8 +12,13 @@ export type TreasuryEvaluation = {
   nextIncome:{date:string;amountEur:number}|null; refinancedAmountEur:number; recommendation:string; expectedResult:string;
 };
 
+export function simulateAvailableLiquidity(input:{cashEur:number;availableEur:number;requiredEur:number}){
+  const requestedEur=Math.min(Math.max(0,input.availableEur),Math.max(0,input.requiredEur));
+  return {cashEur:input.cashEur,requestedEur,residualNeedEur:Math.max(0,input.requiredEur-requestedEur)};
+}
+
 export function evaluateTreasury(input:{initialCashEur:number;reserveEur:number;events:TreasuryEvent[];lines:TreasuryLine[]}):TreasuryEvaluation {
-  const events=input.events.filter(event=>event.kind!=="income"||!event.amazonEconomicState||!["RECEIVED","LEGACY_CONFIRMED"].includes(event.amazonEconomicState)).sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id));
+  const events=input.events.filter(event=>event.kind!=="income"||!event.amazonEconomicState||!["RECEIVED","LEGACY_CONFIRMED","AVAILABLE"].includes(event.amazonEconomicState)).sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id));
   const activeLines=input.lines.filter(line=>line.availableEur>0);
   const usableCreditEur=activeLines.reduce((sum,line)=>sum+line.availableEur,0);
   let cash=input.initialCashEur; let minimumCashEur=cash; let minimumCashDate:string|null=null; let firstProblemDate:string|null=cash<input.reserveEur?events[0]?.date??null:null;

@@ -2,9 +2,10 @@ import {
   FBA_COUNTRY_REPORT_TYPE,
   loadSpApiConfig,
 } from "./config";
-import { mapGenericError, SpApiError } from "./errors";
+import { mapGenericError, safeSpApiErrorMetadata, SpApiError } from "./errors";
 import {
-  createReportJob,
+  claimReportRequestJob,
+  findBlockingAmazonReportJob,
   getReportJobById,
   getReportContentFromJob,
   storeReportContentOnJob,
@@ -27,9 +28,11 @@ type RequestFbaCountryReportJobOptions = {
 
 type RequestFbaCountryReportJobResult = {
   job: AmazonSpApiReportJobRow;
-  reportId: string;
+  reportId: string | null;
   marketplaceIds: string[];
   usedDefaultMarketplaceIds: boolean;
+  reusedExistingJob: boolean;
+  blockingReason: "open_job" | "pending" | "stale_open" | "recent_success" | "atomic_claim" | null;
 };
 
 function hasImportedMarker(job: AmazonSpApiReportJobRow): boolean {
@@ -62,6 +65,23 @@ export async function requestFbaCountryReportJob(
     );
   }
 
+  const recentSince = new Date(Date.now() - 4 * 60 * 60 * 1000);
+  const blocking = await findBlockingAmazonReportJob({
+    reportType: FBA_COUNTRY_REPORT_TYPE,
+    recentSince,
+    marketplaceIds,
+  });
+  if (blocking) {
+    return {
+      job: blocking.job,
+      reportId: blocking.job.report_id ?? null,
+      marketplaceIds,
+      usedDefaultMarketplaceIds,
+      reusedExistingJob: true,
+      blockingReason: blocking.reason,
+    };
+  }
+
   const createReportPayload = {
     reportType: FBA_COUNTRY_REPORT_TYPE,
     marketplaceIds,
@@ -79,10 +99,23 @@ export async function requestFbaCountryReportJob(
     createReportPayload,
   });
 
-  const job = await createReportJob({
+  const claim = await claimReportRequestJob({
     reportType: FBA_COUNTRY_REPORT_TYPE,
     marketplaceIds,
+    source,
+    requestedCreateReportPayload: createReportPayload,
   });
+  const job = claim.job;
+  if (!claim.acquired) {
+    return {
+      job,
+      reportId: job.report_id ?? null,
+      marketplaceIds,
+      usedDefaultMarketplaceIds,
+      reusedExistingJob: true,
+      blockingReason: "atomic_claim",
+    };
+  }
 
   try {
     const { reportId } = await createReport(createReportPayload);
@@ -98,9 +131,12 @@ export async function requestFbaCountryReportJob(
       reportId,
       marketplaceIds,
       usedDefaultMarketplaceIds,
+      reusedExistingJob: false,
+      blockingReason: null,
     };
   } catch (error) {
     const mapped = mapGenericError(error);
+    const safeError = safeSpApiErrorMetadata(error);
     const amazonError =
       mapped.details &&
       typeof mapped.details === "object" &&
@@ -127,7 +163,12 @@ export async function requestFbaCountryReportJob(
     });
     await updateReportJob(job.id, {
       status: "ERROR",
-      error_message: mapped.message,
+      error_message: safeError.amazonMessage,
+      raw: {
+        ...(job.raw ?? {}),
+        createReportError: safeError,
+        createReportErrorAt: new Date().toISOString(),
+      },
     });
     throw mapped;
   }
@@ -138,7 +179,21 @@ export async function refreshFbaCountryReportJobStatus(jobId: string) {
   if (!job) throw new Error("Job SP-API no encontrado.");
   if (!job.report_id) throw new Error("El job no tiene reportId todavía.");
 
-  const report = await getReport(job.report_id);
+  let report;
+  try {
+    report = await getReport(job.report_id);
+  } catch (error) {
+    const safeError = safeSpApiErrorMetadata(error);
+    await updateReportJob(jobId, {
+      error_message: safeError.amazonMessage,
+      raw: {
+        ...(job.raw ?? {}),
+        lastStatusError: safeError,
+        lastStatusErrorAt: new Date().toISOString(),
+      },
+    });
+    throw error;
+  }
   const mappedStatus = mapAmazonProcessingToJobStatus(report.processingStatus);
 
   const patch: Parameters<typeof updateReportJob>[1] = {

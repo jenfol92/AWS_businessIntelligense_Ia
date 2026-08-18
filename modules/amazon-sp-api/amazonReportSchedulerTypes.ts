@@ -37,7 +37,7 @@ export type AmazonReportSyncRunRow = {
 };
 
 export type StartAmazonReportSyncRunInput = {
-  scheduleId: string;
+  scheduleId: string | null;
   reportType: string;
   marketplaceCountry?: string | null;
   marketplaceId?: string | null;

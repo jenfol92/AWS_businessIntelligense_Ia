@@ -21,6 +21,7 @@ export type InventoryDiagnosticsParams = {
 };
 
 const SYNC_JOB_KEYS = [
+  "amazon_inventory_canonical",
   "amazon_fba_inventory_snapshot",
   "amazon_fba_sales_daily",
   "amazon_fba_ledger_daily",

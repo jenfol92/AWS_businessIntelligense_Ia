@@ -11,8 +11,17 @@ export function nextTransferRequestDate(from:Date,isoWeekdays:number[]):Date|nul
 
 export function addBusinessDays(from:Date,days:number){const d=new Date(from);let remaining=Math.max(0,Math.ceil(days));while(remaining>0){d.setUTCDate(d.getUTCDate()+1);const day=d.getUTCDay();if(day!==0&&day!==6)remaining--;}return d;}
 
-export function expectedBankDateForAvailable(snapshotAt:Date,weekdays:number[],bankLagDays:number){const request=nextTransferRequestDate(snapshotAt,weekdays);return request?addBusinessDays(request,bankLagDays).toISOString().slice(0,10):null;}
-export function expectedBankDateForPending(fundTransferAt:string|null,bankLagDays:number){return fundTransferAt?addBusinessDays(new Date(fundTransferAt),bankLagDays).toISOString().slice(0,10):null;}
+export type PayoutArrivalWindow={base:string;conservative:string};
+export function payoutArrivalWindow(actualRequestAt:string|null):PayoutArrivalWindow|null{
+  if(!actualRequestAt)return null;
+  const request=new Date(actualRequestAt);if(Number.isNaN(request.getTime()))return null;
+  return {base:addBusinessDays(request,1).toISOString().slice(0,10),conservative:addBusinessDays(request,2).toISOString().slice(0,10)};
+}
+export function availablePayoutSimulation(snapshotAt:Date,weekdays:number[]){
+  const request=nextTransferRequestDate(snapshotAt,weekdays);const expectedRequestDate=request?.toISOString().slice(0,10)??null;
+  return {expectedRequestDate,arrival:expectedRequestDate?payoutArrivalWindow(expectedRequestDate):null,timing:"ESTIMATED_CONDITIONAL" as const};
+}
+export function expectedBankDateForPending(fundTransferAt:string|null){return payoutArrivalWindow(fundTransferAt)?.base??null;}
 
 export function stateContributesFuture(state:AmazonEconomicState,amountEur:number|null,expectedBankDate:string|null,hasValidDeferredEstimate=true){
   if(amountEur==null||amountEur<=0||!expectedBankDate)return false;

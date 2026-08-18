@@ -8,12 +8,10 @@
 import { NextResponse } from "next/server";
 
 import {
-  FBA_COUNTRY_REPORT_TYPE,
   getMissingSpApiEnvKeys,
 } from "@/modules/amazon-sp-api/config";
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
 import {
-  createReport,
   downloadReportDocument,
   getReport,
   getReportDocument,
@@ -42,8 +40,6 @@ type DiagnosticStage =
   | "report_document"
   | "report_parsed";
 
-const POLL_INTERVAL_MS = 9_000;
-const POLL_MAX_MS = 60_000;
 const SAMPLE_MAX_CHARS = 240;
 
 function resolveMarketplaceCode(raw: string | null): MarketplaceCode {
@@ -65,9 +61,6 @@ function resolveMarketplaceId(code: MarketplaceCode): string {
   return marketplaceId;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function isTerminalFailure(status: string): boolean {
   return status === "CANCELLED" || status === "FATAL";
@@ -243,98 +236,6 @@ async function handleParseReport(
   }
 }
 
-async function handleNewReport(marketplace: MarketplaceCode, marketplaceId: string) {
-  let reportId: string;
-
-  try {
-    const created = await createReport({
-      reportType: FBA_COUNTRY_REPORT_TYPE,
-      marketplaceIds: [marketplaceId],
-    });
-    reportId = created.reportId;
-  } catch (error: unknown) {
-    const mapped = mapGenericError(error);
-    return jsonError(
-      "create_report",
-      mapped.message,
-      mapped.status ?? 502,
-    );
-  }
-
-  const pollStartedAt = Date.now();
-
-  while (Date.now() - pollStartedAt <= POLL_MAX_MS) {
-    let report;
-    try {
-      report = await getReport(reportId);
-    } catch (error: unknown) {
-      const mapped = mapGenericError(error);
-      return jsonError(
-        "report_status",
-        mapped.message,
-        mapped.status ?? 502,
-        { reportId },
-      );
-    }
-
-    const processingStatus = report.processingStatus;
-
-    if (isTerminalFailure(processingStatus)) {
-      return jsonError(
-        "report_status",
-        `Informe Amazon ${processingStatus}.`,
-        502,
-        { reportId, processingStatus },
-      );
-    }
-
-    if (processingStatus === "DONE" && report.reportDocumentId) {
-      try {
-        const sample = await downloadReportSample(report.reportDocumentId);
-        return jsonDone({
-          marketplace,
-          reportId,
-          processingStatus,
-          ...sample,
-        });
-      } catch (error: unknown) {
-        const mapped = mapGenericError(error);
-        return jsonError(
-          "report_document",
-          mapped.message,
-          mapped.status ?? 502,
-          { reportId, processingStatus },
-        );
-      }
-    }
-
-    if (Date.now() - pollStartedAt >= POLL_MAX_MS) {
-      break;
-    }
-
-    await sleep(POLL_INTERVAL_MS);
-  }
-
-  let finalReport;
-  try {
-    finalReport = await getReport(reportId);
-  } catch (error: unknown) {
-    const mapped = mapGenericError(error);
-    return jsonError(
-      "report_status",
-      mapped.message,
-      mapped.status ?? 502,
-      { reportId },
-    );
-  }
-
-  return jsonPending({
-    marketplace,
-    reportId,
-    processingStatus: finalReport.processingStatus,
-  });
-}
-
 /**
  * Diagnóstico Reports API: crea o consulta GET_AFN_INVENTORY_DATA_BY_COUNTRY sin persistir datos.
  */
@@ -367,9 +268,8 @@ export async function GET(req: Request) {
     return jsonError("env", message, 400);
   }
 
-  let marketplaceId: string;
   try {
-    marketplaceId = resolveMarketplaceId(marketplace);
+    resolveMarketplaceId(marketplace);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Marketplace no configurado.";
     return jsonError("env", message, 400);
@@ -390,7 +290,11 @@ export async function GET(req: Request) {
     if (reportId) {
       return await handleExistingReport(marketplace, reportId);
     }
-    return await handleNewReport(marketplace, marketplaceId);
+    return jsonError(
+      "create_report",
+      "El diagnostico no crea reports. Usa el owner operacional y reutiliza aqui su Amazon reportId.",
+      400,
+    );
   } catch (error: unknown) {
     const mapped = mapGenericError(error);
     return jsonError(

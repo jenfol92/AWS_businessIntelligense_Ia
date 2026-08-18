@@ -3,6 +3,8 @@ import type {
   AmazonSpApiReportJobRow,
   SpApiReportJobStatus,
 } from "./types";
+import { classifyOpenAmazonReportJob, isCompatibleAmazonReportJob } from "./reportRequestDedupPolicy";
+import { reportClaimUuid, stableReportRequestKey } from "./reportRequestDedupPolicy";
 
 const FBA_LEDGER_REPORT_TYPE = "GET_LEDGER_SUMMARY_VIEW_DATA";
 
@@ -62,9 +64,41 @@ export async function getReportJobById(
   return (data as AmazonSpApiReportJobRow | null) ?? null;
 }
 
+export async function claimReportRequestJob(params: {
+  reportType: string;
+  marketplaceIds: string[];
+  source?: string;
+  requestKey?: Record<string, unknown>;
+  requestedCreateReportPayload?: Record<string, unknown>;
+}): Promise<{ job: AmazonSpApiReportJobRow; acquired: boolean }> {
+  const id = reportClaimUuid(params);
+  const normalizedMarketplaces = Array.from(new Set(params.marketplaceIds)).sort();
+  const { data, error } = await supabaseAdmin
+    .from("amazon_spapi_report_jobs")
+    .insert({
+      id,
+      report_type: params.reportType,
+      marketplace_ids: normalizedMarketplaces,
+      status: "CREATED",
+      source: params.source ?? "amazon_spapi",
+      raw: {
+        compatibilityKey: stableReportRequestKey(params),
+        requestedCreateReportPayload: params.requestedCreateReportPayload ?? {},
+      },
+    })
+    .select("*")
+    .single();
+  if (!error) return { job: data as AmazonSpApiReportJobRow, acquired: true };
+  if (error.code !== "23505") throw new Error(error.message);
+  const existing = await getReportJobById(id);
+  if (!existing) throw new Error("Report claim conflict without persisted owner.");
+  return { job: existing, acquired: false };
+}
+
 export type BlockingAmazonReportJobReason =
   | "open_job"
   | "pending"
+  | "stale_open"
   | "recent_success";
 
 export type BlockingAmazonReportJob = {
@@ -75,6 +109,8 @@ export type BlockingAmazonReportJob = {
 export async function findBlockingAmazonReportJob(params: {
   reportType: string;
   recentSince: Date;
+  marketplaceIds?: string[];
+  requestKey?: Record<string, unknown>;
 }): Promise<BlockingAmazonReportJob | null> {
   const { data: openData, error: openError } = await supabaseAdmin
     .from("amazon_spapi_report_jobs")
@@ -93,13 +129,22 @@ export async function findBlockingAmazonReportJob(params: {
 
   if (openError) throw new Error(openError.message);
 
+  const compatible = (job: AmazonSpApiReportJobRow) =>
+    isCompatibleAmazonReportJob(job, params);
+
   const openJob = ((openData ?? []) as AmazonSpApiReportJobRow[]).find((job) => {
     if (job.raw?.importedAt || job.raw?.importSummary) return false;
     if (job.raw?.supersededAt) return false;
-    return true;
+    return compatible(job);
   });
   if (openJob) {
-    return { job: openJob, reason: "open_job" };
+    return {
+      job: openJob,
+      reason: classifyOpenAmazonReportJob({
+        requestedAt: openJob.requested_at,
+        recentSince: params.recentSince,
+      }),
+    };
   }
 
   const { data: pendingData, error: pendingError } = await supabaseAdmin
@@ -107,12 +152,11 @@ export async function findBlockingAmazonReportJob(params: {
     .select("*")
     .eq("report_type", params.reportType)
     .or("status.eq.SUBMITTED,processing_status.in.(IN_QUEUE,IN_PROGRESS)")
-    .order("requested_at", { ascending: false })
-    .limit(1);
+    .order("requested_at", { ascending: false });
 
   if (pendingError) throw new Error(pendingError.message);
 
-  const pendingJob = ((pendingData ?? []) as AmazonSpApiReportJobRow[])[0];
+  const pendingJob = ((pendingData ?? []) as AmazonSpApiReportJobRow[]).find(compatible);
   if (pendingJob) {
     return { job: pendingJob, reason: "pending" };
   }
@@ -124,12 +168,11 @@ export async function findBlockingAmazonReportJob(params: {
     .not("report_id", "is", null)
     .is("error_message", null)
     .gte("requested_at", params.recentSince.toISOString())
-    .order("requested_at", { ascending: false })
-    .limit(1);
+    .order("requested_at", { ascending: false });
 
   if (recentError) throw new Error(recentError.message);
 
-  const recentJob = ((recentData ?? []) as AmazonSpApiReportJobRow[])[0];
+  const recentJob = ((recentData ?? []) as AmazonSpApiReportJobRow[]).find(compatible);
   if (recentJob) {
     return { job: recentJob, reason: "recent_success" };
   }

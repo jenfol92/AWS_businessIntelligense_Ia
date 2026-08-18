@@ -19,6 +19,26 @@ function lastDayOfWindow(fromMonth: string, months: number): string {
   return end.toISOString().slice(0, 10);
 }
 
+const AMAZON_OBSERVATION_PAGE_SIZE = 1000;
+
+async function findAllAmazonTreasuryObservations() {
+  const rows: Record<string, unknown>[] = [];
+  for (let from = 0; ; from += AMAZON_OBSERVATION_PAGE_SIZE) {
+    const { data, error } = await supabaseAdmin
+      .from("finance_amazon_treasury_forecast_snapshots")
+      .select("*")
+      .in("economic_state", ["AVAILABLE", "DEFERRED", "PENDING_BANK"])
+      .order("snapshot_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(from, from + AMAZON_OBSERVATION_PAGE_SIZE - 1);
+    if (error) return { data: null, error };
+    const page = (data ?? []) as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < AMAZON_OBSERVATION_PAGE_SIZE) break;
+  }
+  return { data: rows, error: null };
+}
+
 /**
  * Lee datos crudos para la planificacion financiera.
  * Las reglas de negocio se aplican en el servicio, no aqui.
@@ -130,11 +150,7 @@ export async function findFinancialPlanningData(
       .gte("forecast_date", fromDate)
       .lte("forecast_date", toDate)
       .order("forecast_date", { ascending: true }),
-    supabaseAdmin
-      .from("finance_amazon_treasury_forecast_snapshots")
-      .select("*")
-      .in("economic_state",["AVAILABLE","DEFERRED","PENDING_BANK"])
-      .order("snapshot_at",{ascending:false}),
+    findAllAmazonTreasuryObservations(),
     supabase
       .from("finance_settings")
       .select("*")

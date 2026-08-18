@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateTreasury } from "./treasuryEngine.ts";
+import { evaluateTreasury, simulateAvailableLiquidity } from "./treasuryEngine.ts";
 const line={id:"line",name:"Caja Rural",availableEur:30000,priority:1,dueDate:"2027-01-01",cycleDays:120};
 const run=(cash,out,lines=[line])=>evaluateTreasury({initialCashEur:cash,reserveEur:20000,events:[{id:"e",date:"2026-09-01",title:"Pago",kind:"outflow",amountEur:out}],lines});
 test("clasifica saludable",()=>assert.equal(run(50000,10000).status,"healthy"));
@@ -12,4 +12,5 @@ test("recomendacion respeta prioridad y explica importe",()=>{const result=run(1
 test("no recomienda linea que vence antes del siguiente ingreso",()=>{const result=evaluateTreasury({initialCashEur:10000,reserveEur:20000,events:[{id:"out",date:"2026-09-01",title:"Pago",kind:"outflow",amountEur:15000},{id:"in",date:"2026-09-15",title:"Amazon",kind:"income",amountEur:10000}],lines:[{...line,dueDate:"2026-09-10"}]});assert.match(result.recommendation,/Cobertura insuficiente/);});
 test("projected es solo evento y no muta entrada",()=>{const input={initialCashEur:10000,reserveEur:20000,events:[{id:"income",date:"2026-09-01",title:"Amazon",kind:"income",amountEur:15000}],lines:[]};const result=evaluateTreasury(input);assert.equal(input.initialCashEur,10000);assert.equal(result.minimumCashEur,10000);});
 test("Amazon previsto reduce la tension sin crear caja inicial",()=>{const result=evaluateTreasury({initialCashEur:10000,reserveEur:20000,events:[{id:"amazon",date:"2026-09-01",title:"Amazon previsto",kind:"income",amountEur:20000},{id:"out",date:"2026-09-02",title:"Pago",kind:"outflow",amountEur:25000}],lines:[]});assert.equal(result.minimumCashEur,5000);assert.equal(result.deficitEur,0);assert.deepEqual(result.causingEvents.map(event=>event.id),["out"]);});
+test("AVAILABLE is excluded from cash and can be simulated without mutation",()=>{const result=evaluateTreasury({initialCashEur:10000,reserveEur:0,events:[{id:"available",date:"2026-08-12",title:"Amazon available",kind:"income",amountEur:24000,amazonEconomicState:"AVAILABLE"},{id:"out",date:"2026-08-20",title:"Pago",kind:"outflow",amountEur:18000}],lines:[]});assert.equal(result.minimumCashEur,-8000);assert.deepEqual(simulateAvailableLiquidity({cashEur:10000,availableEur:24000,requiredEur:18000}),{cashEur:10000,requestedEur:18000,residualNeedEur:0});});
 test("recomendacion BBVA exige fecha manual",()=>{const result=run(10000,15000,[{...line,name:"BBVA",cycleDays:null}]);assert.match(result.recommendation,/fecha manual/);});

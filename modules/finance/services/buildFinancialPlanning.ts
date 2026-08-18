@@ -39,6 +39,7 @@ import { resolveLegacySupplierPaymentSettlement } from "../utils/legacySupplierP
 import { createCreditReleaseTracker } from "../utils/creditLinePlannedRelease";
 import { evaluateTreasury, type TreasuryEvent } from "./treasuryEngine";
 import { buildMarketplaceCashCards, summarizeAmazonCashByMonth, type AmazonCashItem } from "./amazonCashForecast";
+import { expectedBankDateForPending } from "./amazonTreasuryModel";
 
 function asNumber(value: unknown, fallback = 0): number {
   if (value === null || value === undefined || value === "") return fallback;
@@ -946,8 +947,8 @@ export async function buildFinancialPlanning(
   for(const observation of latestObservations){
     const state=String(observation["economic_state"]) as "AVAILABLE"|"DEFERRED"|"PENDING_BANK";
     const amountRaw=observation["official_amount_eur"]??observation["amount_eur"]??observation["estimated_amount_eur"];
-    const amountEur=amountRaw==null?null:asNumber(amountRaw);const originalAmount=asNumber(observation["original_amount"]);const originalCurrency=String(observation["original_currency"]??"EUR");const expectedBankDate=asString(observation["expected_bank_date"]);const unresolved=String(observation["marketplace"]??"UNRESOLVED")==="UNRESOLVED";
-    events.push({id:String(observation["id"]),type:"amazon_income",title:`Amazon ${state.toLowerCase().replace("_"," ")}`,date:expectedBankDate,month:dateToMonth(expectedBankDate),isPendingDate:!expectedBankDate,status:"previsto",amazonStatus:state,amazonConfidence:asString(observation["confidence"]),amazonEstimationMethod:asString(observation["estimation_method"]),sourceKey:asString(observation["source_key"]),settlementId:asString(observation["financial_event_group_id"]),marketplace:String(observation["marketplace"]??"UNRESOLVED"),dateIsEstimated:true,isInformational:unresolved||amountEur==null||state==="DEFERRED"||state==="AVAILABLE"&&originalAmount<=0,containerId:null,containerCode:null,orderId:null,orderCode:null,numeroPedidoAgente:null,agentContact:null,logisticsType:"SIN_DEFINIR",originalAmount,originalCurrency,plannedFxRate:null,plannedFxSource:"not_configured",plannedAmountEur:amountEur??0,paidAmountEur:null,recommendedSource:null,recommendationReason:unresolved?"Marketplace no resuelto; excluido del consolidado.":amountEur==null?`Importe ${originalCurrency} sin conversion EUR; excluido del consolidado.`:`Snapshot observacional ${state}; no modifica caja.`,canMarkPaid:false});
+    const amountEur=amountRaw==null?null:asNumber(amountRaw);const originalAmount=asNumber(observation["original_amount"]);const originalCurrency=String(observation["original_currency"]??"EUR");const persistedBankDate=asString(observation["expected_bank_date"]);const actualRequestAt=asString(observation["fund_transfer_at"]);const expectedBankDate=state==="AVAILABLE"?null:state==="PENDING_BANK"?expectedBankDateForPending(actualRequestAt)??persistedBankDate:persistedBankDate;const unresolved=String(observation["marketplace"]??"UNRESOLVED")==="UNRESOLVED";
+    events.push({id:String(observation["id"]),type:"amazon_income",title:`Amazon ${state.toLowerCase().replace("_"," ")}`,date:expectedBankDate,month:dateToMonth(expectedBankDate),isPendingDate:!expectedBankDate,status:"previsto",amazonStatus:state,amazonConfidence:asString(observation["confidence"]),amazonEstimationMethod:asString(observation["estimation_method"]),sourceKey:asString(observation["source_key"]),settlementId:asString(observation["financial_event_group_id"]),marketplace:String(observation["marketplace"]??"UNRESOLVED"),dateIsEstimated:true,isInformational:unresolved||amountEur==null||state==="DEFERRED"||state==="AVAILABLE",containerId:null,containerCode:null,orderId:null,orderCode:null,numeroPedidoAgente:null,agentContact:null,logisticsType:"SIN_DEFINIR",originalAmount,originalCurrency,plannedFxRate:null,plannedFxSource:"not_configured",plannedAmountEur:amountEur??0,paidAmountEur:null,recommendedSource:null,recommendationReason:unresolved?"Marketplace no resuelto; excluido del consolidado.":amountEur==null?`Importe ${originalCurrency} sin conversion EUR; excluido del consolidado.`:state==="AVAILABLE"?"Liquidez Amazon disponible para solicitar; no es caja ni ingreso bancario confirmado.":`Snapshot observacional ${state}; no modifica caja.`,canMarkPaid:false});
   }
 
   const fromMonth = query.fromMonth ?? new Date().toISOString().slice(0, 7);
@@ -957,7 +958,8 @@ export async function buildFinancialPlanning(
     if(!["RECEIVED","PENDING_BANK","AVAILABLE","DEFERRED","FUTURE"].includes(state))return [];
     const officialRaw=income["official_amount_eur"]??income["official_converted_amount_eur"];const official=officialRaw==null?null:asNumber(officialRaw);
     const treasuryRaw=income["amount_eur"]??income["estimated_amount_eur"]??income["treasury_amount_eur"];const treasury=treasuryRaw==null?null:asNumber(treasuryRaw);
-    return [{identity:asString(income["amazon_transaction_id"])??asString(income["settlement_id"])??String(income["source_key"]??income["id"]),marketplace:String(income["marketplace"]??"UNKNOWN"),state:state as AmazonCashItem["state"],originalCurrency:String(income["original_currency"]??"EUR"),originalAmount:asNumber(income["original_amount"]),officialAmountEur:official,estimatedAmountEur:official==null?treasury:null,expectedBankDate:asString(income["expected_bank_date"]),confidence:(asString(income["confidence"])??"unavailable") as AmazonCashItem["confidence"],estimationMethod:asString(income["estimation_method"])??"unavailable",snapshotAt:asString(income["snapshot_at"]),fxSource:asString(income["fx_source"])}];
+    const actualRequestDate=state==="PENDING_BANK"?asString(income["fund_transfer_at"]):null;
+    return [{identity:asString(income["amazon_transaction_id"])??asString(income["settlement_id"])??String(income["source_key"]??income["id"]),marketplace:String(income["marketplace"]??"UNKNOWN"),state:state as AmazonCashItem["state"],originalCurrency:String(income["original_currency"]??"EUR"),originalAmount:asNumber(income["original_amount"]),officialAmountEur:official,estimatedAmountEur:official==null?treasury:null,expectedBankDate:state==="AVAILABLE"?null:state==="PENDING_BANK"?expectedBankDateForPending(actualRequestDate)??asString(income["expected_bank_date"]):asString(income["expected_bank_date"]),expectedRequestDate:asString(income["expected_request_date"]),actualRequestDate,confidence:(asString(income["confidence"]??"unavailable")) as AmazonCashItem["confidence"],estimationMethod:asString(income["estimation_method"]??"unavailable")!,snapshotAt:asString(income["snapshot_at"]),fxSource:asString(income["fx_source"]),fxRate:income["estimated_fx_rate"]==null?income["realized_fx_rate"]==null?null:asNumber(income["realized_fx_rate"]):asNumber(income["estimated_fx_rate"]),fxObservedAt:asString(income["fx_observed_at"])}];
   });
   const {
     pendingDateEvents,
@@ -985,7 +987,7 @@ export async function buildFinancialPlanning(
       const effectiveAmountEur = effectiveEventAmountEur(event);
       // PROJECTED/CONFIRMED are forecast inflows for treasury tension, not bank cash.
       // RECEIVED is already represented by the opening cash balance and must not be added again.
-      if (event.type === "amazon_income" && event.status !== "pagado") {
+      if (event.type === "amazon_income" && event.status !== "pagado" && event.amazonStatus !== "AVAILABLE") {
         projectedCash += effectiveAmountEur;
       }
       if (event.type === "credit_line_maturity" || event.type === "credit_line_planned_maturity" || event.type === "credit_line_release") {
@@ -1058,8 +1060,10 @@ export async function buildFinancialPlanning(
   const treasuryEvaluation=evaluateTreasury({initialCashEur:cashBalance,reserveEur:minimumOperatingReserveEur,events:treasuryEvents,lines:activeCreditLines.map(line=>({id:line.id,name:`${line.bankName} ${line.lineName}`,availableEur:line.availableAmount,priority:line.priority,dueDate:line.maturityDate,cycleDays:line.cycleDays,knownCostEur:line.fixedFee??null}))});
 
   const monthKeys=months.map(month=>month.month);
-  const marketplaceCards=buildMarketplaceCashCards(amazonCashItems);
-  const europeItems=amazonCashItems.filter(item=>item.marketplace!=="UNRESOLVED").flatMap(item=>{const amount=item.officialAmountEur??item.estimatedAmountEur;return amount==null?[]:[{...item,identity:`EUROPE:${item.identity}`,marketplace:"EUROPE",originalCurrency:"EUR",originalAmount:amount,officialAmountEur:item.officialAmountEur,estimatedAmountEur:item.officialAmountEur==null?item.estimatedAmountEur:null}];});
+  const currentBalanceItems=amazonCashItems.filter(item=>item.state!=="FUTURE"&&item.state!=="RECEIVED");
+  const marketplaceCards=buildMarketplaceCashCards(currentBalanceItems);
+  const europeMarketplaces=new Set(["ES","FR","DE","IT","GB","SE","PL","NL","BE","IE"]);
+  const europeItems=currentBalanceItems.filter(item=>europeMarketplaces.has(item.marketplace)).flatMap(item=>{const amount=item.officialAmountEur??item.estimatedAmountEur;return amount==null?[]:[{...item,identity:`EUROPE:${item.identity}`,marketplace:"EUROPE",originalCurrency:"EUR",originalAmount:amount,officialAmountEur:item.officialAmountEur,estimatedAmountEur:item.officialAmountEur==null?item.estimatedAmountEur:null}];});
   const europeCard=buildMarketplaceCashCards(europeItems)[0];
   return {
     ok: true,
@@ -1076,7 +1080,7 @@ export async function buildFinancialPlanning(
         .filter((event) => !event.isInformational && event.type === "amazon_income" && event.status !== "pagado")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
       amazonAvailable: latestObservations.filter(row=>String(row["economic_state"]??"")==="AVAILABLE"&&String(row["marketplace"]??"")!=="UNRESOLVED"&&(row["official_amount_eur"]??row["amount_eur"])!=null&&asNumber(row["original_amount"])>0).reduce((sum,row)=>sum+asNumber(row["official_amount_eur"]??row["amount_eur"]),0),
-      amazonAvailableSource: "FinancialEventGroup Open.OriginalTotal; solo importes EUR oficiales.",
+      amazonAvailableSource: "Liquidez Amazon para solicitar; permanece fuera de caja bancaria.",
       amazonExpected: raw.amazonIncomeForecasts
         .filter((row) => String(row["economic_state"]??"")==="FUTURE"&&row["treasury_amount_eur"]!=null)
         .reduce((sum, row) => sum + asNumber(row["treasury_amount_eur"]), 0),

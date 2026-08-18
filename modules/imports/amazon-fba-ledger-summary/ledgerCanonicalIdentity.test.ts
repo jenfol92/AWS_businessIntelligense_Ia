@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   dedupeLedgerRowsForUpsert,
   manualLedgerReportDocumentIdFromContent,
+  prepareLedgerRowsAgainstPersisted,
 } from "./ledgerCanonicalIdentity.ts";
 import type { AmazonFbaLedgerDbRow } from "./types.ts";
 
@@ -34,10 +35,18 @@ function row(
     ending_warehouse_balance: 12,
     unknown_events: 13,
     location: "GB",
+    location_raw: "GB",
+    location_type: "COUNTRY",
+    physical_country: "GB",
+    location_evidence_source: "LEDGER_ISO_COUNTRY",
+    location_evidence_confidence: "HIGH",
     location_country: null,
     source: "manual",
     source_file_name: "ledger-a.csv",
     report_document_id: "doc-1",
+    manual_document_hash: null,
+    document_identity_type: "REPORT_DOCUMENT_ID",
+    document_identity: "report:doc-1",
     raw: {},
     updated_at: "2026-07-15T00:00:00.000Z",
     ...patch,
@@ -66,14 +75,35 @@ assertConflict(
   "ending_warehouse_balance",
 );
 
-assertConflict(
-  [row(), row({ source: "scheduler", customer_returns: 5 })],
-  "customer_returns",
+assert.equal(
+  dedupeLedgerRowsForUpsert([row(), row({ condition_type: "USEDLIKENEW" })]).length,
+  2,
+  "conditions distintas son grains distintos",
+);
+assert.equal(
+  dedupeLedgerRowsForUpsert([row(), row({ fnsku: "FNSKU2" })]).length,
+  2,
+  "FNSKU distintos permanecen separados",
+);
+assert.equal(
+  dedupeLedgerRowsForUpsert([row(), row({ location: "DE", location_raw: "DE" })]).length,
+  2,
+  "locations distintas permanecen separadas",
+);
+assert.equal(
+  dedupeLedgerRowsForUpsert([row(), row({ disposition: "DEFECTIVE" })]).length,
+  2,
+  "dispositions distintas permanecen separadas",
+);
+assert.equal(
+  dedupeLedgerRowsForUpsert([row(), row({ document_identity: "report:doc-2" })]).length,
+  2,
+  "documentos distintos conservan provenance independiente",
 );
 
 assertConflict(
-  [row(), row({ source: "scheduler", condition_type: "USEDLIKENEW" })],
-  "condition_type",
+  [row(), row({ source: "scheduler", customer_returns: 5 })],
+  "customer_returns",
 );
 
 assertConflict(
@@ -103,4 +133,36 @@ assert.notEqual(
   manualLedgerReportDocumentIdFromContent(csvA),
   manualLedgerReportDocumentIdFromContent(csvB),
   "dos CSV distintos con el mismo nombre no colisionan",
+);
+
+assert.deepEqual(
+  prepareLedgerRowsAgainstPersisted([row()], [row()]),
+  [],
+  "repetir exactamente el documento no vuelve a escribir",
+);
+
+const aliasUpdate = prepareLedgerRowsAgainstPersisted(
+  [row({ sku_original: "MSKU-ALT", msku_aliases: ["MSKU-ALT"] })],
+  [row({ msku_aliases: ["MSKU-1"] })],
+);
+assert.equal(aliasUpdate.length, 1);
+assert.deepEqual(aliasUpdate[0]?.msku_aliases.sort(), ["MSKU-1", "MSKU-ALT"]);
+assert.equal(aliasUpdate[0]?.ending_warehouse_balance, 12);
+
+assert.throws(
+  () => prepareLedgerRowsAgainstPersisted(
+    [row({ ending_warehouse_balance: 99 })],
+    [row()],
+  ),
+  /LEDGER_IDENTITY_CONFLICT.*ending_warehouse_balance/,
+  "un replay incompatible aborta antes del upsert",
+);
+
+assert.throws(
+  () => prepareLedgerRowsAgainstPersisted(
+    [row({ report_document_id: "doc-other" })],
+    [row()],
+  ),
+  /LEDGER_DOCUMENT_CONFLICT.*report_document_id/,
+  "una identidad documental incoherente aborta",
 );

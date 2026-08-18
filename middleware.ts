@@ -87,7 +87,6 @@ export async function middleware(req: NextRequest) {
     path.startsWith("/pedidos") ||
     path.startsWith("/proveedores") ||
     path.startsWith("/planificador") ||
-    path.startsWith("/importar") ||
     path.startsWith("/coo");
 
   const currentLocale = pathname.split("/")[1] || DEFAULT_LOCALE;

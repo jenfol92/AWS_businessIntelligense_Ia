@@ -1682,6 +1682,7 @@ type LatestFbaInventorySnapshotRow = {
   reserved_quantity: number | null;
   inbound_quantity: number | null;
   unfulfillable_quantity: number | null;
+  researching_quantity: number | null;
   source: string | null;
 };
 
@@ -1787,7 +1788,7 @@ export async function fetchLatestFbaInventorySnapshotByProductIds(
     const { data, error } = await supabase
       .from("v_latest_amazon_fba_inventory_snapshot")
       .select(
-        "producto_id, snapshot_at, fulfillable_quantity, reserved_quantity, inbound_quantity, unfulfillable_quantity, source",
+        "producto_id, snapshot_at, fulfillable_quantity, reserved_quantity, inbound_quantity, unfulfillable_quantity, researching_quantity, source",
       )
       .in("producto_id", chunk);
 
@@ -1813,21 +1814,39 @@ export async function fetchLatestFbaInventorySnapshotByProductIds(
       const latestAt = sorted[0]?.snapshot_at ?? null;
       if (!latestAt) continue;
       const sameSnapshotRows = sorted.filter((row) => row.snapshot_at === latestAt);
+      const quantitySignatures = new Set(
+        sameSnapshotRows.map((row) =>
+          [
+            Number(row.fulfillable_quantity ?? 0),
+            Number(row.reserved_quantity ?? 0),
+            Number(row.inbound_quantity ?? 0),
+            Number(row.unfulfillable_quantity ?? 0),
+            Number(row.researching_quantity ?? 0),
+          ].join("|"),
+        ),
+      );
+      if (sameSnapshotRows.length > 1 && quantitySignatures.size !== 1) {
+        console.warn(
+          `[inventory] snapshot FBA ambiguo para producto ${productId}: las filas marketplace no se suman sin evidencia de pool`,
+        );
+        continue;
+      }
+      const representativeRows = sameSnapshotRows.length > 0 ? [sameSnapshotRows[0]] : [];
       result.set(productId, {
         snapshotAt: latestAt,
-        fulfillableQuantity: sameSnapshotRows.reduce(
+        fulfillableQuantity: representativeRows.reduce(
           (sum, row) => sum + Number(row.fulfillable_quantity ?? 0),
           0,
         ),
-        reservedQuantity: sameSnapshotRows.reduce(
+        reservedQuantity: representativeRows.reduce(
           (sum, row) => sum + Number(row.reserved_quantity ?? 0),
           0,
         ),
-        inboundQuantity: sameSnapshotRows.reduce(
+        inboundQuantity: representativeRows.reduce(
           (sum, row) => sum + Number(row.inbound_quantity ?? 0),
           0,
         ),
-        unfulfillableQuantity: sameSnapshotRows.reduce(
+        unfulfillableQuantity: representativeRows.reduce(
           (sum, row) => sum + Number(row.unfulfillable_quantity ?? 0),
           0,
         ),

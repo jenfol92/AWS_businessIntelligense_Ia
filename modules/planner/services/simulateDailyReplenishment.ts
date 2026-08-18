@@ -7,6 +7,8 @@ import type {
 } from "../types/replenishment.types";
 import type { ReplenishmentParams } from "../types/replenishment.types";
 import { computeRecommendedUnits } from "./resolveReplenishmentParams";
+export { simulateSharedFbaPool } from "./simulateSharedFbaPool";
+export type { SharedFbaMarketplaceDemand, SharedFbaPoolDay } from "./simulateSharedFbaPool";
 
 export function utcTodayIso(): string {
   return new Date().toISOString().slice(0, 10);

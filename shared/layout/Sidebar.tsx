@@ -38,7 +38,6 @@ import {
 
   Globe2,
 
-  Import,
 
   LayoutDashboard,
 
@@ -165,7 +164,6 @@ const NAV_GROUPS: NavGroup[] = [
         icon: PackageSearch,
         badge: "Beta",
       },
-      { label: "Importar", path: "/importar", icon: Import },
     ],
   },
 ];

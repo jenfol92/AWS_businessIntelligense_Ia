@@ -1,15 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
-import {expectedBankDateForAvailable,expectedBankDateForPending,projectRemainingMonth,stateContributesFuture} from "./amazonTreasuryModel.ts";
+import {availablePayoutSimulation,expectedBankDateForPending,payoutArrivalWindow,projectRemainingMonth,stateContributesFuture} from "./amazonTreasuryModel.ts";
 
-test("AVAILABLE uses the next configured window and bank lag",()=>{
-  assert.equal(expectedBankDateForAvailable(new Date("2026-08-11T12:00:00Z"),[1,3],2),"2026-08-14");
+test("AVAILABLE has only a configured conditional request simulation",()=>{
+  assert.deepEqual(availablePayoutSimulation(new Date("2026-08-11T12:00:00Z"),[1,3]),{expectedRequestDate:"2026-08-12",arrival:{base:"2026-08-13",conservative:"2026-08-14"},timing:"ESTIMATED_CONDITIONAL"});
+  assert.equal(availablePayoutSimulation(new Date("2026-08-11T12:00:00Z"),[]).expectedRequestDate,null);
 });
 
-test("PENDING_BANK uses FundTransferDate plus configured lag without waiting for request weekdays",()=>{
-  assert.equal(expectedBankDateForPending("2026-08-11T12:25:33Z",2),"2026-08-13");
-  assert.equal(expectedBankDateForPending("2026-08-14T12:25:33Z",2),"2026-08-18");
+test("real Tuesday request prevails and PENDING_BANK uses one/two business day window",()=>{
+  assert.equal(expectedBankDateForPending("2026-08-11T12:25:33Z"),"2026-08-12");
+  assert.deepEqual(payoutArrivalWindow("2026-08-11T12:25:33Z"),{base:"2026-08-12",conservative:"2026-08-13"});
+  assert.deepEqual(payoutArrivalWindow("2026-08-14T12:25:33Z"),{base:"2026-08-17",conservative:"2026-08-18"});
 });
 
 test("FUTURE uses only remaining days, weighted recent rates and stock cap",()=>{
@@ -37,9 +39,10 @@ test("migration preserves exact amounts and identities without automatic cash",a
 test("sync never makes Closed Succeeded future or converts foreign amounts silently",async()=>{
   const source=await readFile(new URL("./amazonTreasuryObservations.ts",import.meta.url),"utf8");
   assert.match(source,/FundTransferStatus==="Processing"/);assert.doesNotMatch(source,/FundTransferStatus==="Succeeded"[^\n]*PENDING_BANK/);
-  assert.match(source,/expectedRequestDate:pending\?null:dates\.request/);
+  assert.match(source,/expectedRequestDate:pending\?null:simulation\.expectedRequestDate/);
   assert.match(source,/pending\?expectedBankDateForPending/);
-  assert.match(source,/currency==="EUR"/);
+  assert.match(source,/expectedBankDate=pending\?expectedBankDateForPending\([^)]*\):null/);
+  const fx=await readFile(new URL("./ecbFxService.ts",import.meta.url),"utf8");assert.match(fx,/currency==="EUR"/);assert.match(fx,/AMAZON_CONVERTED_TOTAL/);
   assert.doesNotMatch(source,/data\?\.value\?\?0\.75|gross\*0\.75/);
   assert.match(source,/finance_insert_amazon_treasury_observation|insertAmazonTreasuryObservationAdmin/);
   assert.doesNotMatch(source,/finance_cash_movements|finance_receive_amazon_income/);

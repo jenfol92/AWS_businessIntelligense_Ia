@@ -6,9 +6,9 @@ import type {
   SpApiReport,
   SpApiReportDocument,
 } from "./types";
+import { assertAmazonReportId } from "./reportIdentityPolicy";
 
 const REPORTS_BASE = "/reports/2021-06-30";
-
 export async function createReport(
   input: CreateReportInput,
 ): Promise<CreateReportResult> {
@@ -28,10 +28,15 @@ export async function createReport(
 }
 
 export async function getReport(reportId: string): Promise<SpApiReport> {
+  assertAmazonReportId(reportId);
   return spApiRequest<SpApiReport>({
     method: "GET",
     path: `${REPORTS_BASE}/reports/${encodeURIComponent(reportId)}`,
   });
+}
+
+export async function listReports(input:{reportTypes:string[];processingStatuses?:string[];createdSince:string;pageSize?:number}):Promise<SpApiReport[]>{
+  const result=await spApiRequest<{reports?:SpApiReport[]}>({method:"GET",path:`${REPORTS_BASE}/reports`,query:{reportTypes:input.reportTypes.join(","),processingStatuses:input.processingStatuses?.join(","),createdSince:input.createdSince,pageSize:String(input.pageSize??100)}});return result.reports??[];
 }
 
 export async function getReportDocument(

@@ -1,10 +1,10 @@
-import type { InventoryRow } from "../types/inventory.types";
+import type { InventoryRow } from "../types/inventory.types.ts";
 import type {
   ResolvedChannelScope,
   ResolvedCountryScope,
-} from "./inventoryScope";
-import { stockForChannelRow } from "./inventoryScope";
-import { isInventoryTimestampNotStale } from "./inventoryFreshnessPolicy";
+} from "./inventoryScope.ts";
+import { stockForChannelRow } from "./inventoryScope.ts";
+import { isInventoryTimestampNotStale } from "./inventoryFreshnessPolicy.ts";
 
 export type LatestFbaLedgerStock = {
   snapshotDate: string;
@@ -13,6 +13,8 @@ export type LatestFbaLedgerStock = {
 };
 
 export type LatestFbaInventorySnapshotStock = {
+  snapshotRunId: string;
+  operationalPool: string;
   snapshotAt: string;
   fulfillableQuantity: number;
   reservedQuantity: number | null;

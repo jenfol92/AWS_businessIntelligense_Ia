@@ -5,7 +5,10 @@ import { readFile } from "node:fs/promises";
 test("existing Inventory refresh button calls canonical sync and exposes outcomes",async()=>{
   const source=await readFile("modules/inventory/components/InventoryPage.tsx","utf8");
   assert.match(source,/\/api\/amazon\/inventory\/fba-snapshot\/import/);
-  assert.match(source,/ACTUALIZANDO\.\.\./);
+  assert.match(source,/onClick=\{\(\) => void refreshAmazonInventory\(\)\}/);
+  assert.match(source,/disabled=\{amazonRefreshLoading\}/);
+  assert.match(source,/amazonRefreshLoading\s*\?\s*\([\s\S]*?Loader2[\s\S]*?animate-spin/);
+  assert.match(source,/amazonRefreshLoading\s*\?\s*["']Actualizando Amazon/);
   assert.match(source,/Amazon ha limitado temporalmente las consultas/);
   assert.match(source,/Ya hay una actualización de Amazon en curso/);
   assert.match(source,/loadAmazonHealth\(\)/);

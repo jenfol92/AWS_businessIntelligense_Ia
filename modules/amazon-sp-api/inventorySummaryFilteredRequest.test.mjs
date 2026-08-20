@@ -36,6 +36,13 @@ test("135 Seller SKU se dividen en batches 50/50/35", async () => {
   assert.deepEqual(batches.map((batch) => batch.length), [50, 50, 35]);
 });
 
+test("133 Seller SKU se dividen dinámicamente en batches 50/50/33", async () => {
+  const { splitSellerSkuBatches } = await loadModule(sourcePath);
+  const batches = splitSellerSkuBatches(Array.from({ length: 133 }, (_, index) => `SKU-${index}`), 50);
+  assert.deepEqual(batches.map((batch) => batch.length), [50, 50, 33]);
+  assert.equal(batches.flat().length, 133);
+});
+
 test("un batch de 51 Seller SKU se rechaza", async () => {
   const { splitSellerSkuBatches } = await loadModule(sourcePath);
   assert.throws(() => splitSellerSkuBatches(["SKU"], 51), /INVALID_INVENTORY_SUMMARY_BATCH_SIZE/);

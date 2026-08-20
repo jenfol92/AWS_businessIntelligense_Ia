@@ -6,7 +6,6 @@ import { syncAmazonInventoryCanonical } from "@/modules/amazon-sp-api/amazonInve
 import { supabaseAdmin } from "@/server/supabase/adminClient";
 
 export const dynamic = "force-dynamic";
-const INVENTORY_CRON_GATE_CODE = "INVENTORY_REFRESH_TEMPORARILY_GATED";
 
 const JOB_KEY = "amazon_fba_inventory_snapshot";
 const NEXT_RUN_HINT = "Cada 6 h inicialmente; ajustar a 4 h si hace falta.";
@@ -72,11 +71,6 @@ export async function POST(request: NextRequest) {
       { status: 401 },
     );
   }
-
-  return NextResponse.json(
-    { ok: false, status: "GATED", code: INVENTORY_CRON_GATE_CODE, error: "Cron Inventory desactivado hasta validar Inventory Summaries filtrado.", startedAt },
-    { status: 503 },
-  );
 
   const missing = getMissingSpApiEnvKeys();
   if (missing.length > 0) {

@@ -32,3 +32,11 @@ test("canonical owner loads only confirmed Seller SKU and batches at 50", async 
   assert.match(source, /sellerSkus: confirmedSellerSkus/);
   assert.match(source, /sellerSkuBatchSize: 50/);
 });
+
+test("el modo de validación del owner limita batches y evita publicar snapshot", async () => {
+  const source = await readFile("modules/amazon-sp-api/amazonInventoryCanonicalSyncService.ts", "utf8");
+  assert.match(source, /maxBatches\?: number/);
+  assert.match(source, /maxBatches: options\.maxBatches/);
+  assert.match(source, /persistSnapshot: options\.publishSnapshot !== false/);
+  assert.match(source, /includeObservations: options\.publishSnapshot === false/);
+});

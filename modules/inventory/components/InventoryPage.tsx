@@ -813,12 +813,16 @@ export function InventoryPage() {
           <div className="flex items-end">
             <button
               type="button"
-              onClick={() => undefined}
-              disabled
+              onClick={() => void refreshAmazonInventory()}
+              disabled={amazonRefreshLoading}
               className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <RefreshCw className="h-4 w-4" />
-              ACTUALIZACIÓN TEMPORALMENTE BLOQUEADA
+              {amazonRefreshLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              {amazonRefreshLoading ? "Actualizando Amazon…" : "Actualizar inventario Amazon"}
             </button>
           </div>
         </div>

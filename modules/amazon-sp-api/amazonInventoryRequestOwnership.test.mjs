@@ -28,6 +28,7 @@ test("Inventory es el único trigger UI del sync canónico", () => {
 
 test("cron delega al owner de Inventory Summaries e inbound conserva su owner separado", () => {
   assert.match(cron, /syncAmazonInventoryCanonical/);
+  assert.doesNotMatch(cron, /spApiRequest|requestFilteredInventorySummaries|getInventorySummaries/);
   assert.doesNotMatch(reportsCron, /syncAmazonInventoryCanonical|getInventorySummaries/);
   assert.match(inboundRoute, /syncInboundShipmentsToAmazonEnvios/);
   assert.doesNotMatch(inboundRoute, /syncAmazonInventoryCanonical/);
@@ -78,6 +79,14 @@ test("Ledger stale no se convierte en current fiable", () => {
 test("las rutas UI no llaman getInventorySummaries directamente", () => {
   assert.doesNotMatch(inventoryPage, /getInventorySummaries|spApiRequest/);
   assert.doesNotMatch(canonicalRoute, /getInventorySummaries|spApiRequest/);
+});
+
+test("el importer productivo delega cada request al wrapper filtrado", () => {
+  const start = legacyForecastImports.indexOf("export async function importFbaInventorySnapshotFromSpApi");
+  const end = legacyForecastImports.indexOf("async function legacyFbaLedgerDailyFromSpApiDisabled");
+  const inventoryOwner = legacyForecastImports.slice(start, end);
+  assert.match(inventoryOwner, /requestFilteredInventorySummaries/);
+  assert.doesNotMatch(inventoryOwner, /spApiRequest\s*</);
 });
 
 test("autenticación de usuario, admin y cron se conserva", () => {

@@ -12,6 +12,20 @@ const PAGE_SIZE = 1_000;
  * not another identity store or Amazon caller.
  */
 export async function loadConfirmedOperationalAmazonSellerSkus(): Promise<string[]> {
+  const identities = await loadConfirmedOperationalAmazonIdentities();
+  return Array.from(new Set(identities.map((identity) => identity.sellerSku))).sort();
+}
+
+export type ConfirmedOperationalAmazonIdentity = {
+  sellerSku: string;
+  asin: string;
+  productoId: string;
+  skuLimpio: string;
+  fnsku: string;
+  confidence: "CONFIRMED";
+};
+
+export async function loadConfirmedOperationalAmazonIdentities(): Promise<ConfirmedOperationalAmazonIdentity[]> {
   const [{ data: products, error: productsError }, ledgerRows] = await Promise.all([
     supabaseAdmin.from("productos").select("id,sku,nombre").eq("estado", "activo"),
     loadLedgerIdentityEvidence(),
@@ -58,10 +72,25 @@ export async function loadConfirmedOperationalAmazonSellerSkus(): Promise<string
   }
 
   const identitySet = buildOperationalAmazonIdentitySet(activeProducts, evidence);
-  return identitySet.products
+  const confirmedProducts = new Set(identitySet.products
     .filter((product) => product.status === "CONFIRMED" && product.identityConfidence === "CONFIRMED")
-    .flatMap((product) => product.sellerSkus)
-    .sort();
+    .map((product) => product.productId));
+  const skuByProduct = new Map(activeProducts.map((product) => [product.productId, product.erpSku]));
+  const result = new Map<string, ConfirmedOperationalAmazonIdentity>();
+  for (const row of ledgerRows) {
+    const productoId = String(row.producto_id ?? "").trim();
+    const asin = String(row.asin ?? "").trim().toUpperCase();
+    const fnsku = String(row.fnsku ?? "").trim().toUpperCase();
+    const skuLimpio = skuByProduct.get(productoId) ?? "";
+    if (!confirmedProducts.has(productoId) || !asin || !fnsku || !skuLimpio) continue;
+    for (const value of [row.sku_original, ...(row.msku_aliases ?? [])]) {
+      const sellerSku = String(value ?? "").trim();
+      if (!sellerSku) continue;
+      const key = `${sellerSku}\u0000${asin}\u0000${productoId}`;
+      result.set(key, { sellerSku, asin, productoId, skuLimpio, fnsku, confidence: "CONFIRMED" });
+    }
+  }
+  return Array.from(result.values()).sort((a, b) => a.sellerSku.localeCompare(b.sellerSku));
 }
 
 type LedgerIdentityRow = {

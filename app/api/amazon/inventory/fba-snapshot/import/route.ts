@@ -5,7 +5,6 @@ import { syncAmazonInventoryCanonical } from "@/modules/amazon-sp-api/amazonInve
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 
 export const dynamic = "force-dynamic";
-const INVENTORY_REFRESH_GATE_CODE = "INVENTORY_REFRESH_TEMPORARILY_GATED";
 
 type Body = {
   marketplaceIds?: string[];
@@ -20,11 +19,6 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
   }
-
-  return NextResponse.json(
-    { ok: false, code: INVENTORY_REFRESH_GATE_CODE, error: "Inventory Summaries permanece cerrado hasta validar el path filtrado single-SKU." },
-    { status: 503 },
-  );
 
   const missing = getMissingSpApiEnvKeys();
   if (missing.length > 0) {

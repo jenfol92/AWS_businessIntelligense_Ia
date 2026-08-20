@@ -24,7 +24,7 @@ import {
   getReport,
   getReportDocument,
 } from "./reportsClient";
-import { resolveProductMatchesBySku } from "./skuProductMatching";
+import { inventoryIdentityKey, resolveProductMatchesBySku } from "./skuProductMatching";
 import {
   resolveFbaSaleCountry,
   salesChannelToMarketplaceId,
@@ -33,6 +33,7 @@ import type { SpApiReport } from "./types";
 import { importAmazonFbaLedgerSummaryFromText } from "@/modules/imports/amazon-fba-ledger-summary/service";
 import {
   buildCanonicalInventorySnapshot,
+  type IncompleteInventoryObservation,
   type InventorySummaryObservation,
 } from "./inventorySummaryCanonicalSnapshot";
 import {
@@ -704,10 +705,35 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
   marketplaceIds?: string[];
   sellerSkus?: string[];
   sellerSkuBatchSize?: number;
+  maxBatches?: number;
   paginationMode?: "normal" | "diagnostic-stop";
+  stopOnNextToken?: boolean;
+  /** Read-only acquisition mode for bounded validation; production defaults to persistence. */
+  persistSnapshot?: boolean;
+  includeObservations?: boolean;
   persistTelemetry?: (row: InventorySummaryRequestTelemetry) => Promise<void>;
   requestFiltered?: typeof requestFilteredInventorySummaries;
 }): Promise<Omit<ImportSummary, "reportId" | "status"> & {
+  observations?: Array<InventorySummary & { marketplaceId: string }>;
+  canonicalRows?: ReturnType<typeof buildCanonicalInventorySnapshot>["rows"];
+  incompleteObservations?: IncompleteInventoryObservation[];
+  publicationSummary?: {
+    snapshotRunId: string;
+    rawRows: number;
+    canonicalPhysicalIdentities: number;
+    identityResolvedByAlias: number;
+    identityResolvedByAsin: number;
+    identityResolvedByLegacySku: number;
+    identityIncomplete: number;
+    identityAmbiguous: number;
+    asinIdentityConflicts: number;
+    fnskuIdentityConflicts: number;
+    rawFulfillableSum: number;
+    dedupedFulfillableSum: number;
+    duplicateObservationsRemoved: number;
+    duplicateFulfillableUnitsRemoved: number;
+    excludedFulfillableUnits: number;
+  };
   requestMetrics: {
     marketplacesAttempted: string[];
     marketplacesCompleted: string[];
@@ -717,6 +743,9 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     rateLimitedMarketplace: string | null;
     retryAfter: string | null;
     observedRateLimits: string[];
+    lastStatus: number | null;
+    lastRequestId: string | null;
+    nextTokenPresent: boolean | null;
     durationMs: number;
   };
 }> {
@@ -730,6 +759,11 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     throw new Error(`INVALID_INVENTORY_SUMMARY_BATCH_SIZE:${batchSize}`);
   }
   const sellerSkuBatches = splitSellerSkuBatches(sellerSkus, batchSize);
+  const maxBatches = params.maxBatches == null ? sellerSkuBatches.length : params.maxBatches;
+  if (!Number.isInteger(maxBatches) || maxBatches < 1) {
+    throw new Error(`INVALID_INVENTORY_SUMMARY_MAX_BATCHES:${maxBatches}`);
+  }
+  const batchesToProcess = sellerSkuBatches.slice(0, maxBatches);
   const pacer = new InventorySummaryRequestPacer();
   const startedMs = Date.now();
   const warnings: string[] = [];
@@ -739,7 +773,7 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
   const configuredRequestBudget = inventorySummaryMaxRequestsPerRun();
   const requestBudget = Math.min(
     configuredRequestBudget,
-    Math.max(1, marketplaceIds.length * sellerSkuBatches.length * maxPagesPerBatch),
+    Math.max(1, marketplaceIds.length * batchesToProcess.length * maxPagesPerBatch),
   );
   const maxRuntimeMs = inventorySummaryMaxRuntimeMs();
   const marketplacesAttempted: string[] = [];
@@ -749,9 +783,12 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
   let amazonHttpCalls = 0;
   let activeMarketplace: string | null = null;
   const attemptId = newInventoryAttemptId();
-  const persistTelemetry = params.persistTelemetry ?? persistInventorySummaryRequestTelemetry;
+  const shouldPersistSnapshot = params.persistSnapshot !== false;
+  const persistTelemetry = params.persistTelemetry
+    ?? (shouldPersistSnapshot ? persistInventorySummaryRequestTelemetry : async () => undefined);
   const requestFiltered = params.requestFiltered ?? requestFilteredInventorySummaries;
   let requestSequence = 0;
+  let lastNextTokenPresent: boolean | null = null;
 
   const metrics = () => ({
     marketplacesAttempted,
@@ -762,13 +799,16 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     rateLimitedMarketplace: activeMarketplace,
     retryAfter: responseMetadata.at(-1)?.retryAfter ?? null,
     observedRateLimits: Array.from(new Set(responseMetadata.map((item) => item.observedRateLimit).filter((value): value is string => Boolean(value)))),
+    lastStatus: responseMetadata.at(-1)?.status ?? null,
+    lastRequestId: responseMetadata.at(-1)?.requestId ?? null,
+    nextTokenPresent: lastNextTokenPresent,
     durationMs: Date.now() - startedMs,
   });
 
   for (const marketplaceId of marketplaceIds) {
     activeMarketplace = marketplaceId;
     marketplacesAttempted.push(marketplaceId);
-    for (const sellerSkuBatch of sellerSkuBatches) {
+    for (const sellerSkuBatch of batchesToProcess) {
       let nextToken: string | undefined;
       let previousNextToken: string | undefined;
       let batchPageNumber = 0;
@@ -804,6 +844,7 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
         })) as InventorySummariesResponse;
         const rows = result.inventorySummaries ?? result.payload?.inventorySummaries ?? [];
         const nextTokenPresent = Boolean(result.pagination?.nextToken);
+        lastNextTokenPresent = nextTokenPresent;
         requestOutcome = nextTokenPresent && params.paginationMode === "diagnostic-stop"
           ? "UNEXPECTED_FILTERED_PAGINATION"
           : "SUCCESS";
@@ -856,6 +897,10 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
         summaries.push({ ...summary, marketplaceId });
       }
       nextToken = result.pagination?.nextToken;
+      if (nextToken && params.stopOnNextToken) {
+        warnings.push("NEXT_TOKEN_PRESENT_VALIDATION_STOP");
+        nextToken = undefined;
+      }
       if (nextToken && nextToken === previousNextToken) {
         throw new Error("INVENTORY_SUMMARY_PAGINATION_TOKEN_REPEATED");
       }
@@ -869,13 +914,14 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     activeMarketplace = null;
   }
 
-  const skuValues = summaries.map((s) => s.sellerSku ?? "");
+  const skuValues = summaries.map((s) => ({ sellerSku: s.sellerSku, asin: s.asin }));
   const matches = await resolveProductMatchesBySku(skuValues);
-  const matchedRows = summaries.filter((summary) => matches.get(String(summary.sellerSku ?? "").trim())?.productoId).length;
+  const matchFor = (summary: InventorySummary) => matches.get(inventoryIdentityKey(String(summary.sellerSku ?? ""), summary.asin));
+  const matchedRows = summaries.filter((summary) => matchFor(summary)?.productoId).length;
   const unmatchedRows = summaries.length - matchedRows;
   for (const summary of summaries) {
     const skuOriginal = String(summary.sellerSku ?? "").trim();
-    if (!matches.get(skuOriginal)?.productoId) {
+    if (!matchFor(summary)?.productoId) {
       warnings.push(`Sin match de producto para snapshot FBA SKU ${skuOriginal}.`);
     }
   }
@@ -887,6 +933,62 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     productMatches: matches,
     observedAt: snapshotAt,
   });
+  warnings.push(...canonical.warnings);
+  const resolutionCounts = Array.from(matches.values()).reduce((counts, match) => {
+    const status = match.resolutionStatus;
+    if (status) counts.set(status, (counts.get(status) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const rawFulfillableSum = summaries.reduce(
+    (sum, row) => sum + Number(row.inventoryDetails?.fulfillableQuantity ?? 0),
+    0,
+  );
+  const dedupedFulfillableSum = canonical.rows.reduce(
+    (sum, row) => sum + row.fulfillable_quantity,
+    0,
+  );
+  const excludedFulfillableUnits = canonical.incompleteObservations.reduce(
+    (sum, row) => sum + Number(row.raw.inventoryDetails?.fulfillableQuantity ?? 0),
+    0,
+  );
+  const resolvedRawRows = summaries.length - canonical.incompleteObservations.length;
+  const resolvedRawFulfillable = rawFulfillableSum - excludedFulfillableUnits;
+  const publicationSummary = {
+    snapshotRunId: canonical.snapshotRunId,
+    rawRows: summaries.length,
+    canonicalPhysicalIdentities: canonical.rows.length,
+    identityResolvedByAlias: resolutionCounts.get("IDENTITY_RESOLVED_BY_ALIAS") ?? 0,
+    identityResolvedByAsin: resolutionCounts.get("IDENTITY_RESOLVED_BY_ASIN") ?? 0,
+    identityResolvedByLegacySku: resolutionCounts.get("IDENTITY_RESOLVED_BY_LEGACY_SKU") ?? 0,
+    identityIncomplete: canonical.incompleteObservations.filter((row) => row.status === "IDENTITY_INCOMPLETE").length,
+    identityAmbiguous: canonical.incompleteObservations.filter((row) => row.status === "IDENTITY_AMBIGUOUS").length,
+    asinIdentityConflicts: canonical.incompleteObservations.filter((row) => row.status === "ASIN_IDENTITY_CONFLICT").length,
+    fnskuIdentityConflicts: 0,
+    rawFulfillableSum,
+    dedupedFulfillableSum,
+    duplicateObservationsRemoved: resolvedRawRows - canonical.rows.length,
+    duplicateFulfillableUnitsRemoved: resolvedRawFulfillable - dedupedFulfillableSum,
+    excludedFulfillableUnits,
+  };
+  if (!shouldPersistSnapshot) {
+    return {
+      ok: true,
+      rowsParsed: summaries.length,
+      rowsUpserted: 0,
+      matchedRows,
+      unmatchedRows,
+      warnings: warnings.slice(0, 100),
+      incompleteObservations: canonical.incompleteObservations,
+      requestMetrics: metrics(),
+      observations: params.includeObservations ? summaries : undefined,
+      canonicalRows: params.includeObservations ? canonical.rows : undefined,
+      publicationSummary,
+    };
+  }
+  if (publicationSummary.asinIdentityConflicts > 0) {
+    throw new Error(`ASIN_IDENTITY_CONFLICT:${publicationSummary.asinIdentityConflicts}`);
+  }
+  console.info("[amazon-inventory] publication preconditions PASS", publicationSummary);
   const { data: committedRows, error: commitError } = await supabaseAdmin.rpc(
     "commit_amazon_fba_inventory_snapshot_run",
     {
@@ -907,7 +1009,11 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     matchedRows,
     unmatchedRows,
     warnings: warnings.slice(0, 100),
+    incompleteObservations: canonical.incompleteObservations,
+    publicationSummary,
     requestMetrics: metrics(),
+    observations: params.includeObservations ? summaries : undefined,
+    canonicalRows: params.includeObservations ? canonical.rows : undefined,
   };
 }
 

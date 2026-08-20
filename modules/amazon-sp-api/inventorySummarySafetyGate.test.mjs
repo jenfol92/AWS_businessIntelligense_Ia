@@ -2,15 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-test("botón y cron están cerrados sin camino full-catalog", async () => {
+test("rutas productivas quedan abiertas solo al owner filtrado, sin full-catalog", async () => {
   const [ui, route, cron] = await Promise.all([
     readFile("modules/inventory/components/InventoryPage.tsx", "utf8"),
     readFile("app/api/amazon/inventory/fba-snapshot/import/route.ts", "utf8"),
     readFile("app/api/cron/amazon/fba-inventory-snapshot/route.ts", "utf8"),
   ]);
-  assert.match(ui, /ACTUALIZACIÓN TEMPORALMENTE BLOQUEADA/);
-  assert.match(route, /INVENTORY_REFRESH_TEMPORARILY_GATED/);
-  assert.match(cron, /INVENTORY_REFRESH_TEMPORARILY_GATED/);
+  assert.match(route, /syncAmazonInventoryCanonical/);
+  assert.match(cron, /syncAmazonInventoryCanonical/);
+  assert.doesNotMatch(route, /INVENTORY_REFRESH_TEMPORARILY_GATED/);
+  assert.doesNotMatch(cron, /INVENTORY_REFRESH_TEMPORARILY_GATED/);
+  assert.doesNotMatch(route, /spApiRequest|getInventorySummaries/);
+  assert.doesNotMatch(cron, /spApiRequest|getInventorySummaries/);
 });
 
 test("sin snapshot no se presenta cero ni se afirma último snapshot", async () => {

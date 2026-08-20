@@ -27,12 +27,13 @@ const observation = ({
   receiving = 0,
   unfulfillable = 0,
   researching = 0,
+  lastUpdatedTime = "2026-08-13T17:36:07Z",
 }) => ({
   marketplaceId: marketplace,
   asin: "B0DJBQGKBT",
   sellerSku,
   fnSku,
-  lastUpdatedTime: "2026-08-13T17:36:07Z",
+  lastUpdatedTime,
   totalQuantity: available + reserved + shipped + working + receiving + unfulfillable,
   inventoryDetails: {
     fulfillableQuantity: available,
@@ -57,6 +58,9 @@ const alaia = (marketplace = ids.ES) => [
 ];
 
 const matches = new Map([
+  ["NO-TIMESTAMP", { productoId: "11111111-1111-1111-1111-111111111111", skuLimpio: "ALAIA", matchedBy: "test", candidates: [] }],
+  ["EMPTY-TIMESTAMP", { productoId: "11111111-1111-1111-1111-111111111111", skuLimpio: "ALAIA", matchedBy: "test", candidates: [] }],
+  ["TEST-THIRD", { productoId: "11111111-1111-1111-1111-111111111111", skuLimpio: "ALAIA", matchedBy: "test", candidates: [] }],
   ["f8436616610104", { productoId: "11111111-1111-1111-1111-111111111111", skuLimpio: "ALAIA", matchedBy: "test", candidates: [] }],
   ["f8436616610104UK", { productoId: "11111111-1111-1111-1111-111111111111", skuLimpio: "ALAIA", matchedBy: "test", candidates: [] }],
   ["Amazon.Found.B0DJBQGKBT", { productoId: "11111111-1111-1111-1111-111111111111", skuLimpio: "ALAIA", matchedBy: "test", candidates: [] }],
@@ -75,28 +79,25 @@ const totals = (rows) => rows.reduce((sum, row) => ({
   inbound: sum.inbound + row.inbound_total_quantity,
 }), { available: 0, reserved: 0, inbound: 0 });
 
-test("ALAIA preserves one raw row per Seller SKU", () => {
+test("ALAIA conserva aliases raw pero canonicaliza una vez por FNSKU", () => {
   const result = build(alaia());
-  assert.equal(result.rows.length, 3);
-  assert.deepEqual(totals(result.rows), { available: 1332, reserved: 11, inbound: 1338 });
-  assert.deepEqual(result.rows.map((row) => row.seller_sku_original).sort(), [
-    "Amazon.Found.B0DJBQGKBT", "f8436616610104", "f8436616610104UK",
-  ]);
+  assert.equal(result.rows.length, 2);
+  assert.deepEqual(totals(result.rows), { available: 708, reserved: 8, inbound: 669 });
+  assert.deepEqual(result.rows.find((row) => row.fnsku === "B0DJBQGKBT").seller_sku_aliases, ["Amazon.Found.B0DJBQGKBT", "f8436616610104UK"]);
 });
 
 test("marketplaces remain independent raw grains", () => {
   const observations = Object.values(ids).flatMap((marketplace) => alaia(marketplace));
   const result = build(observations);
-  assert.equal(result.rows.length, 18);
-  assert.equal(new Set(result.rows.map((row) => row.marketplace_id)).size, 6);
-  assert.equal(result.rows.every((row) => row.observed_marketplaces.length === 1), true);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows.every((row) => row.observed_marketplaces.length === 6), true);
 });
 
 test("a distinct FNSKU remains an independent contribution", () => {
   const third = observation({ sellerSku: "TEST-THIRD", fnSku: "FNSKU-THIRD", available: 10, shipped: 20 });
   const result = build([...alaia(), third]);
-  assert.equal(result.rows.length, 4);
-  assert.deepEqual(totals(result.rows), { available: 1342, reserved: 11, inbound: 1358 });
+  assert.equal(result.rows.length, 3);
+  assert.deepEqual(totals(result.rows), { available: 718, reserved: 8, inbound: 689 });
 });
 
 test("incompatible signatures abort before any row can be committed", () => {
@@ -105,6 +106,46 @@ test("incompatible signatures abort before any row can be committed", () => {
     () => build([...alaia(), conflict]),
     (error) => error instanceof InventorySnapshotValidationError && error.code === "FNSKU_CONFLICT",
   );
+});
+
+test("InventorySummary válido sin lastUpdatedTime conserva raw y no aborta", () => {
+  const result = build([
+    observation({ sellerSku: "NO-TIMESTAMP", fnSku: "FNSKU-T", available: 4, lastUpdatedTime: null }),
+    observation({ sellerSku: "EMPTY-TIMESTAMP", fnSku: "FNSKU-E", available: 2, lastUpdatedTime: "" }),
+    ...alaia(),
+  ]);
+  assert.equal(result.rows.find((item) => item.seller_sku_original === "NO-TIMESTAMP")?.amazon_last_updated_time, null);
+  assert.equal(result.rows.find((item) => item.seller_sku_original === "EMPTY-TIMESTAMP")?.amazon_last_updated_time, null);
+  assert.equal(result.incompleteObservations.length, 0);
+});
+
+test("faltan FNSKU o ASIN: raw queda aceptado pero fuera del canonical", () => {
+  const missingFnSku = observation({ sellerSku: "MISSING-FNSKU", fnSku: undefined, available: 7 });
+  const missingAsin = { ...observation({ sellerSku: "MISSING-ASIN", fnSku: "FNSKU-A", available: 8 }), asin: undefined };
+  const result = build([missingFnSku, missingAsin, ...alaia()]);
+  assert.equal(result.rows.length, 2);
+  assert.deepEqual(result.incompleteObservations.map((item) => item.sellerSku).sort(), ["MISSING-ASIN", "MISSING-FNSKU"]);
+  assert.match(result.warnings.join("\n"), /IDENTITY_INCOMPLETE/);
+});
+
+test("Seller SKU mantiene trazabilidad; sin Seller SKU se rechaza la respuesta", () => {
+  const missingSellerSku = observation({ sellerSku: undefined, fnSku: "FNSKU-X", available: 1 });
+  assert.throws(() => build([missingSellerSku]), /sin Seller SKU/);
+});
+
+test("fila incompleta no invalida otras filas válidas ni entra en cantidades", () => {
+  const incomplete = observation({ sellerSku: "UNKNOWN-IDENTITY", fnSku: undefined, available: 99 });
+  const result = build([incomplete, alaia()[0]]);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].fulfillable_quantity, 84);
+  assert.equal(result.incompleteObservations[0].status, "IDENTITY_INCOMPLETE");
+});
+
+test("caso real amzn.gr queda explícitamente incompleto sin inventar identidad", () => {
+  const result = build([observation({ sellerSku: "amzn.gr.UK8436616610289-hfDxVSDTlJZy5-LN", fnSku: undefined, available: 0 })]);
+  assert.equal(result.rows.length, 0);
+  assert.equal(result.incompleteObservations[0].sellerSku, "amzn.gr.UK8436616610289-hfDxVSDTlJZy5-LN");
+  assert.equal(result.incompleteObservations[0].status, "IDENTITY_INCOMPLETE");
 });
 
 test("writer publishes only through the atomic run RPC", async () => {
@@ -116,6 +157,14 @@ test("writer publishes only through the atomic run RPC", async () => {
   assert.match(migration, /snapshot_run_id, seller_sku_original, marketplace_id, asin, fnsku/);
   assert.match(migration, /p_run_id, p_observed_at, 'COMPLETE'/);
   assert.match(migration, /inbound_total_quantity = inbound_working_quantity \+ inbound_shipped_quantity \+ inbound_receiving_quantity/);
+});
+
+test("production publication fails closed on ASIN identity conflicts", async () => {
+  const source = await readFile("modules/amazon-sp-api/fbaForecastSpApiImportsService.ts", "utf8");
+  const conflictGuard = source.indexOf("publicationSummary.asinIdentityConflicts > 0");
+  const atomicCommit = source.indexOf('supabaseAdmin.rpc(\n    "commit_amazon_fba_inventory_snapshot_run"');
+  assert.ok(conflictGuard >= 0);
+  assert.ok(atomicCommit > conflictGuard);
 });
 
 test("product/pool read model exposes available, reserved and inbound without total consolidation", async () => {

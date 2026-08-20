@@ -107,6 +107,9 @@ export async function syncAmazonInventoryCanonical(
   options: {
     force?: boolean;
     marketplaceIds?: string[];
+    publishSnapshot?: boolean;
+    maxBatches?: number;
+    stopOnNextToken?: boolean;
   } = {},
   dependencies: CanonicalInventorySyncDependencies = defaultDependencies,
 ): Promise<CanonicalInventorySyncResult> {
@@ -126,6 +129,10 @@ export async function syncAmazonInventoryCanonical(
           marketplaceIds: options.marketplaceIds,
           sellerSkus: confirmedSellerSkus,
           sellerSkuBatchSize: 50,
+          maxBatches: options.maxBatches,
+          persistSnapshot: options.publishSnapshot !== false,
+          includeObservations: options.publishSnapshot === false,
+          stopOnNextToken: options.stopOnNextToken,
         });
         const finishedAt = dependencies.now().toISOString();
         await dependencies.persistResult({

@@ -54,6 +54,15 @@ test("Seller SKU aliases ya deduplicados son provenance y no alteran cantidades"
   assert.equal(aggregateCanonicalSnapshotByProductPool(rows, "EU").get("P")?.fulfillableQuantity, 694);
 });
 
+test("el mismo FNSKU repetido en el mismo run se cuenta una sola vez", () => {
+  const first = row({ fnsku: "B0DJBQGKBT", fulfillable: 644, reserved: 2, inbound: 633 });
+  const duplicate = { ...first, seller_sku_aliases: ["otro-alias-del-mismo-fnsku"] };
+  const stock = aggregateCanonicalSnapshotByProductPool([first, duplicate], "EU").get("P");
+  assert.equal(stock?.fulfillableQuantity, 644);
+  assert.equal(stock?.reservedQuantity, 2);
+  assert.equal(stock?.inboundQuantity, 633);
+});
+
 test("EU y UK nunca se mezclan", () => {
   const rows = [...alaiaRows(), row({ pool: "UK", fnsku: "UK-FNSKU", fulfillable: 826 })];
   assert.equal(aggregateCanonicalSnapshotByProductPool(rows, "EU").get("P")?.fulfillableQuantity, 694);
@@ -90,4 +99,20 @@ test("cantidades distintas entre FNSKU se suman y no producen ambigüedad", () =
   const stock = aggregateCanonicalSnapshotByProductPool(alaiaRows(), "EU").get("P");
   assert.ok(stock);
   assert.equal(stock.fulfillableQuantity, 694);
+});
+
+test("el mismo FNSKU con cantidades divergentes falla cerrado", () => {
+  const rows = [
+    row({ fnsku: "CONFLICT", fulfillable: 10 }),
+    row({ fnsku: "CONFLICT", fulfillable: 11 }),
+  ];
+  const snapshot = aggregateCanonicalSnapshotByProductPool(rows, "EU").get("P");
+  assert.equal(snapshot?.identityConflict, true);
+
+  const legacy = [{ producto_id: "P", pais: "ES", stock_fba: 664, stock_fbm: 0, updated_at: AT }];
+  const resolved = buildOperationalStockSummary(legacy, null, snapshot, {
+    now: new Date("2026-08-20T12:00:00Z"),
+  });
+  assert.equal(resolved.stockOperationalFbaSource, "none");
+  assert.equal(resolved.stockOperationalFba, 0);
 });

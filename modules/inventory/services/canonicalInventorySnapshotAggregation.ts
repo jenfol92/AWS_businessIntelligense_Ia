@@ -18,8 +18,19 @@ export type CanonicalInventorySnapshotReadRow = {
 type RunRows = {
   snapshotRunId: string;
   snapshotAt: string;
-  rows: CanonicalInventorySnapshotReadRow[];
+  rowsByFnsku: Map<string, CanonicalInventorySnapshotReadRow>;
+  hasFnskuConflict: boolean;
 };
+
+function operationalQuantitySignature(row: CanonicalInventorySnapshotReadRow): string {
+  return [
+    row.fulfillable_quantity,
+    row.reserved_quantity,
+    row.inbound_total_quantity,
+    row.unfulfillable_quantity,
+    row.researching_quantity,
+  ].map((value) => Number(value ?? 0)).join("|");
+}
 
 /**
  * The source rows are already canonical physical FNSKU identities. This read
@@ -41,9 +52,19 @@ export function aggregateCanonicalSnapshotByProductPool(
     if (!productId || !runId || !snapshotAt || !fnsku || pool !== selectedPool) continue;
 
     const productRuns = runsByProduct.get(productId) ?? new Map<string, RunRows>();
-    const run = productRuns.get(runId) ?? { snapshotRunId: runId, snapshotAt, rows: [] };
+    const run = productRuns.get(runId) ?? {
+      snapshotRunId: runId,
+      snapshotAt,
+      rowsByFnsku: new Map<string, CanonicalInventorySnapshotReadRow>(),
+      hasFnskuConflict: false,
+    };
     if (snapshotAt > run.snapshotAt) run.snapshotAt = snapshotAt;
-    run.rows.push(row);
+    const previous = run.rowsByFnsku.get(fnsku);
+    if (!previous) {
+      run.rowsByFnsku.set(fnsku, row);
+    } else if (operationalQuantitySignature(previous) !== operationalQuantitySignature(row)) {
+      run.hasFnskuConflict = true;
+    }
     productRuns.set(runId, run);
     runsByProduct.set(productId, productRuns);
   }
@@ -55,28 +76,43 @@ export function aggregateCanonicalSnapshotByProductPool(
       right.snapshotRunId.localeCompare(left.snapshotRunId),
     )[0];
     if (!latestRun) continue;
+    if (latestRun.hasFnskuConflict) {
+      result.set(productId, {
+        snapshotRunId: latestRun.snapshotRunId,
+        operationalPool: selectedPool,
+        identityConflict: true,
+        snapshotAt: latestRun.snapshotAt,
+        fulfillableQuantity: 0,
+        reservedQuantity: 0,
+        inboundQuantity: 0,
+        unfulfillableQuantity: 0,
+        source: "spapi_fba_inventory_summaries",
+      });
+      continue;
+    }
+    const physicalRows = Array.from(latestRun.rowsByFnsku.values());
 
     result.set(productId, {
       snapshotRunId: latestRun.snapshotRunId,
       operationalPool: selectedPool,
       snapshotAt: latestRun.snapshotAt,
-      fulfillableQuantity: latestRun.rows.reduce(
+      fulfillableQuantity: physicalRows.reduce(
         (sum, row) => sum + Number(row.fulfillable_quantity ?? 0),
         0,
       ),
-      reservedQuantity: latestRun.rows.reduce(
+      reservedQuantity: physicalRows.reduce(
         (sum, row) => sum + Number(row.reserved_quantity ?? 0),
         0,
       ),
-      inboundQuantity: latestRun.rows.reduce(
+      inboundQuantity: physicalRows.reduce(
         (sum, row) => sum + Number(row.inbound_total_quantity ?? 0),
         0,
       ),
-      unfulfillableQuantity: latestRun.rows.reduce(
+      unfulfillableQuantity: physicalRows.reduce(
         (sum, row) => sum + Number(row.unfulfillable_quantity ?? 0),
         0,
       ),
-      source: latestRun.rows[0]?.source ?? "spapi_fba_inventory_summaries",
+      source: physicalRows[0]?.source ?? "spapi_fba_inventory_summaries",
     });
   }
 

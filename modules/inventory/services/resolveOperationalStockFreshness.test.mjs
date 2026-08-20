@@ -12,7 +12,9 @@ test("stale ledger and inventario_paises are last-known, not current operational
 test("operational resolver uses Inventory Summaries and temporary country fallback, never Ledger", async () => {
   const source = await readFile("modules/inventory/services/resolveOperationalStock.ts", "utf8");
   assert.match(source, /stockFbaLatestSnapshot != null && isInventoryTimestampNotStale/);
-  assert.match(source, /hasCountryInventoryRows\(inventoryRows\) && isInventoryTimestampNotStale/);
+  assert.match(source, /hasCountryInventoryRows\(inventoryRows\)/);
+  assert.match(source, /isInventoryTimestampNotStale\(stockFbaAppLatestUpdatedAt, now\)/);
+  assert.match(source, /!snapshotIdentityConflict/);
   assert.doesNotMatch(source, /return "ledger"/);
   assert.doesNotMatch(source, /case "ledger"/);
 });

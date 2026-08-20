@@ -15,6 +15,7 @@ export type LatestFbaLedgerStock = {
 export type LatestFbaInventorySnapshotStock = {
   snapshotRunId: string;
   operationalPool: string;
+  identityConflict?: boolean;
   snapshotAt: string;
   fulfillableQuantity: number;
   reservedQuantity: number | null;
@@ -209,9 +210,12 @@ export function buildOperationalStockSummary(
   const stockFbaLatestLedger = ledger?.stockSellable ?? null;
   const stockFbaLatestLedgerDate = ledger?.snapshotDate ?? null;
   const stockFbaLatestLedgerTotal = ledger?.stockTotal ?? null;
-  const stockFbaLatestSnapshot = snapshot?.fulfillableQuantity ?? null;
-  const stockFbaLatestSnapshotAt = snapshot?.snapshotAt ?? null;
-  const stockFbaLatestSnapshotSource = snapshot?.source ?? null;
+  const snapshotIdentityConflict = snapshot?.identityConflict === true;
+  const stockFbaLatestSnapshot = snapshotIdentityConflict
+    ? null
+    : snapshot?.fulfillableQuantity ?? null;
+  const stockFbaLatestSnapshotAt = snapshotIdentityConflict ? null : snapshot?.snapshotAt ?? null;
+  const stockFbaLatestSnapshotSource = snapshotIdentityConflict ? null : snapshot?.source ?? null;
   const stockFbaAppLatestUpdatedAt = latestInventarioPaisesUpdatedAt(inventoryRows);
 
   const hasSnapshot =
@@ -220,7 +224,9 @@ export function buildOperationalStockSummary(
     stockFbaLatestLedger != null &&
     isInventoryTimestampNotStale(stockFbaLatestLedgerDate ? `${stockFbaLatestLedgerDate}T00:00:00Z` : null, now);
   const hasCountryRows =
-    hasCountryInventoryRows(inventoryRows) && isInventoryTimestampNotStale(stockFbaAppLatestUpdatedAt, now);
+    !snapshotIdentityConflict &&
+    hasCountryInventoryRows(inventoryRows) &&
+    isInventoryTimestampNotStale(stockFbaAppLatestUpdatedAt, now);
   const countryNewerThanLedger = isCountryInventoryNewerThanLedger(
     stockFbaAppLatestUpdatedAt,
     stockFbaLatestLedgerDate,

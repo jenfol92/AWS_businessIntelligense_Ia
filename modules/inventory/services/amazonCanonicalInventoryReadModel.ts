@@ -84,6 +84,27 @@ export async function getAmazonCanonicalInventory(query: AmazonCanonicalInventor
     : rows.some((row) => row.freshness === "AGING")
       ? "AGING"
       : rows.length > 0 ? "STALE" : "UNKNOWN";
+  const totalsByProduct = new Map<string, {
+    productId: string | null;
+    asin: string;
+    stockFbaPanEu: number;
+    stockFbaUk: number;
+    stockFbaTotal: number;
+  }>();
+  for (const row of rows) {
+    const key = `${row.productId ?? ""}\u0000${row.asin}`;
+    const total = totalsByProduct.get(key) ?? {
+      productId: row.productId,
+      asin: row.asin,
+      stockFbaPanEu: 0,
+      stockFbaUk: 0,
+      stockFbaTotal: 0,
+    };
+    if (row.operationalPool === "EU") total.stockFbaPanEu += row.available;
+    if (row.operationalPool === "UK") total.stockFbaUk += row.available;
+    total.stockFbaTotal = total.stockFbaPanEu + total.stockFbaUk;
+    totalsByProduct.set(key, total);
+  }
 
   return {
     generatedAt: new Date().toISOString(),
@@ -102,9 +123,9 @@ export async function getAmazonCanonicalInventory(query: AmazonCanonicalInventor
     },
     rows,
     pools: rows,
-    totals: null,
+    totals: Array.from(totalsByProduct.values()),
     limitations: [
-      "EU y UK se exponen por separado; no se publica un total consolidado mientras el modelo de pools siga PARTIAL.",
+      "PAN_EU (persistido como EU) y UK conservan procedencia; el total es la suma de ambos dentro del mismo latest COMPLETE run.",
       "La ubicacion fisica procede del Inventory Ledger, no del marketplace consultado.",
     ],
   };

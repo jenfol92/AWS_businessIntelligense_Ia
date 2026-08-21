@@ -22,6 +22,10 @@ export type LatestFbaInventorySnapshotStock = {
   inboundQuantity: number | null;
   unfulfillableQuantity: number | null;
   source: string;
+  stockFbaPanEu?: number;
+  stockFbaUk?: number;
+  stockFbaTotal?: number;
+  dualPoolComplete?: boolean;
 };
 
 export type InventarioPaisStockRow = {

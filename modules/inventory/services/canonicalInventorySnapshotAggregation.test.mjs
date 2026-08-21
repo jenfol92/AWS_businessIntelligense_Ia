@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { aggregateCanonicalSnapshotByProductPool } from "./canonicalInventorySnapshotAggregation.ts";
+import {
+  aggregateCanonicalSnapshotAcrossOperationalPools,
+  aggregateCanonicalSnapshotByProductPool,
+} from "./canonicalInventorySnapshotAggregation.ts";
 import { buildOperationalStockSummary } from "./resolveOperationalStock.ts";
 
 const RUN = "0ed53451-dd61-4dc0-9037-50ba64d0e688";
@@ -115,4 +118,41 @@ test("el mismo FNSKU con cantidades divergentes falla cerrado", () => {
   });
   assert.equal(resolved.stockOperationalFbaSource, "none");
   assert.equal(resolved.stockOperationalFba, 0);
+});
+
+test("read model conserva PAN_EU, UK y total del mismo run", () => {
+  const rows = [
+    ...alaiaRows(),
+    row({ pool: "UK", fnsku: "B0DJBQGKBT", fulfillable: 220 }),
+    row({ pool: "UK", fnsku: "X00259GEWP", fulfillable: 98 }),
+  ];
+  const snapshot = aggregateCanonicalSnapshotAcrossOperationalPools(rows).get("P");
+  assert.equal(snapshot?.stockFbaPanEu, 694);
+  assert.equal(snapshot?.stockFbaUk, 318);
+  assert.equal(snapshot?.stockFbaTotal, 1012);
+  assert.equal(snapshot?.fulfillableQuantity, 1012);
+  assert.equal(snapshot?.dualPoolComplete, true);
+});
+
+test("read model no mezcla pools pertenecientes a snapshot_run_id distintos", () => {
+  const rows = [
+    ...alaiaRows(),
+    row({ run: "new-run", at: "2026-08-21T08:00:00Z", pool: "UK", fnsku: "UK", fulfillable: 318 }),
+  ];
+  const snapshot = aggregateCanonicalSnapshotAcrossOperationalPools(rows).get("P");
+  assert.equal(snapshot?.snapshotRunId, "new-run");
+  assert.equal(snapshot?.stockFbaPanEu, 0);
+  assert.equal(snapshot?.stockFbaUk, 318);
+  assert.equal(snapshot?.dualPoolComplete, false);
+});
+
+test("read model dual mantiene fail-closed ante conflicto real dentro de un pool", () => {
+  const rows = [
+    row({ fnsku: "CONFLICT", fulfillable: 10 }),
+    row({ fnsku: "CONFLICT", fulfillable: 11 }),
+    row({ pool: "UK", fnsku: "CONFLICT", fulfillable: 5 }),
+  ];
+  const snapshot = aggregateCanonicalSnapshotAcrossOperationalPools(rows).get("P");
+  assert.equal(snapshot?.identityConflict, true);
+  assert.equal(snapshot?.fulfillableQuantity, 0);
 });

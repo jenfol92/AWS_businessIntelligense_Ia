@@ -27,7 +27,7 @@ import type {
 } from "../types/inventory.types";
 import type { AmazonSyncJobStatus } from "../services/resolveOperationalStock";
 import {
-  aggregateCanonicalSnapshotByProductPool,
+  aggregateCanonicalSnapshotAcrossOperationalPools,
   type CanonicalInventorySnapshotReadRow,
 } from "../services/canonicalInventorySnapshotAggregation";
 
@@ -1772,7 +1772,6 @@ export async function fetchLatestFbaInventorySnapshotByProductIds(
   if (productIds.length === 0) return new Map();
 
   const supabase = createSupabaseRouteClient();
-  const operationalPool = "EU";
   const snapshotRows: CanonicalInventorySnapshotReadRow[] = [];
 
   for (const chunk of chunkArray(productIds, 100)) {
@@ -1782,7 +1781,7 @@ export async function fetchLatestFbaInventorySnapshotByProductIds(
         "snapshot_run_id, producto_id, snapshot_at, operational_pool, fnsku, seller_sku_aliases, fulfillable_quantity, reserved_quantity, inbound_total_quantity, unfulfillable_quantity, researching_quantity, source",
       )
       .in("producto_id", chunk)
-      .eq("operational_pool", operationalPool);
+      .in("operational_pool", ["EU", "UK"]);
 
     if (error) {
       console.error(
@@ -1796,5 +1795,5 @@ export async function fetchLatestFbaInventorySnapshotByProductIds(
     snapshotRows.push(...((data ?? []) as CanonicalInventorySnapshotReadRow[]));
   }
 
-  return aggregateCanonicalSnapshotByProductPool(snapshotRows, operationalPool);
+  return aggregateCanonicalSnapshotAcrossOperationalPools(snapshotRows);
 }

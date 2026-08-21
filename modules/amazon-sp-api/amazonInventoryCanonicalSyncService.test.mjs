@@ -33,6 +33,17 @@ test("canonical owner loads only confirmed Seller SKU and batches at 50", async 
   assert.match(source, /sellerSkuBatchSize: 50/);
 });
 
+test("manual and cron remain on the explicitly published PAN_EU marketplace policy", async () => {
+  const source = await readFile("modules/amazon-sp-api/amazonInventoryCanonicalSyncService.ts", "utf8");
+  assert.match(source, /resolvePublishedInventoryMarketplaceIds\(options\.marketplaceIds\)/);
+  assert.match(source, /DUAL_OPERATIONAL_POOL_PUBLICATION_NOT_ENABLED/);
+  for (const file of files) {
+    const entrypoint = await readFile(file, "utf8");
+    assert.match(entrypoint, /syncAmazonInventoryCanonical/);
+    assert.doesNotMatch(entrypoint, /A1RKKUPIHCS9HS|A13V1IB3VIYZZH|A1PA6795UKMFR9/);
+  }
+});
+
 test("el modo de validación del owner limita batches y evita publicar snapshot", async () => {
   const source = await readFile("modules/amazon-sp-api/amazonInventoryCanonicalSyncService.ts", "utf8");
   assert.match(source, /maxBatches\?: number/);

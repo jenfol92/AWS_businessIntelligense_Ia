@@ -162,17 +162,19 @@ test("writer publishes only through the atomic run RPC", async () => {
 test("production publication fails closed on ASIN identity conflicts", async () => {
   const source = await readFile("modules/amazon-sp-api/fbaForecastSpApiImportsService.ts", "utf8");
   const conflictGuard = source.indexOf("publicationSummary.asinIdentityConflicts > 0");
-  const atomicCommit = source.indexOf('supabaseAdmin.rpc(\n    "commit_amazon_fba_inventory_snapshot_run"');
+  const atomicCommit = source.indexOf('"commit_amazon_fba_inventory_snapshot_run"');
   assert.ok(conflictGuard >= 0);
   assert.ok(atomicCommit > conflictGuard);
 });
 
-test("product/pool read model exposes available, reserved and inbound without total consolidation", async () => {
+test("product/pool read model exposes pool provenance and PAN_EU plus UK total", async () => {
   const migration = await readFile("sql/migrations/20260817_02_inventory_summary_marketplace_grain.sql", "utf8");
   const readModel = await readFile("modules/inventory/services/amazonCanonicalInventoryReadModel.ts", "utf8");
   assert.match(migration, /v_latest_amazon_fba_inventory_by_product_marketplace/);
   assert.match(migration, /sum\(fulfillable_quantity\).*fba_available/);
-  assert.match(readModel, /totals: null/);
+  assert.match(readModel, /stockFbaPanEu/);
+  assert.match(readModel, /stockFbaUk/);
+  assert.match(readModel, /stockFbaTotal/);
   assert.doesNotMatch(readModel, /\.from\([^\n]*ledger/i);
 });
 

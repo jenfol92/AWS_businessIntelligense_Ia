@@ -38,8 +38,10 @@ import {
 } from "./inventorySummaryCanonicalSnapshot";
 import {
   InventorySummaryRequestPacer,
+  MAX_THROTTLE_RESUMES_PER_BATCH,
   inventorySummarySellerSkuBatchSize,
   normalizedConfirmedSellerSkus,
+  requestInventorySummaryBatchWithThrottleResume,
   requestFilteredInventorySummaries,
   splitSellerSkuBatches,
 } from "./inventorySummaryFilteredRequest";
@@ -713,6 +715,9 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
   includeObservations?: boolean;
   persistTelemetry?: (row: InventorySummaryRequestTelemetry) => Promise<void>;
   requestFiltered?: typeof requestFilteredInventorySummaries;
+  nowMs?: () => number;
+  wait?: (ms: number) => Promise<void>;
+  random?: () => number;
 }): Promise<Omit<ImportSummary, "reportId" | "status"> & {
   observations?: Array<InventorySummary & { marketplaceId: string }>;
   canonicalRows?: ReturnType<typeof buildCanonicalInventorySnapshot>["rows"];
@@ -764,8 +769,10 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     throw new Error(`INVALID_INVENTORY_SUMMARY_MAX_BATCHES:${maxBatches}`);
   }
   const batchesToProcess = sellerSkuBatches.slice(0, maxBatches);
-  const pacer = new InventorySummaryRequestPacer();
-  const startedMs = Date.now();
+  const nowMs = params.nowMs ?? Date.now;
+  const wait = params.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const pacer = new InventorySummaryRequestPacer(undefined, nowMs, wait);
+  const startedMs = nowMs();
   const warnings: string[] = [];
   const snapshotAt = new Date().toISOString();
   const summaries: Array<InventorySummary & { marketplaceId: string }> = [];
@@ -773,7 +780,7 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
   const configuredRequestBudget = inventorySummaryMaxRequestsPerRun();
   const requestBudget = Math.min(
     configuredRequestBudget,
-    Math.max(1, marketplaceIds.length * batchesToProcess.length * maxPagesPerBatch),
+    Math.max(1, marketplaceIds.length * batchesToProcess.length * maxPagesPerBatch * (1 + MAX_THROTTLE_RESUMES_PER_BATCH)),
   );
   const maxRuntimeMs = inventorySummaryMaxRuntimeMs();
   const marketplacesAttempted: string[] = [];
@@ -802,7 +809,7 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
     lastStatus: responseMetadata.at(-1)?.status ?? null,
     lastRequestId: responseMetadata.at(-1)?.requestId ?? null,
     nextTokenPresent: lastNextTokenPresent,
-    durationMs: Date.now() - startedMs,
+    durationMs: nowMs() - startedMs,
   });
 
   for (const marketplaceId of marketplaceIds) {
@@ -813,71 +820,96 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
       let previousNextToken: string | undefined;
       let batchPageNumber = 0;
       do {
-      assertInventorySummaryRuntimeBudget({ startedAtMs: startedMs, maxRuntimeMs });
-      assertInventorySummaryPageBudget({ pageNumber: batchPageNumber + 1, maxPagesPerBatch });
-      assertInventorySummaryRequestBudget({ amazonHttpCalls, requestBudget });
-      const requestStartedAt = new Date().toISOString();
-      const requestStartedMs = Date.now();
       const pageNumber = batchPageNumber + 1;
-      const sequence = ++requestSequence;
       let result: InventorySummariesResponse;
-      let requestOutcome: InventorySummaryRequestTelemetry["outcome"] = "FAILED";
       try {
-        amazonHttpCalls += 1;
-        result = await pacer.run(() => requestFiltered({
-          marketplaceId,
-          sellerSkus: sellerSkuBatch,
-          nextToken,
-          onResponseMetadata(metadata) {
-            pacer.observeRateLimit(metadata.observedRateLimit);
-            responseMetadata.push(metadata);
-            console.info("[amazon-inventory] response", {
+        result = await requestInventorySummaryBatchWithThrottleResume({
+          startedAtMs: startedMs,
+          maxTotalDurationMs: maxRuntimeMs,
+          now: nowMs,
+          wait,
+          random: params.random,
+          observedRateLimit: () => [...responseMetadata].reverse()
+            .find((metadata) => metadata.observedRateLimit != null)?.observedRateLimit,
+          async request() {
+            assertInventorySummaryRuntimeBudget({ startedAtMs: startedMs, nowMs: nowMs(), maxRuntimeMs });
+            assertInventorySummaryPageBudget({ pageNumber, maxPagesPerBatch });
+            assertInventorySummaryRequestBudget({ amazonHttpCalls, requestBudget });
+            const requestStartedAt = new Date().toISOString();
+            const requestStartedMs = nowMs();
+            const sequence = ++requestSequence;
+            let requestOutcome: InventorySummaryRequestTelemetry["outcome"] = "FAILED";
+            try {
+              amazonHttpCalls += 1;
+              const response = await pacer.run(() => requestFiltered({
+                marketplaceId,
+                sellerSkus: sellerSkuBatch,
+                nextToken,
+                onResponseMetadata(metadata) {
+                  pacer.observeRateLimit(metadata.observedRateLimit);
+                  responseMetadata.push(metadata);
+                  console.info("[amazon-inventory] response", {
+                    marketplaceId,
+                    page: pages + 1,
+                    status: metadata.status,
+                    observedRateLimit: metadata.observedRateLimit,
+                    retryAfter: metadata.retryAfter,
+                    requestId: metadata.requestId,
+                    observedAt: metadata.observedAt,
+                  });
+                },
+              })) as InventorySummariesResponse;
+              const rows = response.inventorySummaries ?? response.payload?.inventorySummaries ?? [];
+              const nextTokenPresent = Boolean(response.pagination?.nextToken);
+              lastNextTokenPresent = nextTokenPresent;
+              requestOutcome = nextTokenPresent && params.paginationMode === "diagnostic-stop"
+                ? "UNEXPECTED_FILTERED_PAGINATION"
+                : "SUCCESS";
+              const metadata = responseMetadata.at(-1);
+              await persistTelemetry({
+                attemptId, requestSequence: sequence, startedAt: requestStartedAt,
+                finishedAt: new Date().toISOString(), durationMs: nowMs() - requestStartedMs,
+                marketplaceId, operationalPool: inventoryOperationalPool(marketplaceId), batchNumber: sellerSkuBatches.indexOf(sellerSkuBatch) + 1,
+                sellerSkuCount: sellerSkuBatch.length, sellerSkusHash: sellerSkusSafeHash(sellerSkuBatch), pageNumber,
+                httpStatus: metadata?.status ?? 200, amazonRequestId: metadata?.requestId ?? null,
+                observedRateLimit: metadata?.observedRateLimit ?? null, retryAfter: metadata?.retryAfter ?? null,
+                nextTokenPresent, resultCount: rows.length, outcome: requestOutcome,
+              });
+              if (requestOutcome === "UNEXPECTED_FILTERED_PAGINATION") {
+                throw new Error("UNEXPECTED_FILTERED_PAGINATION");
+              }
+              return response;
+            } catch (error) {
+              const metadata = responseMetadata.at(-1);
+              if (requestOutcome === "FAILED") {
+                try {
+                  await persistTelemetry({
+                    attemptId, requestSequence: sequence, startedAt: requestStartedAt,
+                    finishedAt: new Date().toISOString(), durationMs: nowMs() - requestStartedMs,
+                    marketplaceId, operationalPool: inventoryOperationalPool(marketplaceId), batchNumber: sellerSkuBatches.indexOf(sellerSkuBatch) + 1,
+                    sellerSkuCount: sellerSkuBatch.length, sellerSkusHash: sellerSkusSafeHash(sellerSkuBatch), pageNumber,
+                    httpStatus: metadata?.status ?? (error instanceof SpApiError ? error.status ?? null : null),
+                    amazonRequestId: metadata?.requestId ?? null, observedRateLimit: metadata?.observedRateLimit ?? null,
+                    retryAfter: metadata?.retryAfter ?? null, nextTokenPresent: null, resultCount: null,
+                    outcome: error instanceof SpApiError && error.code === "rate_limited" ? "RATE_LIMITED" : "FAILED",
+                  });
+                } catch (telemetryError) {
+                  console.error("[amazon-inventory] request telemetry persistence failed", telemetryError);
+                }
+              }
+              throw error;
+            }
+          },
+          onThrottleResume(event) {
+            console.warn("[amazon-inventory] controlled throttle resume", {
               marketplaceId,
-              page: pages + 1,
-              status: metadata.status,
-              observedRateLimit: metadata.observedRateLimit,
-              retryAfter: metadata.retryAfter,
-              requestId: metadata.requestId,
-              observedAt: metadata.observedAt,
+              batchNumber: sellerSkuBatches.indexOf(sellerSkuBatch) + 1,
+              pageNumber,
+              ...event,
             });
           },
-        })) as InventorySummariesResponse;
-        const rows = result.inventorySummaries ?? result.payload?.inventorySummaries ?? [];
-        const nextTokenPresent = Boolean(result.pagination?.nextToken);
-        lastNextTokenPresent = nextTokenPresent;
-        requestOutcome = nextTokenPresent && params.paginationMode === "diagnostic-stop"
-          ? "UNEXPECTED_FILTERED_PAGINATION"
-          : "SUCCESS";
-        await persistTelemetry({
-          attemptId, requestSequence: sequence, startedAt: requestStartedAt,
-          finishedAt: new Date().toISOString(), durationMs: Date.now() - requestStartedMs,
-          marketplaceId, operationalPool: inventoryOperationalPool(marketplaceId), batchNumber: sellerSkuBatches.indexOf(sellerSkuBatch) + 1,
-          sellerSkuCount: sellerSkuBatch.length, sellerSkusHash: sellerSkusSafeHash(sellerSkuBatch), pageNumber,
-          httpStatus: responseMetadata.at(-1)?.status ?? 200, amazonRequestId: responseMetadata.at(-1)?.requestId ?? null,
-          observedRateLimit: responseMetadata.at(-1)?.observedRateLimit ?? null, retryAfter: responseMetadata.at(-1)?.retryAfter ?? null,
-          nextTokenPresent, resultCount: rows.length, outcome: requestOutcome,
-        });
-        if (requestOutcome === "UNEXPECTED_FILTERED_PAGINATION") {
-          throw new Error("UNEXPECTED_FILTERED_PAGINATION");
-        }
+        }) as InventorySummariesResponse;
       } catch (error) {
-        const metadata = responseMetadata.at(-1);
-        if (requestOutcome === "FAILED") {
-          try {
-            await persistTelemetry({
-              attemptId, requestSequence: sequence, startedAt: requestStartedAt,
-              finishedAt: new Date().toISOString(), durationMs: Date.now() - requestStartedMs,
-              marketplaceId, operationalPool: inventoryOperationalPool(marketplaceId), batchNumber: sellerSkuBatches.indexOf(sellerSkuBatch) + 1,
-              sellerSkuCount: sellerSkuBatch.length, sellerSkusHash: sellerSkusSafeHash(sellerSkuBatch), pageNumber,
-              httpStatus: metadata?.status ?? (error instanceof SpApiError ? error.status ?? null : null),
-              amazonRequestId: metadata?.requestId ?? null, observedRateLimit: metadata?.observedRateLimit ?? null,
-              retryAfter: metadata?.retryAfter ?? null, nextTokenPresent: null, resultCount: null,
-              outcome: error instanceof SpApiError && error.code === "rate_limited" ? "RATE_LIMITED" : "FAILED",
-            });
-          } catch (telemetryError) {
-            console.error("[amazon-inventory] request telemetry persistence failed", telemetryError);
-          }
-        }
         if (error instanceof SpApiError && error.code === "rate_limited") {
           const snapshot = metrics();
           const lastResponse = responseMetadata.at(-1);

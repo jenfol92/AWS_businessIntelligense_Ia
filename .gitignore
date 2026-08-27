@@ -146,11 +146,9 @@ build/
 # Secretos y Claves (¡IMPORTANTE!)
 *.json
 !vercel.json
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+!package.json
+!package-lock.json
+!tsconfig.json
 
 # Específicos de Drive
 credentials-drive.json

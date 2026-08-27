@@ -1,0 +1,48 @@
+{
+  "name": "bussines-bi",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "dev:clean": "node scripts/clean-next.mjs && next dev",
+    "clean": "node scripts/clean-next.mjs",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/client-sts": "^3.1070.0",
+    "@aws-sdk/signature-v4": "^3.370.0",
+    "@smithy/hash-node": "^4.4.0",
+    "@smithy/protocol-http": "^5.5.0",
+    "@supabase/ssr": "^0.10.2",
+    "@supabase/supabase-js": "^2.105.3",
+    "@tremor/react": "^3.18.7",
+    "clsx": "^2.1.1",
+    "framer-motion": "^11.18.2",
+    "googleapis": "^171.4.0",
+    "lucide-react": "^0.577.0",
+    "next": "^14.2.35",
+    "next-intl": "^4.9.2",
+    "papaparse": "^5.5.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^3.8.0",
+    "tailwind-merge": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.27",
+    "eslint": "^8",
+    "eslint-config-next": "^14.2.35",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "@supabase/auth-js": "latest"
+  }
+}

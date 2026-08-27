@@ -79,12 +79,15 @@ export type SyncInboundShipmentsSummary = {
   dateResolvedFromRaw: number;
   dateResolvedFromShipmentName: number;
   activeWithoutDateImported: number;
+  /** Non-destructive: cleanup removed. Always 0 now. */
   deletedUnlinkedRows: number;
   cleanupSkippedByExistingLinks: boolean;
   v2024RelationsMatched: number;
   v2024ShipmentsFetched: number;
   v2024TransportationOptionsRequests: number;
   v2024TransportationOptionsFetched: number;
+  /** true only when all v2024 pages processed, no pending nextToken, no error, no cycle */
+  acquisitionComplete: boolean;
   warnings: string[];
   errors: string[];
 };
@@ -137,16 +140,26 @@ export type AmazonInboundShipmentListGroup = {
   imported_at: string | null;
   date_source: string | null;
   resolved_shipment_date: string | null;
+  /** Timestamp de creación en Amazon (separado de last_updated) */
+  amazon_created_at: string | null;
+  /** Timestamp de última actualización en Amazon */
+  amazon_last_updated_at: string | null;
+  /** Año del shipment basado en fecha de creación real (no actualización) */
+  shipment_year: number | null;
   total_skus: number;
   total_cantidad_enviada: number;
   total_cantidad_recibida: number;
   total_cantidad_esperada: number;
   total_cantidad_localizada: number;
+  /** Discrepancia: cantidad_enviada - cantidad_recibida (informativo) */
+  total_discrepancy_quantity: number;
   productsMatched: number;
   productsUnmatched: number;
   contenedor_id: string | null;
   link_status: string | null;
   link_confidence: number | null;
+  /** true si el shipment requiere revisión (estado desconocido, MIXED, o CLOSED con discrepancia) */
+  review_required: boolean;
   visible_logistics: AmazonShipmentVisibleLogistics;
   header: AmazonInboundShipmentHeader | null;
   documents_count: number;
@@ -186,6 +199,8 @@ type V2024EnrichmentSummary = {
     details?: unknown;
   }>;
   warnings: string[];
+  /** true solo si: todas las páginas procesadas, sin nextToken pendiente, sin error, sin ciclo */
+  acquisitionComplete: boolean;
 };
 
 export type V2024DirectedEnrichmentResult = V2024EnrichmentSummary & {
@@ -197,13 +212,44 @@ export type AmazonInboundShipmentListResult = {
   shipments: AmazonInboundShipmentListGroup[];
   closedCount: number;
   hiddenClosedCount: number;
+  mode: "operative" | "history";
+  /** Año aplicado en mode=history */
+  historyYear?: number;
+  totalCount: number;
 };
 
-const MIN_SYNC_FROM_DATE = "2025-01-01";
-const CLOSED_STATUSES = new Set(["CLOSED", "CANCELLED", "DELETED", "ERROR"]);
+const MIN_SYNC_FROM_DATE = "2020-01-01";
+
+// Terminales: shipment no volverá a estado activo
+const TERMINAL_STATUSES = new Set([
+  "CLOSED", "CANCELLED", "CANCELED", "DELETED", "ABANDONED", "ERROR",
+]);
+// Alias backward-compat — misma referencia
+const CLOSED_STATUSES = TERMINAL_STATUSES;
+
+// No terminales confirmados
+const NON_TERMINAL_STATUSES = new Set([
+  "UNCONFIRMED", "WORKING", "READY_TO_SHIP", "SHIPPED",
+  "IN_TRANSIT", "DELIVERED", "CHECKED_IN", "RECEIVING",
+]);
+
+// MIXED es modalidad especial: no asumir terminal
+const SPECIAL_STATUSES = new Set(["MIXED"]);
+
+// Todos los estados conocidos
+const ALL_KNOWN_STATUSES = new Set([
+  ...Array.from(NON_TERMINAL_STATUSES),
+  ...Array.from(TERMINAL_STATUSES),
+  ...Array.from(SPECIAL_STATUSES),
+]);
+
+// Solo CLOSED está permitido como terminal en año actual (visible en operativo)
 const TERMINAL_STATUSES_ALLOWED_FOR_CURRENT_YEAR = new Set(["CLOSED"]);
+
 const V2024_MAX_PAGE_SIZE = 30;
 const V2024_NORMAL_MAX_PAGES = 3;
+// Límite absoluto para paginación completa — fail-closed si se supera
+const V2024_ABSOLUTE_MAX_PAGES = 50;
 
 function asRecord(value: unknown): RawRecord {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -259,22 +305,28 @@ function resolveRawDate(raw: unknown, key: string): string | null {
   return timestamp(pick(raw, [key]));
 }
 
+/**
+ * Resuelve la fecha del shipment priorizando fechas de CREACIÓN sobre actualización.
+ * Un shipment creado en 2024 NO se reclasifica como 2026 solo porque Amazon lo actualizó.
+ */
 export function resolveAmazonShipmentDate(
   shipment: AmazonInboundShipmentDiagnostic,
 ): ResolvedShipmentDate {
   const raw = shipment.raw ?? null;
+  // Prioridad: fechas de creación primero, actualización solo como fallback final
   const attempts: Array<[ResolvedShipmentDate["source"], string | null]> = [
-    ["updated_at_amazon", timestamp(shipment.updated_at_amazon)],
     ["created_at_amazon", timestamp(shipment.created_at_amazon)],
-    ["raw.updatedAt", resolveRawDate(raw, "updatedAt")],
-    ["raw.lastUpdatedAt", resolveRawDate(raw, "lastUpdatedAt")],
-    ["raw.LastUpdatedDate", resolveRawDate(raw, "LastUpdatedDate")],
-    ["raw.updatedDate", resolveRawDate(raw, "updatedDate")],
     ["raw.createdAt", resolveRawDate(raw, "createdAt")],
     ["raw.CreatedDate", resolveRawDate(raw, "CreatedDate")],
     ["raw.ShipmentCreatedDate", resolveRawDate(raw, "ShipmentCreatedDate")],
     ["raw.shipmentCreatedDate", resolveRawDate(raw, "shipmentCreatedDate")],
     ["shipment_name", parseShipmentNameDate(shipment.shipment_name)],
+    // Fallback a fecha de actualización solo si no hay fecha de creación
+    ["updated_at_amazon", timestamp(shipment.updated_at_amazon)],
+    ["raw.updatedAt", resolveRawDate(raw, "updatedAt")],
+    ["raw.lastUpdatedAt", resolveRawDate(raw, "lastUpdatedAt")],
+    ["raw.LastUpdatedDate", resolveRawDate(raw, "LastUpdatedDate")],
+    ["raw.updatedDate", resolveRawDate(raw, "updatedDate")],
   ];
 
   for (const [source, iso] of attempts) {
@@ -282,6 +334,48 @@ export function resolveAmazonShipmentDate(
   }
 
   return { iso: null, source: "missing" };
+}
+
+/** Resuelve exclusivamente la fecha de CREACIÓN Amazon. */
+function resolveAmazonCreatedAt(shipment: AmazonInboundShipmentDiagnostic): string | null {
+  const raw = shipment.raw ?? null;
+  return (
+    timestamp(shipment.created_at_amazon) ??
+    resolveRawDate(raw, "createdAt") ??
+    resolveRawDate(raw, "CreatedDate") ??
+    resolveRawDate(raw, "ShipmentCreatedDate") ??
+    resolveRawDate(raw, "shipmentCreatedDate") ??
+    parseShipmentNameDate(shipment.shipment_name)
+  );
+}
+
+/** Resuelve exclusivamente la fecha de ÚLTIMA ACTUALIZACIÓN Amazon. */
+function resolveAmazonLastUpdatedAt(shipment: AmazonInboundShipmentDiagnostic): string | null {
+  const raw = shipment.raw ?? null;
+  return (
+    timestamp(shipment.updated_at_amazon) ??
+    resolveRawDate(raw, "updatedAt") ??
+    resolveRawDate(raw, "lastUpdatedAt") ??
+    resolveRawDate(raw, "LastUpdatedDate") ??
+    resolveRawDate(raw, "updatedDate")
+  );
+}
+
+/** Devuelve true si el estado es desconocido (no está en la lista de estados soportados). */
+function isUnknownStatus(status: string | null): boolean {
+  if (!status) return false;
+  const normalized = status.trim().toUpperCase();
+  return !ALL_KNOWN_STATUSES.has(normalized);
+}
+
+/** Calcula review_required para un shipment según su estado y discrepancia. */
+function computeReviewRequired(status: string | null, discrepancyQty: number): boolean {
+  const normalized = status?.trim().toUpperCase() ?? null;
+  if (!normalized) return false;
+  if (isUnknownStatus(normalized)) return true;
+  if (normalized === "MIXED") return true;
+  if (normalized === "CLOSED" && discrepancyQty > 0) return true;
+  return false;
 }
 
 function dateAtUtcStart(value: string): Date {
@@ -304,7 +398,7 @@ function currentUtcYear(): number {
 
 function normalizeYear(value: unknown): number | null {
   const year = Number(value);
-  if (!Number.isInteger(year) || year < 2025 || year > 2100) return null;
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) return null;
   return year;
 }
 
@@ -403,17 +497,22 @@ function normalizeComparable(value: unknown): string | null {
 
 function isClosedStatus(status: string | null): boolean {
   const normalized = status?.trim().toUpperCase();
-  return normalized ? CLOSED_STATUSES.has(normalized) : false;
+  return normalized ? TERMINAL_STATUSES.has(normalized) : false;
 }
 
 function isTerminalStatus(status: string | null): boolean {
   const normalized = status?.trim().toUpperCase();
-  return normalized ? CLOSED_STATUSES.has(normalized) : false;
+  return normalized ? TERMINAL_STATUSES.has(normalized) : false;
 }
 
 function isCurrentYearAllowedTerminalStatus(status: string | null): boolean {
   const normalized = status?.trim().toUpperCase();
   return normalized ? TERMINAL_STATUSES_ALLOWED_FOR_CURRENT_YEAR.has(normalized) : false;
+}
+
+/** MIXED no es terminal — no asumir como cerrado. */
+function isMixedStatus(status: string | null): boolean {
+  return status?.trim().toUpperCase() === "MIXED";
 }
 
 function filterShipmentsForSync(
@@ -613,9 +712,34 @@ function mapInboundItemToAmazonEnvioRow(params: {
   const itemRaw = asRecord(item.raw);
   const shipmentRaw = asRecord(shipment.raw);
   const sku = resolveItemSku(item);
-  const expected = num(item.expected_quantity);
-  const received = num(item.received_quantity);
-  const located = num(item.located_quantity);
+
+  // Semántica separada:
+  // cantidad_esperada = planificada (v2024 expected / quantity field)
+  // cantidad_enviada  = realmente enviada (v0 QuantityShipped)
+  // cantidad_recibida = realmente recibida (v0 QuantityReceived)
+  const expectedQty = num(item.expected_quantity);
+  const receivedQty = num(item.received_quantity);
+  const locatedQty = num(item.located_quantity);
+
+  // QuantityShipped viene de v0 — diferente de expected (planificado)
+  const rawQuantityShipped = pick(itemRaw, ["QuantityShipped", "quantityShipped"]);
+  const shippedQty = rawQuantityShipped != null ? num(rawQuantityShipped) : expectedQty;
+
+  // Discrepancia informativa: solo cuando hay datos de envío y recepción
+  const discrepancyQty =
+    shippedQty > 0 || receivedQty > 0 ? Math.max(0, shippedQty - receivedQty) : 0;
+
+  // Fechas Amazon separadas
+  const amazonCreatedAt = resolveAmazonCreatedAt(shipment);
+  const amazonLastUpdatedAt = resolveAmazonLastUpdatedAt(shipment);
+  const syncedAt = new Date().toISOString();
+
+  // review_required calculado por estado y discrepancia
+  const reviewRequired = computeReviewRequired(shipment.status, discrepancyQty);
+
+  // Estado desconocido: conservar raw, no transformar
+  const statusNormalized = shipment.status?.trim().toUpperCase() ?? null;
+  const statusIsUnknown = isUnknownStatus(shipment.status);
 
   return {
     shipment_id: shipment.amazon_shipment_id,
@@ -626,10 +750,11 @@ function mapInboundItemToAmazonEnvioRow(params: {
     fnsku: str(pick(itemRaw, ["fnsku", "FNSKU", "fulfillmentNetworkSku"])),
     asin: str(pick(itemRaw, ["asin", "ASIN"])),
     producto_id: match.productoId,
-    cantidad_enviada: expected,
-    cantidad_recibida: received,
-    cantidad_esperada: expected,
-    cantidad_localizada: located,
+    // cantidad_esperada = planificado; cantidad_enviada = QuantityShipped v0
+    cantidad_enviada: shippedQty,
+    cantidad_recibida: receivedQty,
+    cantidad_esperada: expectedQty,
+    cantidad_localizada: locatedQty,
     destination_country: str(
       pick(shipmentRaw, ["destinationCountry", "DestinationCountry", "countryCode"]),
     ),
@@ -653,12 +778,26 @@ function mapInboundItemToAmazonEnvioRow(params: {
       matched_by: match.matchedBy,
       date_source: resolvedDate.source,
       resolved_shipment_date: resolvedDate.iso,
+      // Fechas separadas: creación vs actualización Amazon
+      amazon_created_at: amazonCreatedAt,
+      amazon_last_updated_at: amazonLastUpdatedAt,
+      synced_at: syncedAt,
+      // Compat legacy
       created_at_amazon: shipment.created_at_amazon,
       updated_at_amazon: shipment.updated_at_amazon,
       raw_shipment_name: shipment.shipment_name,
       raw_status: shipment.status,
+      status_normalized: statusNormalized,
+      status_is_unknown: statusIsUnknown,
+      // Cantidades semánticamente separadas
+      quantity_expected: expectedQty,
+      quantity_shipped: shippedQty,
+      quantity_received: receivedQty,
+      quantity_discrepancy: discrepancyQty,
+      // Review flag
+      review_required: reviewRequired,
     },
-    imported_at: new Date().toISOString(),
+    imported_at: syncedAt,
     imported_by: userId,
   };
 }
@@ -741,6 +880,8 @@ function createV2024Summary(searchedShipmentIds: string[]): V2024EnrichmentSumma
     quotaExceededCount: 0,
     endpointErrors: [],
     warnings: [],
+    // false hasta que se confirme que todas las páginas fueron procesadas sin error ni ciclo
+    acquisitionComplete: false,
   };
 }
 
@@ -1040,11 +1181,19 @@ async function enrichPersistedShipmentsWithV2024(
 ): Promise<V2024EnrichmentSummary> {
   const persistedShipmentIds = new Set(await fetchPersistedAmazonShipmentIds());
   const summary = createV2024Summary(Array.from(persistedShipmentIds));
-  if (persistedShipmentIds.size === 0) return summary;
+  if (persistedShipmentIds.size === 0) {
+    summary.acquisitionComplete = true;
+    return summary;
+  }
 
   const found = new Set<string>();
   let nextToken: string | null = null;
-  const maxPages = Math.max(1, Math.min(options?.maxPages ?? V2024_NORMAL_MAX_PAGES, 5));
+  // Tokens vistos: para detectar ciclos
+  const seenTokens = new Set<string>();
+  // Límite: nunca superar V2024_ABSOLUTE_MAX_PAGES
+  const maxPages = Math.max(1, Math.min(options?.maxPages ?? V2024_NORMAL_MAX_PAGES, V2024_ABSOLUTE_MAX_PAGES));
+  let hadError = false;
+  let cycleDetected = false;
 
   for (let page = 0; page < maxPages; page += 1) {
     const pageResult = await spApiRequestWithQuotaRetry(
@@ -1053,11 +1202,17 @@ async function enrichPersistedShipmentsWithV2024(
       () => fetchV2024InboundPlansPage(nextToken),
       { warnings },
     );
-    if (!pageResult) break;
+
+    // fail-closed: cualquier error de página detiene la adquisición
+    if (!pageResult) {
+      hadError = true;
+      warnings.push(`v2024 paginación: error en página ${page + 1} — acquisitionComplete=false`);
+      break;
+    }
 
     summary.inboundPlanPagesScanned += 1;
     summary.plansScanned += pageResult.plans.length;
-    nextToken = pageResult.nextToken;
+    const newToken = pageResult.nextToken;
 
     for (const plan of pageResult.plans) {
       const inboundPlanId = str(pick(plan, ["inboundPlanId", "id", "planId"]));
@@ -1077,7 +1232,10 @@ async function enrichPersistedShipmentsWithV2024(
         { warnings },
       );
       if (!planDetail) {
-        if (summary.quotaExceededCount > 0) return summary;
+        if (summary.quotaExceededCount > 0) {
+          hadError = true;
+          break;
+        }
         continue;
       }
       summary.plansRead += 1;
@@ -1102,9 +1260,31 @@ async function enrichPersistedShipmentsWithV2024(
           fetchTransportationOptions: false,
         });
       }
+
+      if (hadError) break;
     }
 
-    if (!nextToken) break;
+    if (hadError) break;
+
+    // Sin más páginas — adquisición completa si no hubo error
+    if (!newToken) {
+      summary.acquisitionComplete = !hadError && !cycleDetected;
+      break;
+    }
+
+    // Detección de token repetido / ciclo — abort seguro
+    if (seenTokens.has(newToken)) {
+      cycleDetected = true;
+      warnings.push(`v2024 paginación: ciclo detectado (token repetido) — acquisitionComplete=false`);
+      break;
+    }
+    seenTokens.add(newToken);
+    nextToken = newToken;
+  }
+
+  // Si salimos del loop por haber alcanzado maxPages con token pendiente
+  if (!summary.acquisitionComplete && !hadError && !cycleDetected && nextToken) {
+    warnings.push(`v2024 paginación: límite de páginas (${maxPages}) alcanzado con nextToken pendiente`);
   }
 
   summary.notFound = Array.from(persistedShipmentIds).filter((id) => !found.has(id));
@@ -1339,7 +1519,10 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
   const shipments = filtered.shipments;
   const shipmentList = shipments.map((entry) => entry.shipment);
   const productMatches = await resolveProductMatches(shipmentList, warnings);
-  const cleanup = await cleanupUnlinkedAmazonEnviosIfSafe();
+  // SYNC NO DESTRUCTIVO: eliminado cleanupUnlinkedAmazonEnviosIfSafe()
+  // Una respuesta parcial NUNCA puede borrar shipments existentes.
+  // Los shipments no recibidos en este sync se conservan.
+  const cleanup = { deletedUnlinkedRows: 0, skippedByExistingLinks: false };
   const existingLogisticsMeta = await loadExistingAmazonInboundLogisticsMeta(
     shipments
       .map(({ shipment }) => shipment.amazon_shipment_id)
@@ -1412,6 +1595,7 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
       v2024ShipmentsFetched: v2024Enrichment.shipmentsFetched,
       v2024TransportationOptionsRequests: v2024Enrichment.transportationOptionsRequests,
       v2024TransportationOptionsFetched: v2024Enrichment.transportationOptionsFetched,
+      acquisitionComplete: v2024Enrichment.acquisitionComplete,
       warnings,
       errors,
     };
@@ -1463,6 +1647,7 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
     v2024ShipmentsFetched: v2024Enrichment.shipmentsFetched,
     v2024TransportationOptionsRequests: v2024Enrichment.transportationOptionsRequests,
     v2024TransportationOptionsFetched: v2024Enrichment.transportationOptionsFetched,
+    acquisitionComplete: v2024Enrichment.acquisitionComplete,
     warnings,
     errors,
   };
@@ -1651,36 +1836,73 @@ async function loadLinkedContainerSummaries(
 }
 
 /**
- * Lista `amazon_envios` agrupado por `shipment_id` para la pantalla de vinculacion manual.
+ * Lista `amazon_envios` agrupado por `shipment_id`.
+ *
+ * mode=operative (por defecto): scope operativo:
+ *   - año actual: TODOS los shipments
+ *   - año anterior: no terminales O review_required
+ *   - anteriores: solo review_required
+ *
+ * mode=history: histórico explícito — requiere year válido (400 si inválido).
+ *   Devuelve todos los shipments del año indicado (incluyendo terminales).
+ *   Solo lectura Supabase, sin llamadas Amazon.
  */
 export async function listAmazonInboundShipmentsFromAmazonEnvios(params: {
+  mode?: "operative" | "history";
   includeClosed?: boolean;
   year?: number | null;
   includeClosedCurrentYear?: boolean;
 } = {}): Promise<AmazonInboundShipmentListResult> {
+  const mode = params.mode ?? "operative";
+
+  // mode=history requiere año válido — NO fallback silencioso
+  if (mode === "history") {
+    const historyYear = normalizeYear(params.year);
+    if (!historyYear) {
+      throw new Error(
+        `INVALID_YEAR: mode=history requiere year válido (2020-2100). Recibido: ${String(params.year)}`,
+      );
+    }
+    return listHistoryScope(historyYear);
+  }
+
+  return listOperativeScope(params);
+}
+
+// ─── Helpers compartidos para list ───────────────────────────────────────────
+
+const LIST_SELECT = `id, shipment_id, shipment_name, reference_id, inbound_plan_id, sku,
+  producto_id, cantidad_enviada, cantidad_recibida, cantidad_esperada,
+  cantidad_localizada, destination_country, destination_center, fecha_creacion,
+  fecha_cerrado, estado, transport_status, contenedor_id, link_status,
+  link_confidence, matched_by, raw, imported_at`;
+
+async function fetchAmazonEnviosRows(limit = 3000): Promise<RawRecord[]> {
   const { data, error } = await supabaseAdmin
     .from("amazon_envios")
-    .select(
-      `id, shipment_id, shipment_name, reference_id, inbound_plan_id, sku,
-       producto_id, cantidad_enviada, cantidad_recibida, cantidad_esperada,
-       cantidad_localizada, destination_country, destination_center, fecha_creacion,
-       fecha_cerrado, estado, transport_status, contenedor_id, link_status,
-       link_confidence, matched_by, raw, imported_at`,
-    )
+    .select(LIST_SELECT)
     .order("fecha_creacion", { ascending: false, nullsFirst: false })
     .order("imported_at", { ascending: false })
-    .limit(2000);
+    .limit(limit);
 
   if (error) throw new Error(error.message);
+  return (data ?? []) as RawRecord[];
+}
 
-  const rows = (data ?? []) as RawRecord[];
-  const productSummaries = await loadProductSummaries(
-    rows.map((row) => str(row.producto_id)).filter((id): id is string => Boolean(id)),
-  );
-  const linkedContainerSummaries = await loadLinkedContainerSummaries(
-    rows.map((row) => str(row.contenedor_id)).filter((id): id is string => Boolean(id)),
-  );
+function resolveShipmentYear(row: AmazonInboundShipmentListGroup): number | null {
+  const ts = resolvedShipmentTimestamp(row);
+  if (!ts) return null;
+  const parsed = new Date(ts);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.getUTCFullYear();
+}
 
+function buildShipmentGroups(
+  rows: RawRecord[],
+  productSummaries: Map<string, AmazonInboundProductSummary>,
+  linkedContainerSummaries: Map<string, LinkedContainerSummary>,
+  orderLinksByShipment: Map<string, ShipmentOrderLinkSummary[]>,
+  shipmentExtras: Awaited<ReturnType<typeof loadAmazonInboundShipmentExtras>>,
+): AmazonInboundShipmentListGroup[] {
   const groups = new Map<string, RawRecord[]>();
   for (const row of rows) {
     const shipmentId = str(row.shipment_id);
@@ -1689,62 +1911,86 @@ export async function listAmazonInboundShipmentsFromAmazonEnvios(params: {
     current.push(row);
     groups.set(shipmentId, current);
   }
-  const orderLinksByShipment = await listLinkedOrdersForShipments(
-    Array.from(groups.keys()),
-  );
-  const shipmentExtras = await loadAmazonInboundShipmentExtras(Array.from(groups.keys()));
 
-  const listYear = normalizeYear(params.year) ?? currentUtcYear();
-  const includeClosedCurrentYear = params.includeClosedCurrentYear ?? params.includeClosed ?? true;
-
-  const allShipments = Array.from(groups.entries())
-    .map(([shipmentId, rows]) => {
+  return Array.from(groups.entries())
+    .map(([shipmentId, shipmentRows]) => {
       const linkedContainerIds = Array.from(
-        new Set(rows.map((row) => str(row.contenedor_id)).filter(Boolean)),
+        new Set(shipmentRows.map((row) => str(row.contenedor_id)).filter(Boolean)),
       );
       const linkStatuses = Array.from(
-        new Set(rows.map((row) => str(row.link_status)).filter(Boolean)),
+        new Set(shipmentRows.map((row) => str(row.link_status)).filter(Boolean)),
       );
-      const confidences = rows.map((row) => num(row.link_confidence)).filter((n) => n > 0);
+      const confidences = shipmentRows
+        .map((row) => num(row.link_confidence))
+        .filter((n) => n > 0);
       const singleContainerId =
         linkedContainerIds.length === 1 ? linkedContainerIds[0] ?? null : null;
       const header = shipmentExtras.headers.get(shipmentId) ?? null;
       const logisticsFlow = header?.logistics_flow ?? null;
       const transportProvider = header?.transport_provider ?? null;
+      const estado = firstString(shipmentRows.map((row) => row.estado));
 
-      return {
+      const totalShipped = aggregateNumber(shipmentRows, "cantidad_enviada");
+      const totalReceived = aggregateNumber(shipmentRows, "cantidad_recibida");
+      const totalDiscrepancy = Math.max(0, totalShipped - totalReceived);
+
+      // review_required: cualquier item con review_required=true, o estado desconocido/MIXED/CLOSED+discrepancia
+      const anyItemReview = shipmentRows.some(
+        (row) => asRecord(row.raw).review_required === true,
+      );
+      const shipmentReviewRequired =
+        anyItemReview || computeReviewRequired(estado, totalDiscrepancy);
+
+      // Fechas Amazon separadas desde raw
+      const amazonCreatedAt =
+        firstString(shipmentRows.map((row) => pick(row.raw, ["amazon_created_at"]))) ??
+        firstString(shipmentRows.map((row) => pick(row.raw, ["created_at_amazon"])));
+      const amazonLastUpdatedAt =
+        firstString(shipmentRows.map((row) => pick(row.raw, ["amazon_last_updated_at"]))) ??
+        firstString(shipmentRows.map((row) => pick(row.raw, ["updated_at_amazon"])));
+
+      const resolvedShipmentDate = firstString(
+        shipmentRows.map((row) => pick(row.raw, ["resolved_shipment_date"])),
+      );
+
+      const importedAt =
+        shipmentRows
+          .map((row) => timestamp(row.imported_at))
+          .filter((v): v is string => Boolean(v))
+          .sort()
+          .at(-1) ?? null;
+
+      const group: AmazonInboundShipmentListGroup = {
         shipment_id: shipmentId,
-        shipment_name: firstString(rows.map((row) => row.shipment_name)),
-        reference_id: firstString(rows.map((row) => row.reference_id)),
+        shipment_name: firstString(shipmentRows.map((row) => row.shipment_name)),
+        reference_id: firstString(shipmentRows.map((row) => row.reference_id)),
         inbound_plan_id:
           shipmentExtras.headers.get(shipmentId)?.inbound_plan_id ??
-          firstString(rows.map((row) => row.inbound_plan_id)),
+          firstString(shipmentRows.map((row) => row.inbound_plan_id)),
         logistics_flow: logisticsFlow,
         transport_provider: transportProvider,
-        estado: firstString(rows.map((row) => row.estado)),
-        transport_status: firstString(rows.map((row) => row.transport_status)),
-        destination_country: firstString(rows.map((row) => row.destination_country)),
-        destination_center: firstString(rows.map((row) => row.destination_center)),
-        fecha_creacion: firstString(rows.map((row) => row.fecha_creacion)),
-        fecha_cerrado: firstString(rows.map((row) => row.fecha_cerrado)),
-        date_source: firstString(rows.map((row) => pick(row.raw, ["date_source"]))),
-        resolved_shipment_date: firstString(
-          rows.map((row) => pick(row.raw, ["resolved_shipment_date"])),
-        ),
-        imported_at:
-          rows
-            .map((row) => timestamp(row.imported_at))
-            .filter((value): value is string => Boolean(value))
-            .sort()
-            .at(-1) ?? null,
-        total_skus: rows.length,
-        total_cantidad_enviada: aggregateNumber(rows, "cantidad_enviada"),
-        total_cantidad_recibida: aggregateNumber(rows, "cantidad_recibida"),
-        total_cantidad_esperada: aggregateNumber(rows, "cantidad_esperada"),
-        total_cantidad_localizada: aggregateNumber(rows, "cantidad_localizada"),
-        productsMatched: rows.filter((row) => Boolean(row.producto_id)).length,
-        productsUnmatched: rows.filter((row) => !row.producto_id).length,
-        contenedor_id: singleContainerId ?? (linkedContainerIds.length > 1 ? "MULTIPLE" : null),
+        estado,
+        transport_status: firstString(shipmentRows.map((row) => row.transport_status)),
+        destination_country: firstString(shipmentRows.map((row) => row.destination_country)),
+        destination_center: firstString(shipmentRows.map((row) => row.destination_center)),
+        fecha_creacion: firstString(shipmentRows.map((row) => row.fecha_creacion)),
+        fecha_cerrado: firstString(shipmentRows.map((row) => row.fecha_cerrado)),
+        date_source: firstString(shipmentRows.map((row) => pick(row.raw, ["date_source"]))),
+        resolved_shipment_date: resolvedShipmentDate,
+        amazon_created_at: amazonCreatedAt,
+        amazon_last_updated_at: amazonLastUpdatedAt,
+        shipment_year: null, // se rellena después
+        imported_at: importedAt,
+        total_skus: shipmentRows.length,
+        total_cantidad_enviada: totalShipped,
+        total_cantidad_recibida: totalReceived,
+        total_cantidad_esperada: aggregateNumber(shipmentRows, "cantidad_esperada"),
+        total_cantidad_localizada: aggregateNumber(shipmentRows, "cantidad_localizada"),
+        total_discrepancy_quantity: totalDiscrepancy,
+        productsMatched: shipmentRows.filter((row) => Boolean(row.producto_id)).length,
+        productsUnmatched: shipmentRows.filter((row) => !row.producto_id).length,
+        contenedor_id:
+          singleContainerId ?? (linkedContainerIds.length > 1 ? "MULTIPLE" : null),
         link_status:
           linkStatuses.length === 1
             ? linkStatuses[0] ?? null
@@ -1752,6 +1998,7 @@ export async function listAmazonInboundShipmentsFromAmazonEnvios(params: {
               ? "MIXED"
               : null,
         link_confidence: confidences.length > 0 ? Math.max(...confidences) : null,
+        review_required: shipmentReviewRequired,
         visible_logistics: resolveAmazonShipmentVisibleLogistics({
           header,
           logisticsFlow,
@@ -1763,11 +2010,10 @@ export async function listAmazonInboundShipmentsFromAmazonEnvios(params: {
         documents_count: shipmentExtras.documentCounts.get(shipmentId) ?? 0,
         costs_count: shipmentExtras.costCounts.get(shipmentId) ?? 0,
         costs_total: shipmentExtras.costTotals.get(shipmentId) ?? 0,
-        amazon_v0: buildV0Details(rows),
+        amazon_v0: buildV0Details(shipmentRows),
         linked_orders: orderLinksByShipment.get(shipmentId) ?? [],
-        items: rows.map((row) => {
+        items: shipmentRows.map((row) => {
           const productoId = str(row.producto_id);
-
           return {
             id: str(row.id),
             sku: str(row.sku),
@@ -1788,7 +2034,11 @@ export async function listAmazonInboundShipmentsFromAmazonEnvios(params: {
             raw: row.raw ?? null,
           };
         }),
-      } satisfies AmazonInboundShipmentListGroup;
+      };
+
+      // Calcular shipment_year a partir de la fecha de creación real
+      group.shipment_year = resolveShipmentYear(group);
+      return group;
     })
     .sort((a, b) => {
       const activeDiff = Number(isClosedStatus(a.estado)) - Number(isClosedStatus(b.estado));
@@ -1797,23 +2047,121 @@ export async function listAmazonInboundShipmentsFromAmazonEnvios(params: {
       const bTime = new Date(b.fecha_creacion ?? b.imported_at ?? 0).getTime();
       return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
     });
+}
 
-  const yearShipments = allShipments.filter((shipment) =>
-    dateFallsInYear(resolvedShipmentTimestamp(shipment), listYear),
+// ─── Scope OPERATIVO ─────────────────────────────────────────────────────────
+
+async function listOperativeScope(params: {
+  includeClosed?: boolean;
+  includeClosedCurrentYear?: boolean;
+}): Promise<AmazonInboundShipmentListResult> {
+  const rows = await fetchAmazonEnviosRows(3000);
+  const productSummaries = await loadProductSummaries(
+    rows.map((row) => str(row.producto_id)).filter((id): id is string => Boolean(id)),
   );
-  const closedCount = yearShipments.filter((shipment) =>
-    isCurrentYearAllowedTerminalStatus(shipment.estado),
+  const linkedContainerSummaries = await loadLinkedContainerSummaries(
+    rows.map((row) => str(row.contenedor_id)).filter((id): id is string => Boolean(id)),
+  );
+  const uniqueShipmentIds = Array.from(
+    new Set(
+      rows.map((row) => str(row.shipment_id)).filter((id): id is string => Boolean(id)),
+    ),
+  );
+  const orderLinksByShipment = await listLinkedOrdersForShipments(uniqueShipmentIds);
+  const shipmentExtras = await loadAmazonInboundShipmentExtras(uniqueShipmentIds);
+
+  const allShipments = buildShipmentGroups(
+    rows,
+    productSummaries,
+    linkedContainerSummaries,
+    orderLinksByShipment,
+    shipmentExtras,
+  );
+
+  const currentYear = currentUtcYear();
+  const prevYear = currentYear - 1;
+  const includeClosedCurrentYear = params.includeClosedCurrentYear ?? params.includeClosed ?? true;
+
+  // Scope operativo:
+  // - año actual: TODOS (incluyendo terminales si includeClosedCurrentYear)
+  // - año anterior: no terminales O review_required
+  // - anteriores: solo review_required demostrado
+  const visibleShipments = allShipments.filter((shipment) => {
+    const year = shipment.shipment_year;
+    const terminal = isTerminalStatus(shipment.estado);
+    const isClosed = isCurrentYearAllowedTerminalStatus(shipment.estado);
+
+    if (year === currentYear) {
+      if (!terminal) return true;
+      if (isClosed && includeClosedCurrentYear) return true;
+      return false;
+    }
+
+    if (year === prevYear) {
+      if (!terminal) return true;
+      if (shipment.review_required) return true;
+      return false;
+    }
+
+    // Años anteriores: solo review_required
+    return shipment.review_required === true;
+  });
+
+  const closedCount = allShipments.filter(
+    (s) => s.shipment_year === currentYear && isCurrentYearAllowedTerminalStatus(s.estado),
   ).length;
-  const visibleShipments = yearShipments.filter(
-    (shipment) =>
-      !isTerminalStatus(shipment.estado) ||
-      (isCurrentYearAllowedTerminalStatus(shipment.estado) && includeClosedCurrentYear),
-  );
-  const shouldHideClosed = !includeClosedCurrentYear;
+  const hiddenClosedCount = !includeClosedCurrentYear ? closedCount : 0;
 
   return {
     shipments: visibleShipments,
     closedCount,
-    hiddenClosedCount: shouldHideClosed ? closedCount : 0,
+    hiddenClosedCount,
+    mode: "operative",
+    totalCount: allShipments.length,
+  };
+}
+
+// ─── Scope HISTÓRICO ─────────────────────────────────────────────────────────
+
+async function listHistoryScope(year: number): Promise<AmazonInboundShipmentListResult> {
+  const rows = await fetchAmazonEnviosRows(5000);
+  const productSummaries = await loadProductSummaries(
+    rows.map((row) => str(row.producto_id)).filter((id): id is string => Boolean(id)),
+  );
+  const linkedContainerSummaries = await loadLinkedContainerSummaries(
+    rows.map((row) => str(row.contenedor_id)).filter((id): id is string => Boolean(id)),
+  );
+  const uniqueShipmentIds = Array.from(
+    new Set(
+      rows.map((row) => str(row.shipment_id)).filter((id): id is string => Boolean(id)),
+    ),
+  );
+  const orderLinksByShipment = await listLinkedOrdersForShipments(uniqueShipmentIds);
+  const shipmentExtras = await loadAmazonInboundShipmentExtras(uniqueShipmentIds);
+
+  const allShipments = buildShipmentGroups(
+    rows,
+    productSummaries,
+    linkedContainerSummaries,
+    orderLinksByShipment,
+    shipmentExtras,
+  );
+
+  // Histórico: devuelve TODOS los shipments del año indicado (incluye terminales)
+  const yearShipments = allShipments.filter(
+    (shipment) => shipment.shipment_year === year,
+  );
+
+  const closedCount = yearShipments.filter((s) =>
+    isCurrentYearAllowedTerminalStatus(s.estado),
+  ).length;
+
+  return {
+    shipments: yearShipments,
+    closedCount,
+    hiddenClosedCount: 0,
+    mode: "history",
+    historyYear: year,
+    totalCount: yearShipments.length,
   };
 }

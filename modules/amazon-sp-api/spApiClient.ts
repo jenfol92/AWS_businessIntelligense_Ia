@@ -1,5 +1,6 @@
 import { isAwsSigV4Configured, loadSpApiConfig } from "./config";
 import { mapHttpSpApiError, mapUpstreamFetchError, SpApiError } from "./errors";
+import { attachSpApiRequestContext } from "./inboundSyncErrorInstrumentation";
 import { clearLwaAccessTokenCache, getLwaAccessToken } from "./lwaClient";
 import { signSpApiRequest } from "./signing";
 import type { SpApiConfig } from "./config";
@@ -199,7 +200,10 @@ async function executeSpApiRequest<T>(request: {
   }
 
   if (!res.ok) {
-    throw mapHttpSpApiError(res.status, json, Object.fromEntries(res.headers.entries()));
+    throw attachSpApiRequestContext(
+      mapHttpSpApiError(res.status, json, Object.fromEntries(res.headers.entries())),
+      request,
+    );
   }
 
   return json as T;

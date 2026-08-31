@@ -9,7 +9,27 @@ import { buildAmazonInboundShipmentsDiagnostic } from "@/modules/amazon-sp-api/i
 import type {
   AmazonInboundShipmentDiagnostic,
   AmazonInboundShipmentItemDiagnostic,
+  FullDiscoveryDiagnostic,
 } from "@/modules/amazon-sp-api/inboundShipmentsDiagnosticService";
+import {
+  inboundQuantityRowKey,
+  omitUnknownCantidadEnviada,
+  parseExistingAmazonEnviosQuantities,
+  preserveExistingInboundQuantities,
+  resolveInboundDiscrepancy,
+  resolveInboundItemQuantities,
+  type PersistedInboundQuantities,
+} from "@/modules/amazon-sp-api/inboundShipmentQuantitySemantics";
+import {
+  filterShipmentsForSync,
+  isCurrentYearAllowedTerminalStatus,
+  isTerminalStatus,
+  NON_TERMINAL_STATUSES,
+  parseShipmentNameDate,
+  resolveAmazonShipmentDate,
+  TERMINAL_STATUSES,
+  type ResolvedShipmentDate,
+} from "@/modules/amazon-sp-api/inboundShipmentSyncFilter";
 import { extractTwinlySkuFromSellerSku } from "@/modules/imports/shared/twinlySku";
 import {
   listLinkedOrdersForShipments,
@@ -20,6 +40,7 @@ import {
   type AmazonInboundShipmentHeader,
 } from "@/modules/amazon-sp-api/amazonInboundShipmentLogisticsService";
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
+import { logInboundSpApiFailure } from "@/modules/amazon-sp-api/inboundSyncErrorInstrumentation";
 import { resolveAmazonInboundLogisticsFlow } from "@/modules/amazon-sp-api/resolveAmazonInboundLogisticsFlow";
 import {
   resolveAmazonShipmentVisibleLogistics,
@@ -44,25 +65,10 @@ export type AmazonInboundProductSummary = {
   imagen_url: string | null;
 };
 
-type ResolvedShipmentDate = {
-  iso: string | null;
-  source:
-    | "updated_at_amazon"
-    | "created_at_amazon"
-    | "raw.updatedAt"
-    | "raw.lastUpdatedAt"
-    | "raw.LastUpdatedDate"
-    | "raw.updatedDate"
-    | "raw.createdAt"
-    | "raw.CreatedDate"
-    | "raw.ShipmentCreatedDate"
-    | "raw.shipmentCreatedDate"
-    | "shipment_name"
-    | "missing";
-};
-
 export type SyncInboundShipmentsSummary = {
   diagnosticSource: string;
+  /** How many shipments Amazon returned before any local filtering. */
+  shipmentsFetchedFromAmazon: number;
   shipmentsProcessed: number;
   linesUpserted: number;
   productsMatched: number;
@@ -74,19 +80,27 @@ export type SyncInboundShipmentsSummary = {
   includeReadyToShip: boolean;
   includeClosed: boolean;
   skippedByDate: number;
+  /** IDs of shipments filtered by date (max 20 for log safety). */
+  skippedByDateIds: string[];
   skippedByStatus: number;
+  /** IDs + status of shipments filtered by status (max 20). */
+  skippedByStatusIds: Array<{ id: string; status: string | null }>;
   skippedByMissingDate: number;
   dateResolvedFromRaw: number;
   dateResolvedFromShipmentName: number;
   activeWithoutDateImported: number;
+  /** IDs of non-terminal carryover shipments that passed the filter (any year). */
+  includedNonTerminalCarryoverIds: string[];
   /** Non-destructive: cleanup removed. Always 0 now. */
   deletedUnlinkedRows: number;
   cleanupSkippedByExistingLinks: boolean;
+  /** Full discovery diagnostic: v2024 + v0 combined. */
+  discovery?: FullDiscoveryDiagnostic;
   v2024RelationsMatched: number;
   v2024ShipmentsFetched: number;
   v2024TransportationOptionsRequests: number;
   v2024TransportationOptionsFetched: number;
-  /** true only when all v2024 pages processed, no pending nextToken, no error, no cycle */
+  /** true only when discovery is complete and no data loss risk. */
   acquisitionComplete: boolean;
   warnings: string[];
   errors: string[];
@@ -220,18 +234,13 @@ export type AmazonInboundShipmentListResult = {
 
 const MIN_SYNC_FROM_DATE = "2020-01-01";
 
-// Terminales: shipment no volverá a estado activo
-const TERMINAL_STATUSES = new Set([
-  "CLOSED", "CANCELLED", "CANCELED", "DELETED", "ABANDONED", "ERROR",
-]);
-// Alias backward-compat — misma referencia
-const CLOSED_STATUSES = TERMINAL_STATUSES;
-
-// No terminales confirmados
-const NON_TERMINAL_STATUSES = new Set([
-  "UNCONFIRMED", "WORKING", "READY_TO_SHIP", "SHIPPED",
-  "IN_TRANSIT", "DELIVERED", "CHECKED_IN", "RECEIVING",
-]);
+export {
+  filterShipmentsForSync,
+  NON_TERMINAL_STATUSES,
+  parseShipmentNameDate,
+  resolveAmazonShipmentDate,
+  TERMINAL_STATUSES,
+};
 
 // MIXED es modalidad especial: no asumir terminal
 const SPECIAL_STATUSES = new Set(["MIXED"]);
@@ -242,9 +251,6 @@ const ALL_KNOWN_STATUSES = new Set([
   ...Array.from(TERMINAL_STATUSES),
   ...Array.from(SPECIAL_STATUSES),
 ]);
-
-// Solo CLOSED está permitido como terminal en año actual (visible en operativo)
-const TERMINAL_STATUSES_ALLOWED_FOR_CURRENT_YEAR = new Set(["CLOSED"]);
 
 const V2024_MAX_PAGE_SIZE = 30;
 const V2024_NORMAL_MAX_PAGES = 3;
@@ -290,50 +296,8 @@ function timestamp(value: unknown): string | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
-function parseShipmentNameDate(value: unknown): string | null {
-  const text = str(value);
-  if (!text) return null;
-  const match = text.match(/\((\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})\)/);
-  if (!match) return null;
-  const [, day, month, year, hour, minute] = match;
-  const iso = `${year}-${month}-${day}T${hour}:${minute}:00.000Z`;
-  const parsed = new Date(iso);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-}
-
 function resolveRawDate(raw: unknown, key: string): string | null {
   return timestamp(pick(raw, [key]));
-}
-
-/**
- * Resuelve la fecha del shipment priorizando fechas de CREACIÓN sobre actualización.
- * Un shipment creado en 2024 NO se reclasifica como 2026 solo porque Amazon lo actualizó.
- */
-export function resolveAmazonShipmentDate(
-  shipment: AmazonInboundShipmentDiagnostic,
-): ResolvedShipmentDate {
-  const raw = shipment.raw ?? null;
-  // Prioridad: fechas de creación primero, actualización solo como fallback final
-  const attempts: Array<[ResolvedShipmentDate["source"], string | null]> = [
-    ["created_at_amazon", timestamp(shipment.created_at_amazon)],
-    ["raw.createdAt", resolveRawDate(raw, "createdAt")],
-    ["raw.CreatedDate", resolveRawDate(raw, "CreatedDate")],
-    ["raw.ShipmentCreatedDate", resolveRawDate(raw, "ShipmentCreatedDate")],
-    ["raw.shipmentCreatedDate", resolveRawDate(raw, "shipmentCreatedDate")],
-    ["shipment_name", parseShipmentNameDate(shipment.shipment_name)],
-    // Fallback a fecha de actualización solo si no hay fecha de creación
-    ["updated_at_amazon", timestamp(shipment.updated_at_amazon)],
-    ["raw.updatedAt", resolveRawDate(raw, "updatedAt")],
-    ["raw.lastUpdatedAt", resolveRawDate(raw, "lastUpdatedAt")],
-    ["raw.LastUpdatedDate", resolveRawDate(raw, "LastUpdatedDate")],
-    ["raw.updatedDate", resolveRawDate(raw, "updatedDate")],
-  ];
-
-  for (const [source, iso] of attempts) {
-    if (iso) return { iso, source };
-  }
-
-  return { iso: null, source: "missing" };
 }
 
 /** Resuelve exclusivamente la fecha de CREACIÓN Amazon. */
@@ -369,12 +333,12 @@ function isUnknownStatus(status: string | null): boolean {
 }
 
 /** Calcula review_required para un shipment según su estado y discrepancia. */
-function computeReviewRequired(status: string | null, discrepancyQty: number): boolean {
+function computeReviewRequired(status: string | null, discrepancyQty: number | null): boolean {
   const normalized = status?.trim().toUpperCase() ?? null;
   if (!normalized) return false;
   if (isUnknownStatus(normalized)) return true;
   if (normalized === "MIXED") return true;
-  if (normalized === "CLOSED" && discrepancyQty > 0) return true;
+  if (normalized === "CLOSED" && discrepancyQty != null && discrepancyQty > 0) return true;
   return false;
 }
 
@@ -500,93 +464,9 @@ function isClosedStatus(status: string | null): boolean {
   return normalized ? TERMINAL_STATUSES.has(normalized) : false;
 }
 
-function isTerminalStatus(status: string | null): boolean {
-  const normalized = status?.trim().toUpperCase();
-  return normalized ? TERMINAL_STATUSES.has(normalized) : false;
-}
-
-function isCurrentYearAllowedTerminalStatus(status: string | null): boolean {
-  const normalized = status?.trim().toUpperCase();
-  return normalized ? TERMINAL_STATUSES_ALLOWED_FOR_CURRENT_YEAR.has(normalized) : false;
-}
-
 /** MIXED no es terminal — no asumir como cerrado. */
 function isMixedStatus(status: string | null): boolean {
   return status?.trim().toUpperCase() === "MIXED";
-}
-
-function filterShipmentsForSync(
-  shipments: AmazonInboundShipmentDiagnostic[],
-  lastUpdatedAfter: string,
-  lastUpdatedBefore: string | null,
-  includeClosed: boolean,
-  includeClosedCurrentYear: boolean,
-  allowActiveWithoutDate: boolean,
-) {
-  const cutoff = new Date(lastUpdatedAfter).getTime();
-  const maxTime = lastUpdatedBefore ? new Date(lastUpdatedBefore).getTime() : Number.NaN;
-  let skippedByDate = 0;
-  let skippedByStatus = 0;
-  let skippedByMissingDate = 0;
-  let dateResolvedFromRaw = 0;
-  let dateResolvedFromShipmentName = 0;
-  let activeWithoutDateImported = 0;
-
-  const filtered: Array<{
-    shipment: AmazonInboundShipmentDiagnostic;
-    resolvedDate: ResolvedShipmentDate;
-  }> = [];
-
-  for (const shipment of shipments) {
-    const resolvedDate = resolveAmazonShipmentDate(shipment);
-    const statusIsTerminal = isTerminalStatus(shipment.status);
-    const statusIsClosed = isCurrentYearAllowedTerminalStatus(shipment.status);
-
-    if (resolvedDate.source.startsWith("raw.")) dateResolvedFromRaw += 1;
-    if (resolvedDate.source === "shipment_name") dateResolvedFromShipmentName += 1;
-
-    if (resolvedDate.iso) {
-      const time = new Date(resolvedDate.iso).getTime();
-      if (!Number.isNaN(cutoff) && time < cutoff) {
-        skippedByDate += 1;
-        continue;
-      }
-      if (!Number.isNaN(maxTime) && time > maxTime) {
-        skippedByDate += 1;
-        continue;
-      }
-    } else if (statusIsTerminal) {
-      skippedByStatus += 1;
-      continue;
-    } else if (allowActiveWithoutDate) {
-      activeWithoutDateImported += 1;
-    } else {
-      skippedByMissingDate += 1;
-      continue;
-    }
-
-    if (statusIsTerminal && !statusIsClosed) {
-      skippedByStatus += 1;
-      continue;
-    }
-
-    if (!includeClosed && !includeClosedCurrentYear && statusIsClosed) {
-      skippedByStatus += 1;
-      continue;
-    }
-
-    filtered.push({ shipment, resolvedDate });
-  }
-
-  return {
-    shipments: filtered,
-    skippedByDate,
-    skippedByStatus,
-    skippedByMissingDate,
-    dateResolvedFromRaw,
-    dateResolvedFromShipmentName,
-    activeWithoutDateImported,
-  };
 }
 
 function resolveItemSku(item: AmazonInboundShipmentItemDiagnostic): string | null {
@@ -707,27 +587,35 @@ function mapInboundItemToAmazonEnvioRow(params: {
   userId: string | null;
   match: ProductMatch;
   resolvedDate: ResolvedShipmentDate;
+  existingQuantities?: PersistedInboundQuantities | null;
 }) {
-  const { shipment, item, userId, match, resolvedDate } = params;
+  const { shipment, item, userId, match, resolvedDate, existingQuantities } = params;
   const itemRaw = asRecord(item.raw);
   const shipmentRaw = asRecord(shipment.raw);
   const sku = resolveItemSku(item);
 
-  // Semántica separada:
-  // cantidad_esperada = planificada (v2024 expected / quantity field)
-  // cantidad_enviada  = realmente enviada (v0 QuantityShipped)
-  // cantidad_recibida = realmente recibida (v0 QuantityReceived)
-  const expectedQty = num(item.expected_quantity);
-  const receivedQty = num(item.received_quantity);
-  const locatedQty = num(item.located_quantity);
+  // Never fall back shipped → expected. Missing evidence stays null, not 0.
+  const incoming = resolveInboundItemQuantities({
+    expected_quantity: item.expected_quantity,
+    shipped_quantity: item.shipped_quantity,
+    received_quantity: item.received_quantity,
+    located_quantity: item.located_quantity,
+  });
+  const preserved = preserveExistingInboundQuantities(
+    {
+      expected: incoming.expectedQty,
+      shipped: incoming.shippedQty,
+      received: incoming.receivedQty,
+      located: incoming.locatedQty,
+    },
+    existingQuantities ?? null,
+  );
+  const expectedQty = preserved.expected;
+  const shippedQty = preserved.shipped;
+  const receivedQty = preserved.received;
+  const locatedQty = preserved.located;
 
-  // QuantityShipped viene de v0 — diferente de expected (planificado)
-  const rawQuantityShipped = pick(itemRaw, ["QuantityShipped", "quantityShipped"]);
-  const shippedQty = rawQuantityShipped != null ? num(rawQuantityShipped) : expectedQty;
-
-  // Discrepancia informativa: solo cuando hay datos de envío y recepción
-  const discrepancyQty =
-    shippedQty > 0 || receivedQty > 0 ? Math.max(0, shippedQty - receivedQty) : 0;
+  const discrepancyQty = resolveInboundDiscrepancy(shippedQty, receivedQty);
 
   // Fechas Amazon separadas
   const amazonCreatedAt = resolveAmazonCreatedAt(shipment);
@@ -750,7 +638,8 @@ function mapInboundItemToAmazonEnvioRow(params: {
     fnsku: str(pick(itemRaw, ["fnsku", "FNSKU", "fulfillmentNetworkSku"])),
     asin: str(pick(itemRaw, ["asin", "ASIN"])),
     producto_id: match.productoId,
-    // cantidad_esperada = planificado; cantidad_enviada = QuantityShipped v0
+    // cantidad_esperada = planned/v2024; null when this source has no expected.
+    // cantidad_enviada = QuantityShipped v0; omitted later if unknown (NOT NULL DEFAULT 0).
     cantidad_enviada: shippedQty,
     cantidad_recibida: receivedQty,
     cantidad_esperada: expectedQty,
@@ -892,6 +781,7 @@ function appendV2024Error(
   warnings?: string[],
 ) {
   const mapped = mapGenericError(error);
+  logInboundSpApiFailure(error, { operation: endpoint });
   if (mapped.status === 429 || mapped.code === "rate_limited") {
     summary.quotaExceededCount += 1;
   }
@@ -1504,7 +1394,6 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
   const includeClosed = Boolean(params.includeClosed || includeClosedCurrentYear);
   const includeReadyToShip = params.includeReadyToShip !== false;
   const diagnostic = await buildAmazonInboundShipmentsDiagnostic({
-    limit: params.limit,
     lastUpdatedAfter: effectiveLastUpdatedAfter,
     includeClosed,
   });
@@ -1528,28 +1417,40 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
       .map(({ shipment }) => shipment.amazon_shipment_id)
       .filter((id): id is string => Boolean(id)),
   );
+  const existingQuantities = await loadExistingAmazonEnviosQuantities(
+    shipments
+      .map(({ shipment }) => shipment.amazon_shipment_id)
+      .filter((id): id is string => Boolean(id)),
+  );
 
   const rows = shipments.flatMap(({ shipment, resolvedDate }) => {
-    if (!shipment.amazon_shipment_id) {
+    const shipmentId = shipment.amazon_shipment_id;
+    if (!shipmentId) {
       warnings.push("Shipment sin shipment_id omitido.");
       return [];
     }
 
     return shipment.items.flatMap((item, index) => {
-      const row = mapInboundItemToAmazonEnvioRow({
-        shipment,
-        item,
-        userId: params.userId,
-        resolvedDate,
-        match:
-          productMatches.get(itemKey({ shipment, item, index })) ?? {
-            productoId: null,
-            matchedBy: null,
-            ...buildSkuCandidates(resolveItemSku(item)),
-          },
-      });
+      const sku = resolveItemSku(item);
+      const row = omitUnknownCantidadEnviada(
+        mapInboundItemToAmazonEnvioRow({
+          shipment,
+          item,
+          userId: params.userId,
+          resolvedDate,
+          existingQuantities: sku
+            ? existingQuantities.get(inboundQuantityRowKey(shipmentId, sku)) ?? null
+            : null,
+          match:
+            productMatches.get(itemKey({ shipment, item, index })) ?? {
+              productoId: null,
+              matchedBy: null,
+              ...buildSkuCandidates(sku),
+            },
+        }),
+      );
       if (!row.sku) {
-        warnings.push(`Item sin SKU omitido en shipment ${shipment.amazon_shipment_id}.`);
+        warnings.push(`Item sin SKU omitido en shipment ${shipmentId}.`);
         return [];
       }
       return [row];
@@ -1572,8 +1473,9 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
   if (rows.length === 0) {
     const v2024Enrichment = await enrichPersistedShipmentsWithV2024(warnings);
     return {
-      shipmentsProcessed: shipments.length,
       diagnosticSource: diagnostic.source,
+      shipmentsFetchedFromAmazon: diagnostic.shipments.length,
+      shipmentsProcessed: shipments.length,
       linesUpserted: 0,
       productsMatched: 0,
       productsUnmatched: 0,
@@ -1584,18 +1486,22 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
       includeReadyToShip,
       includeClosed,
       skippedByDate: filtered.skippedByDate,
+      skippedByDateIds: filtered.skippedByDateIds,
       skippedByStatus: filtered.skippedByStatus,
+      skippedByStatusIds: filtered.skippedByStatusIds,
       skippedByMissingDate: filtered.skippedByMissingDate,
       dateResolvedFromRaw: filtered.dateResolvedFromRaw,
       dateResolvedFromShipmentName: filtered.dateResolvedFromShipmentName,
       activeWithoutDateImported: filtered.activeWithoutDateImported,
+      includedNonTerminalCarryoverIds: filtered.includedNonTerminalCarryoverIds,
       deletedUnlinkedRows: cleanup.deletedUnlinkedRows,
       cleanupSkippedByExistingLinks: cleanup.skippedByExistingLinks,
+      discovery: diagnostic.discovery,
       v2024RelationsMatched: v2024Enrichment.relationsMatched,
       v2024ShipmentsFetched: v2024Enrichment.shipmentsFetched,
       v2024TransportationOptionsRequests: v2024Enrichment.transportationOptionsRequests,
       v2024TransportationOptionsFetched: v2024Enrichment.transportationOptionsFetched,
-      acquisitionComplete: v2024Enrichment.acquisitionComplete,
+      acquisitionComplete: diagnostic.discovery?.discoveryComplete ?? false,
       warnings,
       errors,
     };
@@ -1625,6 +1531,7 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
 
   return {
     diagnosticSource: diagnostic.source,
+    shipmentsFetchedFromAmazon: diagnostic.shipments.length,
     shipmentsProcessed: shipments.length,
     linesUpserted: rows.length,
     productsMatched: rows.filter((row) => Boolean(row.producto_id)).length,
@@ -1636,18 +1543,22 @@ export async function syncInboundShipmentsToAmazonEnvios(params: {
     includeReadyToShip,
     includeClosed,
     skippedByDate: filtered.skippedByDate,
+    skippedByDateIds: filtered.skippedByDateIds,
     skippedByStatus: filtered.skippedByStatus,
+    skippedByStatusIds: filtered.skippedByStatusIds,
     skippedByMissingDate: filtered.skippedByMissingDate,
     dateResolvedFromRaw: filtered.dateResolvedFromRaw,
     dateResolvedFromShipmentName: filtered.dateResolvedFromShipmentName,
     activeWithoutDateImported: filtered.activeWithoutDateImported,
+    includedNonTerminalCarryoverIds: filtered.includedNonTerminalCarryoverIds,
     deletedUnlinkedRows: cleanup.deletedUnlinkedRows,
     cleanupSkippedByExistingLinks: cleanup.skippedByExistingLinks,
+    discovery: diagnostic.discovery,
     v2024RelationsMatched: v2024Enrichment.relationsMatched,
     v2024ShipmentsFetched: v2024Enrichment.shipmentsFetched,
     v2024TransportationOptionsRequests: v2024Enrichment.transportationOptionsRequests,
     v2024TransportationOptionsFetched: v2024Enrichment.transportationOptionsFetched,
-    acquisitionComplete: v2024Enrichment.acquisitionComplete,
+    acquisitionComplete: diagnostic.discovery?.discoveryComplete ?? false,
     warnings,
     errors,
   };
@@ -1690,6 +1601,32 @@ async function cleanupUnlinkedAmazonEnviosIfSafe(): Promise<{
     deletedUnlinkedRows: unlinkedCount ?? 0,
     skippedByExistingLinks: false,
   };
+}
+
+async function loadExistingAmazonEnviosQuantities(
+  shipmentIds: string[],
+): Promise<Map<string, PersistedInboundQuantities>> {
+  const uniqueIds = Array.from(new Set(shipmentIds.filter(Boolean)));
+  const quantities = new Map<string, PersistedInboundQuantities>();
+  if (uniqueIds.length === 0) return quantities;
+
+  const { data, error } = await supabaseAdmin
+    .from("amazon_envios")
+    .select(
+      "shipment_id, sku, cantidad_esperada, cantidad_enviada, cantidad_recibida, cantidad_localizada, raw",
+    )
+    .in("shipment_id", uniqueIds);
+
+  if (error) throw new Error(error.message);
+
+  for (const row of (data ?? []) as RawRecord[]) {
+    const shipmentId = str(row.shipment_id);
+    const sku = str(row.sku);
+    if (!shipmentId || !sku) continue;
+    quantities.set(inboundQuantityRowKey(shipmentId, sku), parseExistingAmazonEnviosQuantities(row));
+  }
+
+  return quantities;
 }
 
 async function loadExistingAmazonInboundLogisticsMeta(
@@ -2083,28 +2020,25 @@ async function listOperativeScope(params: {
   const includeClosedCurrentYear = params.includeClosedCurrentYear ?? params.includeClosed ?? true;
 
   // Scope operativo:
-  // - año actual: TODOS (incluyendo terminales si includeClosedCurrentYear)
-  // - año anterior: no terminales O review_required
-  // - anteriores: solo review_required demostrado
+  // - No-terminal (IN_TRANSIT, RECEIVING, WORKING, SHIPPED, …): SIEMPRE visible
+  //   independientemente del año. Un shipment creado en 2024 que sigue IN_TRANSIT
+  //   en 2026 está operativamente activo — ocultarlo por año enmascara trabajo real.
+  // - Terminal (CLOSED, CANCELLED, …):
+  //     año actual + includeClosedCurrentYear → visible
+  //     review_required → siempre visible (requiere atención)
+  //     resto → oculto
   const visibleShipments = allShipments.filter((shipment) => {
     const year = shipment.shipment_year;
     const terminal = isTerminalStatus(shipment.estado);
     const isClosed = isCurrentYearAllowedTerminalStatus(shipment.estado);
 
-    if (year === currentYear) {
-      if (!terminal) return true;
-      if (isClosed && includeClosedCurrentYear) return true;
-      return false;
-    }
+    if (!terminal) return true;
 
-    if (year === prevYear) {
-      if (!terminal) return true;
-      if (shipment.review_required) return true;
-      return false;
-    }
+    if (isClosed && year === currentYear && includeClosedCurrentYear) return true;
 
-    // Años anteriores: solo review_required
-    return shipment.review_required === true;
+    if (shipment.review_required) return true;
+
+    return false;
   });
 
   const closedCount = allShipments.filter(

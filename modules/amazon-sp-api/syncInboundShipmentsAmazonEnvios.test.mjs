@@ -9,17 +9,22 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const SERVICE_FILE = "modules/amazon-sp-api/syncInboundShipmentsToAmazonEnviosService.ts";
+const FILTER_FILE = "modules/amazon-sp-api/inboundShipmentSyncFilter.ts";
 const ROUTE_FILE = "app/api/amazon/inbound-shipments/route.ts";
 const UI_FILE = "app/[locale]/(dashboard)/amazon/envios/page.tsx";
 
 // ─── Lectura de fuentes (una vez) ────────────────────────────────────────────
 let source, routeSource, uiSource;
 test.before(async () => {
-  [source, routeSource, uiSource] = await Promise.all([
+  const [serviceSource, filterSource, loadedRoute, loadedUi] = await Promise.all([
     readFile(SERVICE_FILE, "utf8"),
+    readFile(FILTER_FILE, "utf8"),
     readFile(ROUTE_FILE, "utf8"),
     readFile(UI_FILE, "utf8"),
   ]);
+  source = `${serviceSource}\n${filterSource}`;
+  routeSource = loadedRoute;
+  uiSource = loadedUi;
 });
 
 // ─── A: SYNC NO DESTRUCTIVO — fila no devuelta no se borra ───────────────────
@@ -116,38 +121,48 @@ test("D: estados no se transforman silenciosamente — se conserva el raw", () =
   );
 });
 
-// ─── E: AÑO ACTUAL CLOSED → VISIBLE EN OPERATIVO ─────────────────────────────
+// ─── E: NO-TERMINAL SIEMPRE VISIBLE — scope operativo simplificado ───────────
 test("E: año actual CLOSED → visible en operativo con includeClosedCurrentYear", () => {
+  // Después del fix del scope operativo, la lógica es:
+  // if (!terminal) return true → todos los no-terminales son visibles sin importar año.
+  // CLOSED año actual: isClosed && year === currentYear && includeClosedCurrentYear → visible.
   assert.match(
     source,
-    /year === currentYear.*isClosed.*includeClosedCurrentYear/s,
-    "Shipments CLOSED del año actual deben filtrarse por includeClosedCurrentYear",
+    /isClosed && year === currentYear && includeClosedCurrentYear/,
+    "CLOSED año actual debe estar condicionado a isClosed + currentYear + includeClosedCurrentYear",
   );
 });
 
-// ─── F: AÑO ANTERIOR IN_TRANSIT → VISIBLE EN OPERATIVO ───────────────────────
+// ─── F: IN_TRANSIT CUALQUIER AÑO → VISIBLE EN OPERATIVO ──────────────────────
 test("F: año anterior IN_TRANSIT (no terminal) → visible en operativo", () => {
-  // Un shipment no-terminal del año anterior debe incluirse
+  // El nuevo scope: if (!terminal) return true — visible sin discriminar año.
   assert.match(
     source,
-    /year === prevYear.*!terminal.*return true/s,
-    "Shipments no terminales del año anterior deben ser visibles en operativo",
+    /if \(!terminal\) return true/,
+    "Shipments no terminales SIEMPRE visibles en operativo (incluye carryover de cualquier año)",
   );
-});
-
-// ─── G: AÑO ANTERIOR CLOSED → SOLO HISTÓRICO ─────────────────────────────────
-test("G: año anterior CLOSED → NO visible en operativo", () => {
-  // Un CLOSED del año anterior NO está en la lista de excepciones del prevYear
-  assert.match(
-    source,
-    /year === prevYear[\s\S]*?review_required.*return true/,
-    "Solo non-terminal o review_required del año anterior son visibles en operativo",
-  );
-  // CLOSED del año anterior solo pasa por la rama review_required
+  // La dependencia de prevYear ya NO debe existir (reemplazada por !terminal)
   assert.doesNotMatch(
     source,
-    /year === prevYear[\s\S]*?isClosed.*return true/,
-    "CLOSED del año anterior NO debe incluirse directamente en operativo",
+    /year === prevYear\s*\)/,
+    "El scope operativo ya no debe depender de prevYear — carryover se gestiona por estado",
+  );
+});
+
+// ─── G: CLOSED ANTIGUO → SOLO HISTÓRICO ──────────────────────────────────────
+test("G: año anterior CLOSED → NO visible en operativo", () => {
+  // El scope: terminal + !currentYear + !review_required → return false.
+  // Se confirma que review_required es el único salvoconducto para terminales viejos.
+  assert.match(
+    source,
+    /if \(shipment\.review_required\) return true/,
+    "Solo terminales con review_required son visibles en operativo fuera del año actual",
+  );
+  // CLOSED del año anterior (sin review_required) devuelve false → no visible
+  assert.match(
+    source,
+    /return false;[\s\S]{0,5}\}\);/s,
+    "El scope finaliza con return false para terminales no especiales",
   );
 });
 
@@ -224,6 +239,24 @@ test("J: mode=history NO hace fallback silencioso — year requerido y validado"
 });
 
 // ─── K: QuantityShipped=100, QuantityReceived=80, status=RECEIVING → discrepancy=20, issue_confirmed=false
+test("K2: v0-only expected unknown no se persiste como 0", () => {
+  assert.match(
+    source,
+    /preserveExistingInboundQuantities/,
+    "Incoming expected unknown debe preservar cantidad_esperada existente",
+  );
+  assert.match(
+    source,
+    /omitUnknownCantidadEnviada/,
+    "Shipped unknown no debe escribir 0 en cantidad_enviada NOT NULL",
+  );
+  assert.doesNotMatch(
+    source,
+    /Math\.max\(0,\s*shippedQty\s*-\s*receivedQty\)/,
+    "Discrepancia no debe clamparse a >= 0",
+  );
+});
+
 test("K: discrepancy calculada correctamente — no es incidencia definitiva en RECEIVING", () => {
   // La discrepancia es informativa
   assert.match(
@@ -343,7 +376,6 @@ test("UNCONFIRMED incluido en NON_TERMINAL_STATUSES", () => {
 });
 
 test("cantidad_enviada separada de cantidad_esperada en mapeo", () => {
-  // cantidad_enviada = shippedQty; cantidad_esperada = expectedQty
   assert.match(
     source,
     /cantidad_enviada: shippedQty/,
@@ -356,8 +388,13 @@ test("cantidad_enviada separada de cantidad_esperada en mapeo", () => {
   );
   assert.doesNotMatch(
     source,
-    /cantidad_enviada: expected[,\s]/,
-    "cantidad_enviada ya NO debe asignarse directamente desde expected",
+    /shippedQty\s*=\s*expectedQty/,
+    "shippedQty nunca debe caer a expectedQty",
+  );
+  assert.doesNotMatch(
+    source,
+    /shipped_quantity:\s*item\.expected_quantity/,
+    "shipped no debe leerse desde expected_quantity",
   );
 });
 
@@ -376,5 +413,114 @@ test("V2024_ABSOLUTE_MAX_PAGES definido y usado", () => {
     source,
     /Math\.min.*V2024_ABSOLUTE_MAX_PAGES/,
     "El límite absoluto se aplica en la paginación",
+  );
+});
+
+// ─── POST-LIVE: tests añadidos tras diagnóstico de IN_TRANSIT ausente ─────────
+// ROOT CAUSE: el filtro local de fecha aplicaba el cutoff de lastUpdatedAfter
+// contra la fecha de CREACIÓN (del shipment_name), no contra la fecha de
+// actualización. Shipments IN_TRANSIT creados en 2024 y aún activos en 2026
+// quedaban descartados porque 2024 < cutoff(2026-01-01).
+
+test("N: IN_TRANSIT creado 2024 — lower-bound cutoff NO aplica a no-terminales", () => {
+  // El fix aplica el cutoff de fecha únicamente a statusIsTerminal.
+  // La expresión correcta es: statusIsTerminal && !Number.isNaN(cutoff) && time < cutoff
+  assert.match(
+    source,
+    /statusIsTerminal && !Number\.isNaN\(cutoff\) && time < cutoff/,
+    "El cutoff de fecha inferior debe estar condicionado a statusIsTerminal",
+  );
+  // La versión incorrecta (cutoff sin condicionar a terminal) no debe existir
+  // en el bloque del filtro. El patrón busca el chequeo desnudo anterior al fix.
+  assert.doesNotMatch(
+    source,
+    /if \(!Number\.isNaN\(cutoff\) && time < cutoff\)/,
+    "El cutoff desnudo sin condición de statusIsTerminal no debe existir",
+  );
+});
+
+test("O: IN_TRANSIT nunca puede caer en skippedByStatus", () => {
+  // NON_TERMINAL_STATUSES incluye IN_TRANSIT.
+  // filterShipmentsForSync sólo incrementa skippedByStatus si statusIsTerminal o !includeClosed.
+  // Si el status es IN_TRANSIT → isTerminalStatus=false → no puede entrar en la rama de skip.
+  assert.match(
+    source,
+    /NON_TERMINAL_STATUSES.*IN_TRANSIT/s,
+    "IN_TRANSIT debe estar en NON_TERMINAL_STATUSES",
+  );
+  assert.doesNotMatch(
+    source,
+    /TERMINAL_STATUSES[^=]*IN_TRANSIT/,
+    "IN_TRANSIT no debe aparecer en TERMINAL_STATUSES",
+  );
+});
+
+test("P: shipment_name no parseable — no se inventa año, se conserva shipment", () => {
+  // parseShipmentNameDate devuelve null si el nombre no tiene el patrón (DD/MM/YYYY HH:MM).
+  assert.match(
+    source,
+    /function parseShipmentNameDate[\s\S]{0,300}if \(!match\) return null/s,
+    "parseShipmentNameDate debe retornar null cuando el nombre no tiene fecha parseable",
+  );
+  // Non-terminal without date is included; skippedByMissingDate stays 0.
+  assert.match(
+    source,
+    /activeWithoutDateImported \+= 1/,
+    "Non-terminal sin fecha debe incrementarse como activeWithoutDateImported",
+  );
+  assert.doesNotMatch(
+    source,
+    /skippedByMissingDate \+= 1/,
+    "Non-terminal sin fecha ya no se descarta con skippedByMissingDate",
+  );
+});
+
+test("Q: acquisitionComplete=false — UI NO muestra 'completada' como éxito pleno", () => {
+  // El banner diferencia COMPLETA / PARCIAL / no determinada.
+  assert.match(
+    uiSource,
+    /Sincronizacion COMPLETA/,
+    "Banner debe mostrar COMPLETA cuando acquisitionComplete=true",
+  );
+  assert.match(
+    uiSource,
+    /Sincronizacion PARCIAL/,
+    "Banner debe mostrar PARCIAL cuando acquisitionComplete=false",
+  );
+  // 'Sincronizacion completada' (sin mayúscula semántica) no debe aparecer
+  // porque engaña al usuario cuando el sync fue parcial.
+  assert.doesNotMatch(
+    uiSource,
+    /Sincronizacion completada/,
+    "El texto genérico 'completada' ya no debe usarse — reemplazado por COMPLETA/PARCIAL",
+  );
+});
+
+test("R: upper-bound (toDate) sigue aplicando a todos los shipments", () => {
+  // El fix sólo afecta al lower-bound. El upper-bound no cambia.
+  assert.match(
+    source,
+    /!Number\.isNaN\(maxTime\) && time > maxTime/,
+    "El upper-bound de fecha sigue activo para todos los shipments",
+  );
+  // El upper-bound NO debe estar condicionado a statusIsTerminal
+  const upperBoundBlock = source.match(
+    /if \(!Number\.isNaN\(maxTime\) && time > maxTime\)[\s\S]{0,100}skippedByDate/,
+  );
+  assert.ok(upperBoundBlock, "El bloque upper-bound debe incrementar skippedByDate");
+});
+
+test("S: scope operativo conserva carryover no-terminal de año anterior", () => {
+  // El operative scope incluye shipments del año anterior si son no-terminales.
+  assert.match(
+    source,
+    /listOperativeScope|operative.*scope/i,
+    "Existe la función de scope operativo",
+  );
+  // La función no filtra por fecha de creación del shipment sino por su año y estado
+  assert.match(
+    source,
+    /shipment_year.*current_year|currentYear.*shipment_year/is,
+    "El scope operativo usa shipment_year, no la fecha de creación directamente",
   );
 });

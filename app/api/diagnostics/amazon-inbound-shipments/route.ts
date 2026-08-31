@@ -6,11 +6,6 @@ import { mapGenericError } from "@/modules/amazon-sp-api/errors";
 
 export const dynamic = "force-dynamic";
 
-function parseLimit(request: NextRequest): number {
-  const raw = Number(request.nextUrl.searchParams.get("limit") ?? 25);
-  return Number.isFinite(raw) ? Math.min(Math.max(Math.round(raw), 1), 100) : 25;
-}
-
 export async function GET(request: NextRequest) {
   if (process.env.NODE_ENV === "production") {
     return NextResponse.json(
@@ -35,7 +30,6 @@ export async function GET(request: NextRequest) {
 
   try {
     const diagnostic = await buildAmazonInboundShipmentsDiagnostic({
-      limit: parseLimit(request),
       lastUpdatedAfter: request.nextUrl.searchParams.get("lastUpdatedAfter"),
       includeClosed:
         request.nextUrl.searchParams.get("includeClosed")?.toLowerCase() === "true",

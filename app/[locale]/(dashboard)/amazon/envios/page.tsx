@@ -205,6 +205,7 @@ type SyncResponse = {
     v2024ShipmentsFetched: number;
     v2024TransportationOptionsRequests: number;
     v2024TransportationOptionsFetched: number;
+    acquisitionComplete: boolean;
     warnings: string[];
     errors: string[];
   };
@@ -660,8 +661,14 @@ export default function AmazonEnviosPage() {
         throw new Error(json.error ?? `Error HTTP ${res.status}`);
       }
       const acq = json.summary?.acquisitionComplete;
+      const syncLabel =
+        acq === true
+          ? "Sincronizacion COMPLETA"
+          : acq === false
+            ? "⚠ Sincronizacion PARCIAL — datos pueden estar incompletos"
+            : "Sincronizacion finalizada (adquisicion no determinada)";
       setMessage(
-        `Sincronizacion completada: ${json.summary?.linesUpserted ?? 0} lineas actualizadas del año ${
+        `${syncLabel}: ${json.summary?.linesUpserted ?? 0} lineas actualizadas del año ${
           json.summary?.syncYear ?? selectedYear
         } desde ${
           json.summary?.effectiveLastUpdatedAfter?.slice(0, 10) ?? `${selectedYear}-01-01`
@@ -671,9 +678,7 @@ export default function AmazonEnviosPage() {
           json.summary?.dateResolvedFromRaw ?? 0
         } desde raw y ${json.summary?.dateResolvedFromShipmentName ?? 0} desde nombre. v2024: ${
           json.summary?.v2024RelationsMatched ?? 0
-        } relaciones, ${json.summary?.v2024ShipmentsFetched ?? 0} shipments. Adquisicion v2024: ${
-          acq === true ? "COMPLETA" : acq === false ? "PARCIAL (ver warnings)" : "no determinada"
-        }.`,
+        } relaciones, ${json.summary?.v2024ShipmentsFetched ?? 0} shipments.`,
       );
       await loadShipments();
     } catch (err: unknown) {

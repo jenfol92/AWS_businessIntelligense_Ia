@@ -173,6 +173,9 @@ type ListResponse = {
   shipments?: AmazonInboundShipment[];
   closedCount?: number;
   hiddenClosedCount?: number;
+  mode?: "operative" | "history";
+  historyYear?: number;
+  totalCount?: number;
   error?: string;
 };
 
@@ -202,6 +205,7 @@ type SyncResponse = {
     v2024ShipmentsFetched: number;
     v2024TransportationOptionsRequests: number;
     v2024TransportationOptionsFetched: number;
+    acquisitionComplete: boolean;
     warnings: string[];
     errors: string[];
   };
@@ -479,10 +483,14 @@ function shipmentLogisticsLabel(shipment: AmazonInboundShipment): string {
 
 export default function AmazonEnviosPage() {
   const [shipments, setShipments] = useState<AmazonInboundShipment[]>([]);
+  // "operative" = scope por defecto; "history" = histórico explícito por año
+  const [viewMode, setViewMode] = useState<"operative" | "history">("operative");
   const [selectedYear, setSelectedYear] = useState(currentYear());
+  const [historyYear, setHistoryYear] = useState(currentYear() - 1);
   const [includeClosed, setIncludeClosed] = useState(true);
   const [closedCount, setClosedCount] = useState(0);
   const [hiddenClosedCount, setHiddenClosedCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [enrichingShipmentId, setEnrichingShipmentId] = useState<string | null>(null);
@@ -587,14 +595,30 @@ export default function AmazonEnviosPage() {
     [closedCount, filteredShipments],
   );
 
-  async function loadShipments(nextIncludeClosed = includeClosed, nextYear = selectedYear) {
+  async function loadShipments(
+    opts: {
+      mode?: "operative" | "history";
+      nextIncludeClosed?: boolean;
+      nextYear?: number;
+      nextHistoryYear?: number;
+    } = {},
+  ) {
+    const mode = opts.mode ?? viewMode;
+    const nextIncludeClosed = opts.nextIncludeClosed ?? includeClosed;
+    const nextYear = opts.nextYear ?? selectedYear;
+    const nextHistoryYear = opts.nextHistoryYear ?? historyYear;
+
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({
-        year: String(nextYear),
-        includeClosedCurrentYear: String(nextIncludeClosed),
-      });
+      const params = new URLSearchParams({ mode });
+      if (mode === "operative") {
+        params.set("year", String(nextYear));
+        params.set("includeClosedCurrentYear", String(nextIncludeClosed));
+      } else {
+        // mode=history: year requerido — el servidor devuelve 400 si es inválido
+        params.set("year", String(nextHistoryYear));
+      }
       const res = await fetch(`/api/amazon/inbound-shipments?${params.toString()}`, {
         cache: "no-store",
       });
@@ -605,6 +629,7 @@ export default function AmazonEnviosPage() {
       setShipments(json.shipments ?? []);
       setClosedCount(json.closedCount ?? 0);
       setHiddenClosedCount(json.hiddenClosedCount ?? 0);
+      setTotalCount(json.totalCount ?? 0);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error cargando envios Amazon");
     } finally {
@@ -613,6 +638,10 @@ export default function AmazonEnviosPage() {
   }
 
   async function syncShipments() {
+    if (viewMode === "history") {
+      setError("El sync no está disponible en modo Histórico. Cambia a modo Operativos.");
+      return;
+    }
     setSyncing(true);
     setError(null);
     setMessage(null);
@@ -631,8 +660,15 @@ export default function AmazonEnviosPage() {
       if (!res.ok || !json.ok) {
         throw new Error(json.error ?? `Error HTTP ${res.status}`);
       }
+      const acq = json.summary?.acquisitionComplete;
+      const syncLabel =
+        acq === true
+          ? "Sincronizacion COMPLETA"
+          : acq === false
+            ? "⚠ Sincronizacion PARCIAL — datos pueden estar incompletos"
+            : "Sincronizacion finalizada (adquisicion no determinada)";
       setMessage(
-        `Sincronizacion completada: ${json.summary?.linesUpserted ?? 0} lineas actualizadas del año ${
+        `${syncLabel}: ${json.summary?.linesUpserted ?? 0} lineas actualizadas del año ${
           json.summary?.syncYear ?? selectedYear
         } desde ${
           json.summary?.effectiveLastUpdatedAfter?.slice(0, 10) ?? `${selectedYear}-01-01`
@@ -642,13 +678,9 @@ export default function AmazonEnviosPage() {
           json.summary?.dateResolvedFromRaw ?? 0
         } desde raw y ${json.summary?.dateResolvedFromShipmentName ?? 0} desde nombre. v2024: ${
           json.summary?.v2024RelationsMatched ?? 0
-        } relaciones, ${json.summary?.v2024ShipmentsFetched ?? 0} shipments, ${
-          json.summary?.v2024TransportationOptionsRequests ?? 0
-        } consultas transporte, ${
-          json.summary?.v2024TransportationOptionsFetched ?? 0
-        } opciones.`,
+        } relaciones, ${json.summary?.v2024ShipmentsFetched ?? 0} shipments.`,
       );
-      await loadShipments(includeClosed, selectedYear);
+      await loadShipments();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error sincronizando envios Amazon");
     } finally {
@@ -697,7 +729,7 @@ export default function AmazonEnviosPage() {
           result?.transportationOptionsFetched ?? 0
         } opciones.${quotaText}`,
       );
-      await loadShipments(includeClosed, selectedYear);
+      await loadShipments();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error buscando datos v2024");
     } finally {
@@ -786,7 +818,7 @@ export default function AmazonEnviosPage() {
         `Shipment ${json.shipment_id ?? orderModalShipment.shipment_id} vinculado a orden/proforma.`,
       );
       setOrderModalShipment(null);
-      await loadShipments();
+      await loadShipments({ mode: viewMode });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error vinculando orden/proforma");
     } finally {
@@ -819,7 +851,7 @@ export default function AmazonEnviosPage() {
         throw new Error(json.error ?? `Error HTTP ${res.status}`);
       }
       setMessage(`Shipment ${shipment.shipment_id} desvinculado de orden/proforma.`);
-      await loadShipments();
+      await loadShipments({ mode: viewMode });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error desvinculando orden/proforma");
     } finally {
@@ -856,7 +888,7 @@ export default function AmazonEnviosPage() {
         } lineas, ${json.skusLinked ?? 0} SKUs.`,
       );
       setLinkModalShipment(null);
-      await Promise.all([loadShipments(), loadLinkableContainers()]);
+      await Promise.all([loadShipments({ mode: viewMode }), loadLinkableContainers()]);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error vinculando contenedor");
     } finally {
@@ -889,7 +921,7 @@ export default function AmazonEnviosPage() {
         throw new Error(json.error ?? `Error HTTP ${res.status}`);
       }
       setMessage(`Shipment ${shipment.shipment_id} desvinculado.`);
-      await Promise.all([loadShipments(), loadLinkableContainers()]);
+      await Promise.all([loadShipments({ mode: viewMode }), loadLinkableContainers()]);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error desvinculando contenedor");
     } finally {
@@ -917,7 +949,7 @@ export default function AmazonEnviosPage() {
       setMessage("Documento subido al shipment.");
       setDocumentModalShipment(null);
       setDocumentFile(null);
-      await loadShipments();
+      await loadShipments({ mode: viewMode });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error subiendo documento");
     } finally {
@@ -926,8 +958,9 @@ export default function AmazonEnviosPage() {
   }
 
   useEffect(() => {
-    void loadShipments(includeClosed, selectedYear);
-  }, [includeClosed, selectedYear]);
+    void loadShipments({ mode: viewMode });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, includeClosed, selectedYear, historyYear]);
 
   return (
     <main className="space-y-5">
@@ -935,45 +968,79 @@ export default function AmazonEnviosPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Envios Amazon</h1>
           <p className="text-sm text-slate-500">
-            Envios inbound creados en Seller Central y preparados para vinculacion manual.
+            {viewMode === "operative"
+              ? "Envios operativos: año actual + carryover no terminal."
+              : `Historico ${historyYear} — solo lectura Supabase.`}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <select
-            value={selectedYear}
-            onChange={(event) => setSelectedYear(Number(event.target.value))}
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-          >
-            {yearOptions.map((year) => (
-              <option key={year} value={year}>
-                {year}
-              </option>
-            ))}
-          </select>
-          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700">
-            <input
-              type="checkbox"
-              checked={includeClosed}
-              onChange={(event) => setIncludeClosed(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-300"
-            />
-            Incluir cerrados del año
-          </label>
-          <button
-            type="button"
-            onClick={() => void syncShipments()}
-            disabled={syncing}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
-          >
-            {syncing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            Sincronizar año
-          </button>
+          {/* Selector de modo */}
+          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-sm">
+            <button
+              type="button"
+              onClick={() => setViewMode("operative")}
+              className={`px-3 py-2 font-semibold ${viewMode === "operative" ? "bg-blue-600 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}`}
+            >
+              Operativos
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("history")}
+              className={`px-3 py-2 font-semibold border-l border-slate-300 ${viewMode === "history" ? "bg-blue-600 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}`}
+            >
+              Historico
+            </button>
+          </div>
+
+          {/* Controles según modo */}
+          {viewMode === "operative" ? (
+            <>
+              <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={includeClosed}
+                  onChange={(event) => setIncludeClosed(event.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                Incluir cerrados año actual
+              </label>
+              <button
+                type="button"
+                onClick={() => void syncShipments()}
+                disabled={syncing}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+              >
+                {syncing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                Sincronizar
+              </button>
+            </>
+          ) : (
+            // mode=history: selector de año con validación explícita (no fallback)
+            <select
+              value={historyYear}
+              onChange={(event) => setHistoryYear(Number(event.target.value))}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              {Array.from({ length: 8 }, (_, i) => currentYear() - i).map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
+
+      {viewMode === "history" ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          Modo historico {historyYear}: muestra todos los shipments del año (incluye terminales).
+          Solo datos Supabase — sin llamadas Amazon. Para operar, cambia a Operativos.
+        </div>
+      ) : null}
 
       {error ? (
         <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -1102,6 +1169,11 @@ export default function AmazonEnviosPage() {
                       {shipment.linked_orders.length > 0 ? (
                         <span className="rounded bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
                           Orden vinculada
+                        </span>
+                      ) : null}
+                      {(shipment as AmazonInboundShipment & { review_required?: boolean }).review_required ? (
+                        <span className="rounded bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700">
+                          Revision requerida
                         </span>
                       ) : null}
                       <span

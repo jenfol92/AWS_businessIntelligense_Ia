@@ -2,7 +2,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getMissingSpApiEnvKeys } from "@/modules/amazon-sp-api/config";
-import { mapGenericError } from "@/modules/amazon-sp-api/errors";
+import {
+  buildInboundSyncFailureResponse,
+  logInboundSpApiFailure,
+} from "@/modules/amazon-sp-api/inboundSyncErrorInstrumentation";
 import { syncInboundShipmentsToAmazonEnvios } from "@/modules/amazon-sp-api/syncInboundShipmentsToAmazonEnviosService";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 
@@ -74,10 +77,8 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true, summary, warnings: summary.warnings, errors: summary.errors });
   } catch (error: unknown) {
-    const mapped = mapGenericError(error);
-    return NextResponse.json(
-      { ok: false, error: mapped.message, code: mapped.code },
-      { status: mapped.status ?? 400 },
-    );
+    logInboundSpApiFailure(error);
+    const failure = buildInboundSyncFailureResponse(error);
+    return NextResponse.json(failure.body, { status: failure.status });
   }
 }

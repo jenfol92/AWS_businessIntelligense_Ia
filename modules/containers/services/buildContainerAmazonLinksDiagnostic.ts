@@ -45,8 +45,8 @@ export type ContainerAmazonLinkDiagnostic = {
     destination_fc: string | null;
     created_at_amazon: string | null;
     updated_at_amazon: string | null;
-    expected_units: number;
-    located_units: number;
+    expected_units: number | null;
+    located_units: number | null;
   } | null;
   matched_by: string[];
 };
@@ -247,7 +247,7 @@ function scoreLink(
   }
 
   const containerQty = expectedUnits(container);
-  const shipmentQty = shipment.expected_units || shipment.located_units;
+  const shipmentQty = shipment.expected_units ?? shipment.located_units ?? 0;
   const qtyDiff = Math.abs(containerQty - shipmentQty);
   const qtyTolerance = Math.max(2, Math.round(containerQty * 0.03));
   if (containerQty > 0 && shipmentQty > 0 && qtyDiff <= qtyTolerance) {

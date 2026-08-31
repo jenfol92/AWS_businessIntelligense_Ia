@@ -103,7 +103,20 @@ export async function applyContainerStock(
     };
   }
 
-  const traceRows = destinos.map((destino) => ({
+  const stockDestinos = destinos.filter((destino) => destino.canal !== "FBM");
+  const fbmDestinos = destinos.filter((destino) => destino.canal === "FBM");
+
+  if (stockDestinos.length === 0) {
+    return {
+      triggered: true,
+      applied: false,
+      reason: "fbm_stock_managed_by_amazon",
+      warnings: validation.warnings.length > 0 ? validation.warnings : undefined,
+      costAllocation: costAllocation ?? undefined,
+    };
+  }
+
+  const traceRows = stockDestinos.map((destino) => ({
     contenedor_id: contenedorId,
     orden_item_id: destino.orden_item_id,
     producto_id: destino.producto_id,
@@ -118,7 +131,7 @@ export async function applyContainerStock(
   await insertStockAplicadoRows(traceRows);
 
   try {
-    for (const destino of destinos) {
+    for (const destino of stockDestinos) {
       await callFnStockAdd({
         productoId: destino.producto_id,
         pais: destino.pais,
@@ -140,16 +153,22 @@ export async function applyContainerStock(
     };
   }
 
-  const totalUnits = destinos.reduce((sum, d) => sum + d.cantidad, 0);
+  const totalUnits = stockDestinos.reduce((sum, d) => sum + d.cantidad, 0);
+  const warnings = [...validation.warnings];
+  if (fbmDestinos.length > 0) {
+    warnings.push(
+      `${fbmDestinos.length} destino(s) FBM omitidos: stock gestionado por Amazon.`,
+    );
+  }
 
   return {
     triggered: true,
     applied: true,
     summary: {
-      linesApplied: destinos.length,
+      linesApplied: stockDestinos.length,
       totalUnits,
     },
-    warnings: validation.warnings.length > 0 ? validation.warnings : undefined,
+    warnings: warnings.length > 0 ? warnings : undefined,
     costAllocation: costAllocation ?? undefined,
   };
 }

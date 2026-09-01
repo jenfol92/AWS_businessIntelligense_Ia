@@ -30,6 +30,10 @@ import {
   aggregateCanonicalSnapshotAcrossOperationalPools,
   type CanonicalInventorySnapshotReadRow,
 } from "../services/canonicalInventorySnapshotAggregation";
+import {
+  buildInclusiveDateWindow,
+  isDateInInclusiveWindow,
+} from "../services/inclusiveDateWindow";
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -292,9 +296,7 @@ export async function fetchSalesAggregates(
   const periodTo = normalizeIsoDate(periodRange?.toDate) ?? today;
   const periodFrom =
     normalizeIsoDate(periodRange?.fromDate) ?? addDaysIso(periodTo, -(safeWindow - 1));
-  const fromDate = new Date();
-  fromDate.setDate(fromDate.getDate() - 90);
-  const from90Str = fromDate.toISOString().slice(0, 10);
+  const from90Str = buildInclusiveDateWindow(periodTo, 90).fromDate;
   const fromStr = periodFrom < from90Str ? periodFrom : from90Str;
 
   const canalNorm =
@@ -418,7 +420,11 @@ function addMarketplaceDeliveryBreakdown(
  */
 export async function fetchMarketplaceSalesAggregates(
   productIds: string[],
-  windows: { window30Days?: number; window90Days?: number } = {},
+  windows: {
+    window30Days?: number;
+    window90Days?: number;
+    periodRange?: { fromDate?: string | null; toDate?: string | null };
+  } = {},
 ): Promise<{
   byProductMarketplace: MarketplaceSalesByProductCountry;
 }> {
@@ -428,12 +434,14 @@ export async function fetchMarketplaceSalesAggregates(
   const supabase = supabaseAdmin;
   const safe30 = Math.max(1, Math.min(windows.window30Days ?? 30, 365));
   const safe90 = Math.max(safe30, Math.min(windows.window90Days ?? 90, 365));
-  const from90 = new Date();
-  from90.setDate(from90.getDate() - safe90);
-  const from90Str = from90.toISOString().slice(0, 10);
-  const from30 = new Date();
-  from30.setDate(from30.getDate() - safe30);
-  const from30Str = from30.toISOString().slice(0, 10);
+  const toDate = normalizeIsoDate(windows.periodRange?.toDate) ?? todayIsoDate();
+  const from30Str =
+    normalizeIsoDate(windows.periodRange?.fromDate) ??
+    buildInclusiveDateWindow(toDate, safe30).fromDate;
+  const from90Str = buildInclusiveDateWindow(toDate, safe90).fromDate;
+  const queryFrom = from30Str < from90Str ? from30Str : from90Str;
+  const window30 = { fromDate: from30Str, toDate };
+  const window90 = { fromDate: from90Str, toDate };
 
   for (const chunk of chunkArray(productIds, 120)) {
     let offset = 0;
@@ -443,7 +451,8 @@ export async function fetchMarketplaceSalesAggregates(
       const { data, error } = await supabase
         .from("amazon_fba_sales_daily_raw")
         .select("producto_id, sale_date, quantity, amount, ship_to_country, raw")
-        .gte("sale_date", from90Str)
+        .gte("sale_date", queryFrom)
+        .lte("sale_date", toDate)
         .in("producto_id", chunk)
         .order("sale_date", { ascending: true })
         .range(offset, offset + pageSize - 1);
@@ -474,10 +483,15 @@ export async function fetchMarketplaceSalesAggregates(
         const agg =
           byProductMarketplace.get(key) ??
           emptyMarketplaceSalesAgg(marketplaceCountry);
-        const in30d = row.sale_date >= from30Str;
+        const in30d = isDateInInclusiveWindow(row.sale_date, window30);
+        const in90d = isDateInInclusiveWindow(row.sale_date, window90);
 
-        agg.units90 += quantity;
-        agg.amount90 += safeAmount;
+        if (!in30d && !in90d) continue;
+
+        if (in90d) {
+          agg.units90 += quantity;
+          agg.amount90 += safeAmount;
+        }
         if (in30d) {
           agg.units30 += quantity;
           agg.amount30 += safeAmount;
@@ -487,13 +501,15 @@ export async function fetchMarketplaceSalesAggregates(
           agg.salesChannels.sort((a, b) => a.localeCompare(b));
         }
 
-        addMarketplaceDeliveryBreakdown(
-          agg,
-          normalizeShipCountry(row.ship_to_country),
-          quantity,
-          safeAmount,
-          in30d,
-        );
+        if (in90d) {
+          addMarketplaceDeliveryBreakdown(
+            agg,
+            normalizeShipCountry(row.ship_to_country),
+            quantity,
+            safeAmount,
+            in30d,
+          );
+        }
         byProductMarketplace.set(key, agg);
       }
 

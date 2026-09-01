@@ -265,6 +265,10 @@ async function loadInventoryContextFromProducts(
       fetchMarketplaceSalesAggregates(productIds, {
         window30Days: safeWindowDays,
         window90Days: 90,
+        periodRange: {
+          fromDate: periodFrom,
+          toDate: periodTo,
+        },
       }),
     ),
 

@@ -14,7 +14,7 @@ Patrón preferido:
 Browser
   -> Next.js /api/*
   -> servicio/repository server-side
-  -> Supabase / Amazon / Google Drive / Stockagile / otros terceros
+  -> Supabase / Amazon / Google Drive / otros terceros
 ```
 
 - Evitar introducir nuevas dependencias browser-directas hacia terceros cuando

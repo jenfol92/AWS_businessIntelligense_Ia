@@ -1359,66 +1359,6 @@ async function fetchFbaPriceDistributionRows(params: {
   return rows;
 }
 
-async function fetchStockagilePriceDistributionRows(params: {
-  productId: string;
-  country: string;
-  fromDate: string;
-  toDate?: string | null;
-}): Promise<RawPriceRow[]> {
-  const supabase = supabaseAdmin;
-  const rows: RawPriceRow[] = [];
-  let offset = 0;
-  const pageSize = 1000;
-  if (!params.productId) return rows;
-
-  for (;;) {
-    const { data, error } = await supabase
-      .from("stockagile_orders_raw")
-      .select("order_date, quantity, gross_amount")
-      .eq("producto_id", params.productId)
-      .eq("country", params.country)
-      .eq("source", "stockagile_fbm_sales")
-      .eq("is_twinly", true)
-      .not("producto_id", "is", null)
-      .gte("order_date", params.fromDate)
-      .lte("order_date", normalizeIsoDate(params.toDate) ?? todayIsoDate())
-      .neq("quantity", 0)
-      .order("order_date", { ascending: false })
-      .range(offset, offset + pageSize - 1);
-
-    if (error) {
-      if (
-        String(error.message ?? "").includes("stockagile_orders_raw") ||
-        String(error.code ?? "") === "42P01"
-      ) {
-        return rows;
-      }
-      throw new Error(error.message);
-    }
-
-    for (const row of data ?? []) {
-      const quantity = Number((row as { quantity?: unknown }).quantity ?? 0);
-      const amount = Number((row as { gross_amount?: unknown }).gross_amount ?? 0);
-      if (!Number.isFinite(quantity) || quantity === 0) continue;
-      if (!Number.isFinite(amount) || amount <= 0) continue;
-
-      rows.push({
-        unitPrice: amount / quantity,
-        units: quantity,
-        grossAmount: amount,
-        lastSaleDate: String((row as { order_date?: unknown }).order_date ?? "").slice(0, 10),
-        source: "stockagile_fbm_sales",
-        country: params.country,
-      });
-    }
-
-    if ((data ?? []).length < pageSize) break;
-    offset += pageSize;
-  }
-
-  return rows;
-}
-
 export async function fetchCountryPriceDistribution(params: {
   productId: string;
   country: string;
@@ -1450,18 +1390,6 @@ export async function fetchCountryPriceDistribution(params: {
     addPriceRowsToDistribution(
       grouped,
       await fetchFbaPriceDistributionRows({
-        productId: params.productId,
-        country: params.country,
-        fromDate: fromStr,
-        toDate: toStr,
-      }),
-    );
-  }
-
-  if (channel === "ALL" || channel === "FBM") {
-    addPriceRowsToDistribution(
-      grouped,
-      await fetchStockagilePriceDistributionRows({
         productId: params.productId,
         country: params.country,
         fromDate: fromStr,
@@ -1562,61 +1490,6 @@ export async function fetchTopPriceByProductCountry(params: {
               lastSaleDate: String((row as { sale_date?: unknown }).sale_date ?? "").slice(0, 10),
               source: "spapi_fba_customer_shipment_sales",
               country,
-            } satisfies RawPriceRow,
-          ];
-        }),
-      );
-
-      if ((data ?? []).length < pageSize) break;
-      offset += pageSize;
-    }
-  }
-
-  if (channel === "ALL" || channel === "FBM") {
-    const supabase = supabaseAdmin;
-    let offset = 0;
-    const pageSize = 1000;
-
-    for (;;) {
-      const { data, error } = await supabase
-        .from("stockagile_orders_raw")
-        .select("order_date, quantity, gross_amount, country")
-        .eq("producto_id", params.productId)
-        .in("country", countries)
-        .eq("source", "stockagile_fbm_sales")
-        .eq("is_twinly", true)
-        .not("producto_id", "is", null)
-        .gte("order_date", params.fromDate)
-        .lte("order_date", params.toDate)
-        .neq("quantity", 0)
-        .order("order_date", { ascending: false })
-        .range(offset, offset + pageSize - 1);
-
-      if (error) {
-        if (
-          String(error.message ?? "").includes("stockagile_orders_raw") ||
-          String(error.code ?? "") === "42P01"
-        ) {
-          break;
-        }
-        throw new Error(error.message);
-      }
-
-      addRows(
-        (data ?? []).flatMap((row) => {
-          const quantity = Number((row as { quantity?: unknown }).quantity ?? 0);
-          const amount = Number((row as { gross_amount?: unknown }).gross_amount ?? 0);
-          if (!Number.isFinite(quantity) || quantity === 0) return [];
-          if (!Number.isFinite(amount) || amount <= 0) return [];
-
-          return [
-            {
-              unitPrice: amount / quantity,
-              units: quantity,
-              grossAmount: amount,
-              lastSaleDate: String((row as { order_date?: unknown }).order_date ?? "").slice(0, 10),
-              source: "stockagile_fbm_sales",
-              country: String((row as { country?: unknown }).country ?? "").trim().toUpperCase(),
             } satisfies RawPriceRow,
           ];
         }),

@@ -23,14 +23,45 @@ function lastDayOfWindow(fromMonth: string, months: number): string {
 
 const AMAZON_OBSERVATION_PAGE_SIZE = 1000;
 
-async function findAllAmazonTreasuryObservations() {
+function readSuccessfulSyncObservationAt(
+  lastResult: unknown,
+): string | null {
+  if (!lastResult || typeof lastResult !== "object") return null;
+  const observations = (lastResult as Record<string, unknown>).observations;
+  if (!observations || typeof observations !== "object") return null;
+  const observedAt = (observations as Record<string, unknown>).observedAt;
+  return typeof observedAt === "string" && observedAt.length > 0 ? observedAt : null;
+}
+
+async function readLatestSuccessfulAmazonObservationAt() {
+  const { data, error } = await supabaseAdmin
+    .from("finance_amazon_sync_state")
+    .select("status, last_result")
+    .eq("sync_key", "amazon_financial_planning")
+    .maybeSingle();
+  if (error) return { data: null, error };
+  if (!data) {
+    return { data: null, error: null };
+  }
+  return {
+    data: readSuccessfulSyncObservationAt(data.last_result),
+    error: null,
+  };
+}
+
+async function findCurrentAmazonTreasuryObservations() {
+  const syncAtResult = await readLatestSuccessfulAmazonObservationAt();
+  if (syncAtResult.error) return { data: null, error: syncAtResult.error };
+  const snapshotAt = syncAtResult.data;
+  if (!snapshotAt) return { data: [], error: null };
+
   const rows: Record<string, unknown>[] = [];
   for (let from = 0; ; from += AMAZON_OBSERVATION_PAGE_SIZE) {
     const { data, error } = await supabaseAdmin
       .from("finance_amazon_treasury_forecast_snapshots")
       .select("*")
+      .eq("snapshot_at", snapshotAt)
       .in("economic_state", ["AVAILABLE", "DEFERRED", "PENDING_BANK"])
-      .order("snapshot_at", { ascending: false })
       .order("id", { ascending: false })
       .range(from, from + AMAZON_OBSERVATION_PAGE_SIZE - 1);
     if (error) return { data: null, error };
@@ -153,7 +184,7 @@ export async function findFinancialPlanningData(
       .gte("forecast_date", fromDate)
       .lte("forecast_date", toDate)
       .order("forecast_date", { ascending: true }),
-    findAllAmazonTreasuryObservations(),
+    findCurrentAmazonTreasuryObservations(),
     supabase
       .from("finance_settings")
       .select("*")

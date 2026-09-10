@@ -870,8 +870,8 @@ export async function buildFinancialPlanning(
   const amazonExpectedNetRatio = amazonExpectedNetRatioRaw == null
     ? null
     : asNumber(amazonExpectedNetRatioRaw);
-  const latestObservations=Array.from(new Map(raw.amazonTreasuryObservations
-    .slice().sort((a,b)=>String(a["snapshot_at"]??"").localeCompare(String(b["snapshot_at"]??"")))
+  const currentObservations=Array.from(new Map(raw.amazonTreasuryObservations
+    .slice().sort((a,b)=>String(a["id"]??"").localeCompare(String(b["id"]??"")))
     .map(row=>[String(row["source_key"]),row])).values());
   for (const income of raw.amazonIncomeForecasts.filter(row=>!["AVAILABLE","DEFERRED","PENDING_BANK"].includes(String(row["economic_state"]??"").toUpperCase()))) {
     const incomeStatus=String(income["status"]??"projected").toLowerCase();
@@ -919,7 +919,7 @@ export async function buildFinancialPlanning(
       canMarkPaid: false,
     });
   }
-  for(const observation of latestObservations){
+  for(const observation of currentObservations){
     const state=String(observation["economic_state"]) as "AVAILABLE"|"DEFERRED"|"PENDING_BANK";
     const amountRaw=observation["official_amount_eur"]??observation["amount_eur"]??observation["estimated_amount_eur"];
     const amountEur=amountRaw==null?null:asNumber(amountRaw);const originalAmount=asNumber(observation["original_amount"]);const originalCurrency=String(observation["original_currency"]??"EUR");const persistedBankDate=asString(observation["expected_bank_date"]);const actualRequestAt=asString(observation["fund_transfer_at"]);const expectedBankDate=state==="AVAILABLE"?null:state==="PENDING_BANK"?expectedBankDateForPending(actualRequestAt)??persistedBankDate:persistedBankDate;const unresolved=String(observation["marketplace"]??"UNRESOLVED")==="UNRESOLVED";
@@ -928,7 +928,7 @@ export async function buildFinancialPlanning(
 
   const fromMonth = query.fromMonth ?? accountingDate().slice(0, 7);
   const monthsCount = query.months ?? 6;
-  const amazonCashItems:AmazonCashItem[]=[...raw.amazonIncomeForecasts.filter(row=>String(row["economic_state"]??"").toUpperCase()==="FUTURE"),...latestObservations].flatMap((income)=>{
+  const amazonCashItems:AmazonCashItem[]=[...raw.amazonIncomeForecasts.filter(row=>String(row["economic_state"]??"").toUpperCase()==="FUTURE"),...currentObservations].flatMap((income)=>{
     const state=String(income["economic_state"]??"").toUpperCase();
     if(!["RECEIVED","PENDING_BANK","AVAILABLE","DEFERRED","FUTURE"].includes(state))return [];
     const officialRaw=income["official_amount_eur"]??income["official_converted_amount_eur"];const official=officialRaw==null?null:asNumber(officialRaw);
@@ -1055,7 +1055,7 @@ export async function buildFinancialPlanning(
       plannedIncome: horizonEvents
         .filter((event) => !event.isInformational && event.type === "amazon_income" && event.status !== "pagado")
         .reduce((sum, event) => sum + event.plannedAmountEur, 0),
-      amazonAvailable: latestObservations.filter(row=>String(row["economic_state"]??"")==="AVAILABLE"&&String(row["marketplace"]??"")!=="UNRESOLVED"&&(row["official_amount_eur"]??row["amount_eur"])!=null&&asNumber(row["original_amount"])>0).reduce((sum,row)=>sum+asNumber(row["official_amount_eur"]??row["amount_eur"]),0),
+      amazonAvailable: currentObservations.filter(row=>String(row["economic_state"]??"")==="AVAILABLE"&&String(row["marketplace"]??"")!=="UNRESOLVED"&&(row["official_amount_eur"]??row["amount_eur"])!=null&&asNumber(row["original_amount"])>0).reduce((sum,row)=>sum+asNumber(row["official_amount_eur"]??row["amount_eur"]),0),
       amazonAvailableSource: "Liquidez Amazon para solicitar; permanece fuera de caja bancaria.",
       amazonExpected: raw.amazonIncomeForecasts
         .filter((row) => String(row["economic_state"]??"")==="FUTURE"&&row["treasury_amount_eur"]!=null)

@@ -1,3 +1,8 @@
+import { monthlyAmazonEstimate } from "../utils/monthlyAmazonEstimate";
+import { accountingDate } from "../utils/accountingDate";
+import { buildMonthlyTotals } from "../utils/buildMonthlyTotals";
+import { buildRecurringPaymentEvents } from "./buildRecurringPaymentEvents";
+import { resolvePlannedFx } from "../utils/monthlyPaymentSummary";
 import { findFinancialPlanningData } from "../repositories/financialPlanningRepository";
 import {
   isActiveCreditLineStatus,
@@ -54,32 +59,6 @@ function asString(value: unknown): string | null {
 function sumKnown(values: Array<number | null | undefined>): number | null {
   const known = values.filter((value): value is number => value != null && Number.isFinite(value));
   return known.length > 0 ? known.reduce((sum, value) => sum + value, 0) : null;
-}
-
-function eventCategory(event: FinancePlanningEvent): "lines" | "deposits" | "balances" | "others" {
-  if (event.obligationCategory) return event.obligationCategory;
-  if (["credit_line_maturity", "credit_line_planned_maturity", "credit_line_repayment_settlement"].includes(event.type)) return "lines";
-  if (event.type === "supplier_deposit") return "deposits";
-  if (event.type === "supplier_balance") return "balances";
-  return "others";
-}
-
-function buildMonthlyTotals(events: FinancePlanningEvent[]) {
-  const empty = { lines: 0, deposits: 0, balances: 0, others: 0, total: 0 };
-  const pending = { ...empty };
-  const paid = { ...empty };
-  for (const event of events) {
-    if (event.isInformational || event.type === "amazon_income") continue;
-    const category = eventCategory(event);
-    if (["pendiente", "parcial", "vencido"].includes(event.status)
-      || (event.type === "credit_line_planned_maturity" && event.status === "previsto")) {
-      pending[category] += event.plannedAmountEur;
-    }
-    if (event.status === "pagado") paid[category] += paidEventAmountEur(event);
-  }
-  pending.total = pending.lines + pending.deposits + pending.balances + pending.others;
-  paid.total = paid.lines + paid.deposits + paid.balances + paid.others;
-  return { totalPendingPayments: pending.total, totalPaidPayments: paid.total, pendingBreakdown: pending, paidBreakdown: paid };
 }
 
 function paidRealAmountEur(payment: Record<string, unknown>): number {
@@ -216,7 +195,7 @@ function statusFromRow(
   if (paidAt || status === "pagado") return "pagado";
   if (status === "parcial") return "parcial";
   if (status === "vencido") return "vencido";
-  if (date && date < new Date().toISOString().slice(0, 10)) return "vencido";
+  if (date && date < accountingDate()) return "vencido";
   return "pendiente";
 }
 
@@ -291,9 +270,9 @@ function buildSupplierPaymentEvents(
       : paidRealAmountOriginal(payment);
     const pendingOriginal = Math.max(0, plannedOriginalAmount - allocatedOriginal);
     const originalCurrency = (asString(payment["original_currency"]) ?? "USD").toUpperCase();
-    const plannedFxForeignPerEur = originalCurrency === "EUR"
-      ? 1
-      : (asNumber(payment["planned_fx_foreign_per_eur"], 0) || null);
+    const plannedFx = resolvePlannedFx(originalCurrency, payment["planned_fx_foreign_per_eur"],
+      order?.["planned_fx_foreign_per_eur"], order?.["moneda_compra"]);
+    const plannedFxForeignPerEur = plannedFx.rate;
     const plannedFxPending = originalCurrency !== "EUR" && plannedFxForeignPerEur == null;
     const plannedFxRate = asNumber(payment["planned_fx_rate"], 0) || (originalCurrency === "EUR" ? 1 : null);
     const actualAmountEur = (allocationStats.count > 0
@@ -393,7 +372,7 @@ function buildSupplierPaymentEvents(
       plannedFxPending,
       estimatedPendingEur: plannedFxPending ? null : displayAmountEur,
       provisionalCostEur: plannedFxPending ? null : (actualAmountEur ?? 0) + displayAmountEur,
-      plannedFxSource: plannedFxRate != null ? "legacy" : "not_configured",
+      plannedFxSource: plannedFx.source,
       plannedAmountEur: displayAmountEur,
       paidAmountEur: null,
       actualAmountOriginal,
@@ -599,7 +578,7 @@ function buildCreditLineRepaymentGroupEvents(
   creditLines: FinanceCreditLine[],
 ): FinancePlanningEvent[] {
   const events: FinancePlanningEvent[] = [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = accountingDate();
   const legacyCosts = new Map(raw.creditLineLegacyRegularizationItems.map((item) => [
     asString(item["repayment_group_id"]),
     {
@@ -724,7 +703,7 @@ function buildCreditLineRepaymentSettlementEvents(
 }
 
 function buildCreditLinePlannedMaturityEvents(raw: FinancePlanningRawData): FinancePlanningEvent[] {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = accountingDate();
   return raw.creditLinePlannedMaturities.map((row) => {
     const relation = row["finance_credit_lines"] as Record<string, unknown> | Record<string, unknown>[] | null;
     const line = Array.isArray(relation) ? relation[0] : relation;
@@ -796,18 +775,13 @@ function buildCreditLineInformationalEvents(
 }
 
 function isSupplierOrContainerPayment(type: string): boolean {
-  return type.startsWith("supplier_") || type.startsWith("container_");
+  return type === "unlinked_obligation" || type.startsWith("supplier_") || type.startsWith("container_");
 }
 
 function effectiveEventAmountEur(event: FinancePlanningEvent): number {
   return event.plannedAmountEur;
 }
 
-function paidEventAmountEur(event: FinancePlanningEvent): number {
-  if (event.type === "supplier_payment_settlement") return event.allocatedAmountEur ?? 0;
-  if (event.type === "supplier_deposit" || event.type === "supplier_balance") return 0;
-  return event.status === "pagado" ? effectiveEventAmountEur(event) : 0;
-}
 
 /**
  * Construye la planificacion visual mensual sin decidir por coste de linea.
@@ -883,6 +857,7 @@ export async function buildFinancialPlanning(
   );
 
   const events = [
+    ...buildRecurringPaymentEvents(raw.recurringPayments ?? []),
     ...buildSupplierPaymentEvents(raw, activeCreditLines, Math.max(0,cashBalance-minimumOperatingReserveEur)),
     ...buildContainerLogisticsEvents(raw, activeCreditLines, Math.max(0,cashBalance-minimumOperatingReserveEur)),
     ...repaymentGroupEvents,
@@ -951,7 +926,7 @@ export async function buildFinancialPlanning(
     events.push({id:String(observation["id"]),type:"amazon_income",title:`Amazon ${state.toLowerCase().replace("_"," ")}`,date:expectedBankDate,month:dateToMonth(expectedBankDate),isPendingDate:!expectedBankDate,status:"previsto",amazonStatus:state,amazonConfidence:asString(observation["confidence"]),amazonEstimationMethod:asString(observation["estimation_method"]),sourceKey:asString(observation["source_key"]),settlementId:asString(observation["financial_event_group_id"]),marketplace:String(observation["marketplace"]??"UNRESOLVED"),dateIsEstimated:true,isInformational:unresolved||amountEur==null||state==="DEFERRED"||state==="AVAILABLE",containerId:null,containerCode:null,orderId:null,orderCode:null,numeroPedidoAgente:null,agentContact:null,logisticsType:"SIN_DEFINIR",originalAmount,originalCurrency,plannedFxRate:null,plannedFxSource:"not_configured",plannedAmountEur:amountEur??0,paidAmountEur:null,recommendedSource:null,recommendationReason:unresolved?"Marketplace no resuelto; excluido del consolidado.":amountEur==null?`Importe ${originalCurrency} sin conversion EUR; excluido del consolidado.`:state==="AVAILABLE"?"Liquidez Amazon disponible para solicitar; no es caja ni ingreso bancario confirmado.":`Snapshot observacional ${state}; no modifica caja.`,canMarkPaid:false});
   }
 
-  const fromMonth = query.fromMonth ?? new Date().toISOString().slice(0, 7);
+  const fromMonth = query.fromMonth ?? accountingDate().slice(0, 7);
   const monthsCount = query.months ?? 6;
   const amazonCashItems:AmazonCashItem[]=[...raw.amazonIncomeForecasts.filter(row=>String(row["economic_state"]??"").toUpperCase()==="FUTURE"),...latestObservations].flatMap((income)=>{
     const state=String(income["economic_state"]??"").toUpperCase();
@@ -975,8 +950,7 @@ export async function buildFinancialPlanning(
     const monthEvents = datedPlanningEvents
       .filter((event) => event.month === month || (
         index === 0
-        && event.type === "credit_line_maturity"
-        && event.isLegacyOpeningBalance
+        && (event.type === "unlinked_obligation" || (event.type === "credit_line_maturity" && event.isLegacyOpeningBalance))
         && Boolean(event.date && event.date < horizonStart)
       ))
       .sort((a, b) => (a.date ?? "9999-12-31").localeCompare(b.date ?? "9999-12-31"));
@@ -1027,6 +1001,7 @@ export async function buildFinancialPlanning(
       amazonAvailableEur:datedEvents.filter(event=>!event.isInformational&&event.type==="amazon_income"&&event.amazonStatus==="AVAILABLE").reduce((sum,event)=>sum+event.plannedAmountEur,0),
       amazonPendingBankEur:datedEvents.filter(event=>!event.isInformational&&event.type==="amazon_income"&&event.amazonStatus==="PENDING_BANK").reduce((sum,event)=>sum+event.plannedAmountEur,0),
       amazonDeferredEur:datedEvents.filter(event=>!event.isInformational&&event.type==="amazon_income"&&event.amazonStatus==="DEFERRED").reduce((sum,event)=>sum+event.plannedAmountEur,0),
+      amazonMonthlyEstimateEur: monthlyAmazonEstimate(raw.amazonIncomeForecasts, month),
       amazonFutureEur:datedEvents.filter(event=>!event.isInformational&&event.type==="amazon_income"&&event.amazonStatus==="FUTURE").reduce((sum,event)=>sum+event.plannedAmountEur,0),
       amazonIncomes: datedEvents.filter(event=>event.type==="amazon_income").map(event=>({
         amazonExpectedEur:event.amazonStatus==="FUTURE"&&!event.isInformational?event.plannedAmountEur:0,
@@ -1067,6 +1042,7 @@ export async function buildFinancialPlanning(
   const europeCard=buildMarketplaceCashCards(europeItems)[0];
   return {
     ok: true,
+    recurringPaymentsWarning: raw.recurringPaymentsWarning,
     summary: {
       totalActiveCreditLimit,
       totalCreditUsed,

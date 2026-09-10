@@ -1,4 +1,6 @@
 export type FinanceEventType =
+  | "unlinked_obligation"
+  | "unlinked_payment_settlement"
   | "supplier_deposit"
   | "supplier_balance"
   | "supplier_payment_settlement"
@@ -51,9 +53,13 @@ export type FinanceCashAccount = {
 };
 
 export type FinancePlanningEvent = {
+  unlinkedInstallmentId?: string;
+  unlinkedTemplateId?: string;
+  paymentTypeName?: string;
   id: string;
   type: FinanceEventType;
   title: string;
+  displayDate?: string;
   date: string | null;
   month: string | null;
   isPendingDate: boolean;
@@ -81,7 +87,7 @@ export type FinancePlanningEvent = {
   plannedFxPending?: boolean;
   estimatedPendingEur?: number | null;
   provisionalCostEur?: number | null;
-  plannedFxSource: "legacy" | "order" | "container" | "global_setting" | "not_configured";
+  plannedFxSource: "legacy" | "payment" | "order" | "container" | "global_setting" | "not_configured";
   plannedAmountEur: number;
   paidAmountEur: number | null;
   actualAmountOriginal?: number | null;
@@ -154,6 +160,7 @@ export type FinanceMonthBucket = {
   amazonAvailableEur: number;
   amazonPendingBankEur: number;
   amazonDeferredEur: number;
+  amazonMonthlyEstimateEur?: number | null;
   amazonFutureEur: number;
   amazonIncomes: FinanceMonthlyAmazonIncome[];
   totalCreditReleases: number;
@@ -232,6 +239,7 @@ export type FinancePlanningSummary = {
 
 export type FinancePlanningResponse = {
   ok: true;
+  recurringPaymentsWarning?: string | null;
   summary: FinancePlanningSummary;
   creditLines: FinanceCreditLine[];
   cashAccounts: FinanceCashAccount[];
@@ -256,6 +264,8 @@ export type FinancePlanningQuery = {
 };
 
 export type FinancePlanningRawData = {
+  recurringPayments?: Record<string, unknown>[];
+  recurringPaymentsWarning?: string | null;
   containers: Record<string, unknown>[];
   supplierPayments: Record<string, unknown>[];
   creditLines: Record<string, unknown>[];

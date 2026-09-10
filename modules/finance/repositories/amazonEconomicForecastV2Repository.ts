@@ -15,3 +15,35 @@ export async function readTargetPricesAdmin(productIds:string[]){
 export async function readLatestFeePreviewContentAdmin(){
   const {data,error}=await supabaseAdmin.from("amazon_spapi_report_jobs").select("report_id,completed_at,raw").eq("report_type","GET_FBA_ESTIMATED_FBA_FEES_TXT_DATA").not("report_id","is",null).order("completed_at",{ascending:false,nullsFirst:false}).limit(1).maybeSingle();if(error)throw new Error(error.message);const raw=data?.raw as Record<string,unknown>|null;return data&&typeof raw?.reportContent==="string"?{reportId:String(data.report_id),observedAt:String(data.completed_at),content:raw.reportContent}:null;
 }
+
+export type AmazonOperationalFbaStockRow={
+  producto_id:string;
+  stock_fba_pan_eu:number;
+  stock_fba_uk:number;
+  stock_fba_total:number;
+  observed_at:string;
+  dual_pool_complete:boolean;
+};
+
+export async function readLatestOperationalFbaStockAdmin(productIds:string[]):Promise<Map<string,AmazonOperationalFbaStockRow>>{
+  if(!productIds.length)return new Map();
+  const rows:AmazonOperationalFbaStockRow[]=[];
+  for(let start=0;start<productIds.length;start+=200){
+    const {data,error}=await supabaseAdmin
+      .from("v_latest_amazon_fba_inventory_by_product_operational_total")
+      .select("producto_id,stock_fba_pan_eu,stock_fba_uk,stock_fba_total,observed_at,dual_pool_complete")
+      .in("producto_id",productIds.slice(start,start+200));
+    if(error)throw new Error(error.message);
+    for(const row of data??[]){
+      rows.push({
+        producto_id:String(row.producto_id),
+        stock_fba_pan_eu:Number(row.stock_fba_pan_eu??0),
+        stock_fba_uk:Number(row.stock_fba_uk??0),
+        stock_fba_total:Number(row.stock_fba_total??0),
+        observed_at:String(row.observed_at??""),
+        dual_pool_complete:Boolean(row.dual_pool_complete),
+      });
+    }
+  }
+  return new Map(rows.map(row=>[row.producto_id,row]));
+}

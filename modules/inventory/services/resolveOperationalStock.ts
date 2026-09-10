@@ -19,13 +19,20 @@ export type LatestFbaInventorySnapshotStock = {
   snapshotAt: string;
   fulfillableQuantity: number;
   reservedQuantity: number | null;
+  pendingTransshipmentQuantity: number | null;
   inboundQuantity: number | null;
   unfulfillableQuantity: number | null;
+  researchingQuantity?: number | null;
   source: string;
   stockFbaPanEu?: number;
   stockFbaUk?: number;
   stockFbaTotal?: number;
   dualPoolComplete?: boolean;
+};
+
+export type LatestFbmInventorySnapshotStock = {
+  availableQuantity: number;
+  observedAt: string;
 };
 
 export type InventarioPaisStockRow = {
@@ -62,13 +69,20 @@ export type OperationalStockSummary = {
   stockFbaLatestSnapshot: number | null;
   stockFbaLatestSnapshotAt: string | null;
   stockFbaLatestSnapshotSource: string | null;
+  stockFbaPanEu: number | null;
+  stockFbaUk: number | null;
+  stockFbaReserved: number | null;
+  stockFbaInbound: number | null;
+  stockFbaUnfulfillable: number | null;
+  stockFbaResearching: number | null;
+  stockFbaDualPoolComplete: boolean;
   /** Máximo updated_at entre filas inventario_paises del producto. */
   stockFbaAppLatestUpdatedAt: string | null;
   stockFbaDiscrepancy: boolean;
   stockOperationalFba: number;
   stockOperationalFbaSource: OperationalStockFbaSource;
-  stockOperationalFbm: number;
-  stockOperationalTotal: number;
+  stockOperationalFbm: number | null;
+  stockOperationalTotal: number | null;
   discrepancyMessage: string | null;
   fbaInventorySyncStatus?: AmazonSyncJobStatus | null;
 };
@@ -137,7 +151,6 @@ function resolveOperationalFbaSource(params: {
 }): OperationalStockFbaSource {
   const { hasSnapshot, hasCountryRows } = params;
   if (hasSnapshot) return "fba_inventory_snapshot";
-  if (hasCountryRows) return "country_inventory";
   return "none";
 }
 
@@ -197,6 +210,7 @@ export function buildOperationalStockSummary(
   ledger: LatestFbaLedgerStock | null | undefined,
   snapshot: LatestFbaInventorySnapshotStock | null | undefined,
   options: BuildOperationalStockOptions = {},
+  fbmSnapshot?: LatestFbmInventorySnapshotStock | null,
 ): OperationalStockSummary {
   const now = options.now ?? new Date();
   const stockFbaApp = sumInventarioFba(inventoryRows);
@@ -217,9 +231,19 @@ export function buildOperationalStockSummary(
   const snapshotIdentityConflict = snapshot?.identityConflict === true;
   const stockFbaLatestSnapshot = snapshotIdentityConflict
     ? null
-    : snapshot?.fulfillableQuantity ?? null;
+    : snapshot
+    ? snapshot.fulfillableQuantity + (snapshot?.pendingTransshipmentQuantity ?? 0)
+     : null;
   const stockFbaLatestSnapshotAt = snapshotIdentityConflict ? null : snapshot?.snapshotAt ?? null;
   const stockFbaLatestSnapshotSource = snapshotIdentityConflict ? null : snapshot?.source ?? null;
+  const stockFbaPanEu = snapshotIdentityConflict ? null : snapshot?.stockFbaPanEu ?? null;
+  const stockFbaUk = snapshotIdentityConflict ? null : snapshot?.stockFbaUk ?? null;
+  const stockFbaReserved = snapshotIdentityConflict ? null : snapshot ? Math.max(0, (snapshot.reservedQuantity ?? 0)-(snapshot.pendingTransshipmentQuantity ?? 0)) : null;
+  const stockFbaPendingTransshipment = snapshotIdentityConflict ? null : snapshot?.pendingTransshipmentQuantity ?? null;
+  const stockFbaInbound = snapshotIdentityConflict ? null : snapshot?.inboundQuantity ?? null;
+  const stockFbaUnfulfillable = snapshotIdentityConflict ? null : snapshot?.unfulfillableQuantity ?? null;
+  const stockFbaResearching = snapshotIdentityConflict ? null : snapshot?.researchingQuantity ?? null;
+  const stockFbaDualPoolComplete = !snapshotIdentityConflict && snapshot?.dualPoolComplete === true;
   const stockFbaAppLatestUpdatedAt = latestInventarioPaisesUpdatedAt(inventoryRows);
 
   const hasSnapshot =
@@ -247,8 +271,10 @@ export function buildOperationalStockSummary(
     stockFbaApp,
     stockFbaLatestLedger,
   );
-  const stockOperationalFbm = stockFbmApp;
-  const stockOperationalTotal = stockOperationalFba + stockOperationalFbm;
+  const stockOperationalFbm = fbmSnapshot?.availableQuantity ?? null;
+  const stockOperationalTotal = stockOperationalFbm == null
+    ? null
+    : stockOperationalFba + stockOperationalFbm;
 
   const stockFbaDiscrepancy =
     (hasSnapshot && hasCountryRows && Math.abs(stockFbaApp - stockFbaLatestSnapshot) > 0) ||
@@ -272,6 +298,13 @@ export function buildOperationalStockSummary(
     stockFbaLatestSnapshot,
     stockFbaLatestSnapshotAt,
     stockFbaLatestSnapshotSource,
+    stockFbaPanEu,
+    stockFbaUk,
+    stockFbaReserved,
+    stockFbaInbound,
+    stockFbaUnfulfillable,
+    stockFbaResearching,
+    stockFbaDualPoolComplete,
     stockFbaAppLatestUpdatedAt,
     stockFbaDiscrepancy,
     stockOperationalFba,
@@ -302,7 +335,7 @@ export function resolveOpeningStockForScope(
     channelScope.filter === "ALL" &&
     operational
   ) {
-    return operational.stockOperationalTotal;
+    return operational.stockOperationalTotal ?? operational.stockOperationalFba;
   }
 
   if (

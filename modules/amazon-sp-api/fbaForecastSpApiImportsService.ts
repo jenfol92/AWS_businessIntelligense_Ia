@@ -26,8 +26,9 @@ import {
 } from "./reportsClient";
 import { inventoryIdentityKey, resolveProductMatchesBySku } from "./skuProductMatching";
 import {
+  buildCanonicalSalesMarketplaceScope,
+  observedValidSalesMarketplaceId,
   resolveFbaSaleCountry,
-  salesChannelToMarketplaceId,
 } from "./marketplaceMapping";
 import type { SpApiReport } from "./types";
 import { importAmazonFbaLedgerSummaryFromText } from "@/modules/imports/amazon-fba-ledger-summary/service";
@@ -50,6 +51,10 @@ import {
   persistInventorySummaryRequestTelemetry,
   type InventorySummaryRequestTelemetry,
 } from "./inventorySummaryRequestTelemetry";
+import {
+  PAN_EU_REFERENCE_MARKETPLACE_ID,
+  UK_REFERENCE_MARKETPLACE_ID,
+} from "./inventorySummaryPoolPolicy";
 
 const AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE =
   "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL";
@@ -342,6 +347,8 @@ async function parseAndPersistFbaSalesReportDocument(
   const importedAt = new Date().toISOString();
   let matchedRows = 0;
   let unmatchedRows = 0;
+  const observedValidMarketplaceIds = new Set<string>();
+  const unknownSalesChannels = new Set<string>();
 
   const dbRows = rawRows.flatMap((sourceRow, index) => {
     const row = normalizedRows[index] ?? normalizeAmazonFulfilledShipmentRow(sourceRow);
@@ -364,10 +371,15 @@ async function parseAndPersistFbaSalesReportDocument(
       warnings.push(`Sin match de producto para venta FBA SKU ${skuOriginal}.`);
     }
 
-    const marketplaceId = firstNonEmpty(
-      getField(row, ["marketplace-id", "marketplace id"]),
-      salesChannelToMarketplaceId(getField(row, SALES_CHANNEL_FIELDS)) ?? "",
-    );
+    const salesChannel = getField(row, SALES_CHANNEL_FIELDS);
+    const marketplaceId = observedValidSalesMarketplaceId({
+      saleDate,
+      sku: skuOriginal,
+      quantity,
+      salesChannel,
+    }) ?? "";
+    if (marketplaceId) observedValidMarketplaceIds.add(marketplaceId);
+    else unknownSalesChannels.add(salesChannel || "(empty)");
     const amount = parseNumberOrNull(
       getField(row, ITEM_PRICE_FIELDS),
     );
@@ -412,7 +424,7 @@ async function parseAndPersistFbaSalesReportDocument(
           getField(row, FULFILLMENT_CHANNEL_FIELDS),
           "FBA",
         ),
-        sales_channel: getField(row, SALES_CHANNEL_FIELDS) || null,
+        sales_channel: salesChannel || null,
         row_fingerprint: rowFingerprint,
         raw: {
           ...rawSafe,
@@ -431,10 +443,24 @@ async function parseAndPersistFbaSalesReportDocument(
     dbRows,
     "row_fingerprint",
   );
+  for (const salesChannel of Array.from(unknownSalesChannels)) {
+    warnings.push(
+      `Sales-channel sin marketplace conocido: ${salesChannel}. La fila se conserva en RAW y se excluye del scope canonical.`,
+    );
+  }
+  const canonicalSyncMarketplaceIds = buildCanonicalSalesMarketplaceScope(
+    params.marketplaceIds,
+    Array.from(observedValidMarketplaceIds),
+  );
+  if (canonicalSyncMarketplaceIds.length === 0) {
+    throw new Error(
+      "No hay marketplaces solicitados u observados validos para sincronizar ventas FBA canonical.",
+    );
+  }
   const ventasDiariasSync = await syncVentasDiariasFromFbaSalesRaw({
     dateFrom: params.fromDate,
     dateTo: params.toDate,
-    marketplaceIds: params.marketplaceIds,
+    marketplaceIds: canonicalSyncMarketplaceIds,
   });
   if (ventasDiariasSync.skippedSourceConflicts > 0) {
     warnings.push(
@@ -1020,6 +1046,27 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
   if (publicationSummary.asinIdentityConflicts > 0) {
     throw new Error(`ASIN_IDENTITY_CONFLICT:${publicationSummary.asinIdentityConflicts}`);
   }
+  const processedAllSellerSkuBatches = batchesToProcess.length === sellerSkuBatches.length;
+  const panEuComplete =
+    processedAllSellerSkuBatches &&
+    marketplacesCompleted.includes(PAN_EU_REFERENCE_MARKETPLACE_ID);
+  const ukComplete =
+    processedAllSellerSkuBatches &&
+    marketplacesCompleted.includes(UK_REFERENCE_MARKETPLACE_ID);
+  const identityConflictCount =
+    publicationSummary.asinIdentityConflicts + publicationSummary.fnskuIdentityConflicts;
+  const readyForAtomicPublication =
+    panEuComplete &&
+    ukComplete &&
+    identityConflictCount === 0 &&
+    marketplaceIds.length === 2 &&
+    marketplaceIds.includes(PAN_EU_REFERENCE_MARKETPLACE_ID) &&
+    marketplaceIds.includes(UK_REFERENCE_MARKETPLACE_ID);
+  if (!readyForAtomicPublication) {
+    throw new Error(
+      `DUAL_POOL_PUBLICATION_PRECONDITIONS_FAILED:pan_eu=${panEuComplete}:uk=${ukComplete}:conflicts=${identityConflictCount}`,
+    );
+  }
   console.info("[amazon-inventory] publication preconditions PASS", publicationSummary);
   const { data: committedRows, error: commitError } = await supabaseAdmin.rpc(
     "commit_amazon_fba_inventory_snapshot_run",
@@ -1029,6 +1076,10 @@ export async function importFbaInventorySnapshotFromSpApi(params: {
       p_marketplace_ids: marketplaceIds,
       p_raw_row_count: summaries.length,
       p_rows: canonical.rows,
+      p_pan_eu_complete: panEuComplete,
+      p_uk_complete: ukComplete,
+      p_identity_conflict_count: identityConflictCount,
+      p_ready_for_atomic_publication: readyForAtomicPublication,
     },
   );
   if (commitError) throw new Error(commitError.message);

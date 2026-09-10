@@ -209,10 +209,11 @@ function inboundRowsToSchedule(
         (row.contenedorId ? ("confirmed" as const) : ("provisional" as const)),
       planningKind: row.planningKind,
       usableForPlanning:
-        row.usableForPlanning ??
-        (row.planningKind
-          ? inboundUsableForPlanning(row.planningKind)
-          : row.confidence !== "provisional"),
+        row.planningKind != null
+          ? inboundUsableForPlanning(row.planningKind) &&
+            row.usableForPlanning !== false
+          : row.confidence === "confirmed" &&
+            row.usableForPlanning === true,
       ordenId: row.ordenId,
       numeroOrden: row.numeroOrden,
       forecastCountry: row.forecastCountry ?? null,

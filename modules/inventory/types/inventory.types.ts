@@ -6,7 +6,7 @@ import type { DemandForecastResult } from "@/modules/planner/types/planner.types
 import type { ProductForecastConfigUpsertBody } from "@/modules/planning/types";
 import type { ForecastMethodInfo } from "../services/buildForecastMethodInfo";
 
-export type InventoryRiskLevel = "critico" | "bajo" | "ok" | "sin_ventas";
+export type InventoryRiskLevel = "critico" | "bajo" | "saludable" | "sin_ventas" | "exceso";
 
 export type InventoryForecastMethod =
   | "HISTORICAL_SIMPLE"
@@ -122,6 +122,7 @@ export type InventoryCountryStockRow = {
   /** FBA shipped units by customer delivery country (ventas_diarias.pais). */
   salesUnitsPeriod: number;
   salesUnits30: number;
+  salesUnits60: number;
   salesUnits90: number;
   /** FBA shipped units grouped by Amazon sales marketplace (raw sales-channel). */
   marketplaceSalesUnits30: number;
@@ -168,7 +169,7 @@ export type InventoryProductSummary = {
   proveedorNombre: string | null;
   stockTotal: number;
   stockFba: number;
-  stockFbm: number;
+  stockFbm: number | null;
   stockFbaOperationalSource?: string | null;
   stockFbaLatestSnapshot?: number | null;
   stockFbaLatestSnapshotAt?: string | null;
@@ -177,6 +178,7 @@ export type InventoryProductSummary = {
   hasFbaSnapshot?: boolean;
   salesUnitsPeriod: number;
   salesUnits30: number;
+  salesUnits60: number;
   salesUnits90: number;
   coverageDays: number | null;
   risk: InventoryRiskLevel;
@@ -401,6 +403,7 @@ export type InventoryProductDetailResponse = {
   annualForecast: AnnualInventoryForecast;
   /** Stock operativo (ledger FBA + FBM app) vs inventario_paises. */
   operationalStock?: OperationalStockSummary;
+  etaRisk?: import("../services/buildInventoryEtaRisk").InventoryEtaRisk;
   recentWindowDays: number;
   /** true cuando el detalle se calculó con overrides temporales (query params). */
   simulationActive?: boolean;
@@ -409,6 +412,44 @@ export type InventoryProductDetailResponse = {
   periodDays: number;
   periodFrom: string;
   periodTo: string;
+};
+export type InventoryProductCoreResponse = {
+  ok: true;
+  product: InventoryProductSummary;
+  countries: InventoryCountryStockRow[];
+  inbound: InventoryInboundRow[];
+  inboundUnitsTotal: number;
+  inboundUnitsConfirmedTotal?: number;
+  inboundUnitsProvisionalTotal?: number;
+
+  stockSuggestion: {
+    diasCobertura: number | null;
+    unidadesAPedir: number;
+    riesgo: string | null;
+    leadTimeDays: number | null;
+  } | null;
+
+  /** Stock operativo (ledger FBA + FBM app) vs inventario_paises. */
+  operationalStock?: OperationalStockSummary;
+
+  recentWindowDays: number;
+
+  /** true cuando el detalle se calculó con overrides temporales (query params). */
+  simulationActive?: boolean;
+
+  appliedForecastConfig?: ProductForecastConfigUpsertBody;
+
+  periodLabel: string;
+  periodDays: number;
+  periodFrom: string;
+  periodTo: string;
+};
+
+export type InventoryProductForecastResponse = {
+  ok: true;
+  forecast: InventoryForecastPanel;
+  annualForecast: AnnualInventoryForecast;
+  etaRisk?: import("../services/buildInventoryEtaRisk").InventoryEtaRisk;
 };
 
 export type InventoryComparisonParams = {
@@ -446,6 +487,7 @@ export type OperationalStockSummary = import("../services/resolveOperationalStoc
 export type SalesAgg = {
   unitsPeriod: number;
   units30: number;
+  units60: number;
   units90: number;
 };
 

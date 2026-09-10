@@ -84,6 +84,13 @@ type LogisticaRow = {
   peso_kg_bruto: number | null;
 };
 
+type OperationalStockRow = {
+  producto_id: string;
+  stock_fba_total: number | null;
+  observed_at: string | null;
+  dual_pool_complete: boolean | null;
+};
+
 function resolveWindowDays(params: PlannerParams): number {
   return params.windowDays ?? DEFAULT_WINDOW_DAYS;
 }
@@ -267,17 +274,28 @@ function seasonalityLabelFromProfileRow(row: Record<string, unknown>): string {
 async function fetchProductsBase(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   params: PlannerParams,
+  signal?: AbortSignal,
 ): Promise<ProductBaseRow[]> {
   const estados = params.includeNewProducts
     ? (["activo", "borrador"] as const)
     : (["activo"] as const);
 
-  const { data, error } = await supabase
+    let query = supabase
     .from("productos")
     .select(
       "id, sku, nombre, asin, proveedor_id, estado, parent_id",
     )
     .in("estado", [...estados]);
+
+    if (params.productIds?.length) {
+      query = query.in("id", params.productIds);
+    }
+
+    if (signal) {
+      query = query.abortSignal(signal);
+    }
+
+  const { data, error } = await query;
 
   if (error) throw new Error(error.message);
   return (data ?? []) as ProductBaseRow[];
@@ -286,40 +304,64 @@ async function fetchProductsBase(
 export async function fetchSuppliersMap(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   supplierIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, SupplierRow>> {
   const map = new Map<string, SupplierRow>();
   if (supplierIds.length === 0) return map;
 
   for (const chunk of chunkArray(supplierIds, 200)) {
-    const { data, error } = await supabase
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    let query = supabase
       .from("proveedores")
       .select(
         "id, nombre, puerto_preferido_id, dias_produccion_estandar, dias_transito_estandar, agente_id",
       )
       .in("id", chunk);
 
+    if (signal) {
+      query = query.abortSignal(signal);
+    }
+
+    const { data, error } = await query;
+
     if (error) throw new Error(error.message);
+
     for (const row of data ?? []) {
       map.set((row as SupplierRow).id, row as SupplierRow);
     }
   }
+
   return map;
 }
 
 export async function fetchAgentsMap(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   agentIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, { id: string; empresa: string | null; contacto: string | null }>> {
   const map = new Map<string, { id: string; empresa: string | null; contacto: string | null }>();
   if (agentIds.length === 0) return map;
 
   for (const chunk of chunkArray(agentIds, 200)) {
-    const { data, error } = await supabase
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+     let query = supabase
       .from("agentes_compra")
       .select("id, empresa, contacto")
       .in("id", chunk);
 
+      if (signal) {
+        query = query.abortSignal(signal);
+      }
+      const { data, error } = await query;
+
     if (error) throw new Error(error.message);
+
     for (const row of data ?? []) {
       const r = row as { id: string; empresa: string | null; contacto: string | null };
       map.set(r.id, { id: r.id, empresa: r.empresa, contacto: r.contacto });
@@ -418,15 +460,21 @@ export function resolveSupplierDistanceToPort(
 export async function fetchPuertosFabricaBySupplier(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   supplierIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, Record<string, unknown>[]>> {
   const map = new Map<string, Record<string, unknown>[]>();
   const unique = Array.from(new Set(supplierIds.filter(Boolean)));
   if (unique.length === 0) return map;
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("puertos_fabrica")
     .select("*")
     .in("fabrica_id", unique);
+    if (signal) {
+      query = query.abortSignal(signal);
+    }
+
+  const { data, error } = await query;
 
   if (error) {
     console.warn(`[planner] puertos_fabrica omitido: ${error.message}`);
@@ -493,11 +541,16 @@ export async function fetchSales30And90Days(
 async function fetchPlanningCatalogRows(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, CatalogPlanningRow>> {
   const map = new Map<string, CatalogPlanningRow>();
 
   for (const chunk of chunkArray(productIds, 200)) {
-    const { data, error } = await supabase
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    let query = supabase
       .from("v_productos_catalogo")
       .select(
         `
@@ -515,9 +568,49 @@ async function fetchPlanningCatalogRows(
       )
       .in("producto_id", chunk);
 
+      if (signal) {
+        query = query.abortSignal(signal);
+      }
+      const { data, error } = await query;
+
     if (error) throw new Error(error.message);
+
     for (const row of (data ?? []) as CatalogPlanningRow[]) {
       map.set(row.producto_id, row);
+    }
+  }
+  return map;
+}
+
+async function fetchOperationalFbaStockMap(
+  supabase: ReturnType<typeof createSupabaseRouteClient>,
+  productIds: string[],
+  signal?: AbortSignal,
+): Promise<Map<string, OperationalStockRow>> {
+  const map = new Map<string, OperationalStockRow>();
+  for (const chunk of chunkArray(productIds, 200)) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    let query = supabase
+      .from("v_latest_amazon_fba_inventory_by_product_operational_total")
+      .select("producto_id,stock_fba_total,observed_at,dual_pool_complete")
+      .in("producto_id", chunk);
+
+      if (signal) {
+        query = query.abortSignal(signal);
+      }
+
+      const { data, error } = await query;
+
+    if (error) {
+      console.warn(`[planner] stock FBA operativo no disponible: ${error.message}`);
+      return new Map();
+    }
+    for (const row of data ?? []) {
+      const item = row as OperationalStockRow;
+      if (item.producto_id) map.set(item.producto_id, item);
     }
   }
   return map;
@@ -526,17 +619,27 @@ async function fetchPlanningCatalogRows(
 async function fetchStockFallbackTotals(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, number>> {
   const map = new Map<string, number>();
   if (productIds.length === 0) return map;
 
   for (const chunk of chunkArray(productIds, 200)) {
-    const { data, error } = await supabase
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    let query = supabase
       .from("inventario_paises")
       .select("producto_id, stock_fba, stock_fbm")
       .in("producto_id", chunk);
 
+      if (signal) {
+        query = query.abortSignal(signal);
+      }
+      const { data, error } = await query;
+
     if (error) throw new Error(error.message);
+
     for (const row of data ?? []) {
       const pid = row.producto_id as string;
       const add =
@@ -553,6 +656,7 @@ async function fetchSalesTotals(
   windowDays: number,
   country: string | undefined,
   canal: string | null,
+  signal?: AbortSignal,
 ): Promise<Map<string, SalesTotals>> {
   const result = new Map<string, SalesTotals>();
   if (productIds.length === 0) return result;
@@ -563,8 +667,14 @@ async function fetchSalesTotals(
   const pageSize = 1000;
 
   for (const idChunk of chunkArray(productIds, 120)) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
     let offset = 0;
     for (;;) {
+      if (signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
       let q = supabase
         .from("ventas_diarias")
         .select("producto_id, unidades_vendidas, ingresos_brutos")
@@ -576,6 +686,9 @@ async function fetchSalesTotals(
 
       if (country && country !== "ALL") q = q.eq("pais", country);
       if (canal) q = q.eq("canal_venta", canal);
+      if (signal) {
+        q = q.abortSignal(signal);
+      }
 
       const { data, error } = await q;
       if (error) throw new Error(error.message);
@@ -600,17 +713,26 @@ async function fetchSalesTotals(
 async function fetchProductoLogisticaMap(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, LogisticaRow>> {
   const map = new Map<string, LogisticaRow>();
   if (productIds.length === 0) return map;
 
   for (const chunk of chunkArray(productIds, 200)) {
-    const { data, error } = await supabase
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+  let query = supabase
       .from("producto_logistica")
       .select(
         "producto_id, pedido_minimo_unidades, unidades_por_caja, cubicaje_unitario_m3, peso_kg_bruto",
       )
       .in("producto_id", chunk);
+      if (signal) {
+        query = query.abortSignal(signal);
+      }
+
+      const { data, error } = await query;
 
     if (error) throw new Error(error.message);
     for (const row of data ?? []) {
@@ -624,16 +746,24 @@ async function fetchProductoLogisticaMap(
 async function fetchRestrictionsByProduct(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, Record<string, unknown>>> {
   const map = new Map<string, Record<string, unknown>>();
   if (productIds.length === 0) return map;
 
   for (const chunk of chunkArray(productIds, 200)) {
-    const { data, error } = await supabase
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    let query = supabase
       .from("producto_restricciones_logisticas")
       .select("*")
       .in("producto_id", chunk);
-
+      
+      if (signal) {
+        query = query.abortSignal(signal);
+      }
+      const { data, error } = await query;
     if (error) {
       console.warn(
         `[planner] producto_restricciones_logisticas omitido: ${error.message}`,
@@ -654,6 +784,7 @@ async function fetchRestrictionsByProduct(
 async function fetchSeasonalityLabels(
   supabase: ReturnType<typeof createSupabaseRouteClient>,
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (productIds.length === 0) return out;
@@ -661,11 +792,20 @@ async function fetchSeasonalityLabels(
   const linkRows: Record<string, unknown>[] = [];
 
   for (const chunk of chunkArray(productIds, 200)) {
-    const { data, error } = await supabase
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    let query = supabase
+   
       .from("product_seasonality")
       .select("*")
       .in("producto_id", chunk);
 
+      if (signal) {
+        query = query.abortSignal(signal);
+      }
+
+    const { data, error } = await query;
     if (error) {
       console.warn(`[planner] product_seasonality omitido: ${error.message}`);
       return out;
@@ -687,11 +827,17 @@ async function fetchSeasonalityLabels(
 
   const profiles = new Map<string, Record<string, unknown>>();
   if (profileIds.size > 0) {
-    const { data, error } = await supabase
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    let query = supabase
       .from("seasonality_profiles")
       .select("*")
       .in("id", Array.from(profileIds));
-
+      if (signal) {
+        query = query.abortSignal(signal);
+      }
+      const { data, error } = await query;
     if (error) {
       console.warn(
         `[planner] seasonality_profiles omitido: ${error.message}`,
@@ -926,6 +1072,7 @@ export async function getCompetitorBenchmarksForPlanning(
 
 export async function getProductsForPlanning(
   params: PlannerParams,
+  signal?: AbortSignal,
 ): Promise<PlanningProduct[]> {
   const supabase = createSupabaseRouteClient();
   const windowDays = resolveWindowDays(params);
@@ -933,7 +1080,16 @@ export async function getProductsForPlanning(
   const canal = ventasCanalFromPlannerParams(params.channel);
   const channelLabel = planningChannelLabel(params);
 
-  const products = await fetchProductsBase(supabase, params);
+  const products = await fetchProductsBase(
+    supabase,
+    params,
+    signal,
+  );
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
   const productIds = products.map((p) => p.id);
 
   const supplierIds = Array.from(
@@ -952,15 +1108,56 @@ export async function getProductsForPlanning(
     puertosFabrica,
     restrictionsMap,
     seasonalityMap,
+    operationalFbaStockMap,
   ] = await Promise.all([
-    fetchSuppliersMap(supabase, supplierIds),
-    fetchPlanningCatalogRows(supabase, productIds),
-    fetchSalesTotals(supabase, productIds, windowDays, country, canal),
-    fetchProductoLogisticaMap(supabase, productIds),
-    fetchPuertosFabricaBySupplier(supabase, supplierIds),
-    fetchRestrictionsByProduct(supabase, productIds),
-    fetchSeasonalityLabels(supabase, productIds),
+    fetchSuppliersMap(
+      supabase,
+      supplierIds,
+      signal,
+    ),
+    fetchPlanningCatalogRows(
+      supabase,
+      productIds,
+      signal,
+    ),
+    fetchSalesTotals(
+      supabase,
+      productIds,
+      windowDays,
+      country,
+      canal,
+      signal,
+    ),
+    fetchProductoLogisticaMap(
+      supabase,
+      productIds,
+      signal,
+    ),
+    fetchPuertosFabricaBySupplier(
+      supabase,
+      supplierIds,
+      signal,
+    ),
+    fetchRestrictionsByProduct(
+      supabase,
+      productIds,
+      signal,
+    ),
+    fetchSeasonalityLabels(
+      supabase,
+      productIds,
+      signal,
+    ),
+    fetchOperationalFbaStockMap(
+      supabase,
+      productIds,
+      signal,
+    ),
   ]);
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
 
   const agentIds = Array.from(
     new Set(
@@ -969,21 +1166,43 @@ export async function getProductsForPlanning(
         .filter((id): id is string => Boolean(id)),
     ),
   );
-  const agentsMap = await fetchAgentsMap(supabase, agentIds);
+
+  const agentsMap = await fetchAgentsMap(
+    supabase,
+    agentIds,
+    signal,
+  );
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
 
   const needsStockFallback = productIds.filter((id) => {
     const c = catalogMap.get(id);
     return c == null || c.stock_total == null;
   });
+
   const stockFallback =
     needsStockFallback.length > 0
-      ? await fetchStockFallbackTotals(supabase, needsStockFallback)
+      ? await fetchStockFallbackTotals(
+          supabase,
+          needsStockFallback,
+          signal,
+        )
       : new Map<string, number>();
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
 
   const inboundByProduct =
     productIds.length > 0
       ? await fetchForecastInboundByProductIds(productIds)
       : new Map();
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
 
   const planningProducts: PlanningProduct[] = products.map((p) => {
     const catalog = catalogMap.get(p.id);
@@ -994,7 +1213,10 @@ export async function getProductsForPlanning(
     const restriction = mapLogisticsRestrictionRow(restrRow);
 
     let stockTotal = 0;
-    if (catalog?.stock_total != null) {
+    const operationalFba = operationalFbaStockMap.get(p.id);
+    if (operationalFba) {
+      stockTotal = Number(operationalFba.stock_fba_total ?? 0) + Number(catalog?.stock_fbm ?? 0);
+    } else if (catalog?.stock_total != null) {
       stockTotal = Number(catalog.stock_total);
     } else {
       stockTotal = stockFallback.get(p.id) ?? 0;

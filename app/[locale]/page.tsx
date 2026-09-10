@@ -1,12 +1,14 @@
-import { redirect } from "next/navigation";
+import DashboardBI from "@/modules/dashboard/components/DashboardBI";
+import DashboardShell from "@/shared/layout/DashboardShell";
+import { GlobalFiltersProvider } from "@/shared/filters/GlobalFiltersProvider";
 
-export default async function LocaleIndexPage({
-  params,
-}: {
-  params: { locale: string };
-}) {
-  // Ensure we land inside the (dashboard) route group,
-  // so Sidebar + Header layouts are applied.
-  redirect(`/${params.locale}/productos`);
+export default function LocaleIndexPage() {
+  return (
+    <GlobalFiltersProvider>
+      <DashboardShell>
+        <DashboardBI />
+      </DashboardShell>
+    </GlobalFiltersProvider>
+  );
 }
 

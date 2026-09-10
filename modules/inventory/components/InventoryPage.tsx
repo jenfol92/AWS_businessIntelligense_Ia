@@ -29,8 +29,10 @@ import {
   forecastMethodBusinessLabel,
   resolveDisplayForecastMethod,
 } from "../services/forecastMethodUi";
-import { fetchInventoryProductDetail } from "../services/inventoryDetailClient";
+import { fetchInventoryProductDetail, fetchInventoryProductForecast } from "../services/inventoryDetailClient";
 import { InventoryForecastSimulationPanel } from "./InventoryForecastSimulationPanel";
+import { OperationalStockPanel } from "./OperationalStockPanel";
+import { InventoryKpiGrid } from "./InventoryKpiGrid";
 import { ForecastMethodExplanationBox } from "./ForecastMethodExplanationBox";
 import type { ProductForecastConfigUpsertBody } from "@/modules/planning/types";
 import type {
@@ -41,12 +43,15 @@ import type {
   InventoryInboundRow,
   InventoryInboundPlanningKind,
   InventoryLotesResponse,
+  InventoryProductCoreResponse,
+  InventoryProductForecastResponse,
   InventoryProductDetailResponse,
   InventoryProductSummary,
   InventoryRiskLevel,
 } from "../types/inventory.types";
 import { inboundPlanningKindLabel } from "@/modules/planner/services/mapForecastInboundToInventoryRow";
 import OrderReadonlyModal from "@/modules/orders/components/OrderReadonlyModal";
+import { buildInclusiveDateWindow } from "../services/inclusiveDateWindow";
 
 type DetailFail = { ok: false; error: string };
 
@@ -119,16 +124,22 @@ function riskBadgeClass(risk: InventoryRiskLevel): string {
     case "critico":
       return "bg-rose-100 text-rose-800 ring-rose-200";
     case "bajo":
-      return "bg-amber-100 text-amber-800 ring-amber-200";
+      return "bg-orange-100 text-orange-800 ring-orange-200";
+    case "exceso":
+      return "bg-yellow-100 text-yellow-800 ring-yellow-200";
+
     case "sin_ventas":
       return "bg-slate-100 text-slate-600 ring-slate-200";
     default:
       return "bg-emerald-100 text-emerald-800 ring-emerald-200";
   }
 }
-
-function fmtNum(n: number | null | undefined, digits = 0): string {
+function fmtNum(
+  n: number | null | undefined,
+  digits = 0,
+): string {
   if (n == null || Number.isNaN(n)) return "—";
+
   return n.toLocaleString("es-ES", {
     maximumFractionDigits: digits,
     minimumFractionDigits: digits,
@@ -282,13 +293,24 @@ export function InventoryPage() {
   const [variantByParent, setVariantByParent] = useState<Record<string, string>>({});
 
   const [detailLoading, setDetailLoading] = useState(false);
-  const [detail, setDetail] = useState<InventoryProductDetailResponse | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  const [simulationOverride, setSimulationOverride] =
-    useState<ProductForecastConfigUpsertBody | null>(null);
-  const activeDetailAbortRef = useRef<AbortController | null>(null);
-  const activeListAbortRef = useRef<AbortController | null>(null);
-  const detailRequestIdRef = useRef(0);
+const [detail, setDetail] =
+  useState<InventoryProductCoreResponse | null>(null);
+const [detailError, setDetailError] = useState<string | null>(null);
+
+const [forecastLoading, setForecastLoading] = useState(false);
+const [forecastData, setForecastData] =
+  useState<InventoryProductForecastResponse | null>(null);
+const [forecastError, setForecastError] = useState<string | null>(null);
+
+const [simulationOverride, setSimulationOverride] =
+  useState<ProductForecastConfigUpsertBody | null>(null);
+
+const activeDetailAbortRef = useRef<AbortController | null>(null);
+const activeForecastAbortRef = useRef<AbortController | null>(null);
+const activeListAbortRef = useRef<AbortController | null>(null);
+
+const detailRequestIdRef = useRef(0);
+const forecastRequestIdRef = useRef(0);
   const listRequestIdRef = useRef(0);
   const simulationProductIdRef = useRef<string | null>(null);
 
@@ -305,6 +327,9 @@ export function InventoryPage() {
   const [amazonRefreshLoading, setAmazonRefreshLoading] = useState(false);
   const [amazonRefreshMessage, setAmazonRefreshMessage] = useState<string | null>(null);
   const [amazonRefreshError, setAmazonRefreshError] = useState<string | null>(null);
+  const [salesRefreshLoading, setSalesRefreshLoading] = useState(false);
+  const [salesRefreshMessage, setSalesRefreshMessage] = useState<string | null>(null);
+  const [salesRefreshError, setSalesRefreshError] = useState<string | null>(null);
 
   const filterState = useMemo(
     () => ({
@@ -406,21 +431,25 @@ export function InventoryPage() {
     };
   }, []);
 
-  useEffect(() => {
+  
+  /*useEffect(() => {
     if (!initialDetailLoaded) return;
     const timeoutId = window.setTimeout(() => {
       void loadList();
-    }, 1000);
+    }, 10000);
 
     return () => {
       window.clearTimeout(timeoutId);
       activeListAbortRef.current?.abort();
     };
   }, [initialDetailLoaded, loadList]);
+  */
 
   useEffect(() => {
     return () => {
       activeListAbortRef.current?.abort();
+      activeDetailAbortRef.current?.abort();
+      activeForecastAbortRef.current?.abort();
     };
   }, []);
 
@@ -436,6 +465,14 @@ export function InventoryPage() {
     simulationOverride != null &&
     selectedProductId != null &&
     simulationProductIdRef.current === selectedProductId;
+    const fullDetail = useMemo<InventoryProductDetailResponse | null>(() => {
+      if (!detail || !forecastData) return null;
+    
+      return {
+        ...detail,
+        ...forecastData,
+      };
+    }, [detail, forecastData]);
 
   const loadDetail = useCallback(
     async (
@@ -449,6 +486,7 @@ export function InventoryPage() {
       activeDetailAbortRef.current = controller;
       setDetailLoading(true);
       setDetailError(null);
+      setDetail(null);
       try {
         const json = await fetchInventoryProductDetail(productId, {
           canal,
@@ -481,6 +519,79 @@ export function InventoryPage() {
     },
     [canal, pais, windowDays, periodFrom, periodTo, showStockoutDebug],
   );
+  const loadForecast = useCallback(
+    async (
+      productId: string,
+      forecastOverride?: ProductForecastConfigUpsertBody | null,
+    ) => {
+      activeForecastAbortRef.current?.abort();
+  
+      const requestId = forecastRequestIdRef.current + 1;
+      forecastRequestIdRef.current = requestId;
+  
+      const controller = new AbortController();
+      activeForecastAbortRef.current = controller;
+  
+
+      setForecastLoading(true);
+      setForecastError(null);
+      setForecastData(null);
+  
+      try {
+        const json = await fetchInventoryProductForecast(productId, {
+          canal,
+          pais,
+          windowDays,
+          periodFrom,
+          periodTo,
+          forecastOverride: forecastOverride ?? undefined,
+          debugStockout: showStockoutDebug,
+          signal: controller.signal,
+        });
+  
+        if (forecastRequestIdRef.current !== requestId) {
+          return;
+        }
+  
+        setForecastData(json);
+      } catch (e) {
+        if (
+          controller.signal.aborted ||
+          (e instanceof DOMException && e.name === "AbortError")
+        ) {
+          return;
+        }
+  
+        if (forecastRequestIdRef.current !== requestId) {
+          return;
+        }
+  
+        setForecastError(
+          e instanceof Error
+            ? e.message
+            : "Error cargando forecast",
+        );
+  
+        setForecastData(null);
+      } finally {
+        if (forecastRequestIdRef.current === requestId) {
+          setForecastLoading(false);
+  
+          if (activeForecastAbortRef.current === controller) {
+            activeForecastAbortRef.current = null;
+          }
+        }
+      }
+    },
+    [
+      canal,
+      pais,
+      windowDays,
+      periodFrom,
+      periodTo,
+      showStockoutDebug,
+    ],
+  );
 
   useEffect(() => {
     simulationProductIdRef.current = null;
@@ -495,14 +606,29 @@ export function InventoryPage() {
 
   useEffect(() => {
     if (!selectedProductId) return;
+  
+    void loadDetail(selectedProductId);
+  }, [
+    selectedProductId,
+    loadDetail,
+  ]);
+  useEffect(() => {
+    if (!selectedProductId) return;
+    if (!detail) return;
+  
+    // Evita calcular forecast con el core del producto anterior.
+    if (detail.product.productoId !== selectedProductId) return;
+  
     const effectiveOverride =
       simulationProductIdRef.current === selectedProductId
         ? simulationOverride
         : null;
-    void loadDetail(selectedProductId, effectiveOverride);
+  
+    void loadForecast(selectedProductId, effectiveOverride);
   }, [
     selectedProductId,
-    loadDetail,
+    detail,
+    loadForecast,
     simulationOverride,
   ]);
 
@@ -665,7 +791,6 @@ export function InventoryPage() {
           : `Actualizado: ${result.inventory?.rowsUpserted ?? 0} filas de stock y ${result.inbound?.linesUpserted ?? 0} líneas inbound.`,
       );
       await Promise.all([
-        loadList(),
         loadAmazonHealth(),
         selectedProductId ? loadDetail(selectedProductId, simulationOverride) : Promise.resolve(),
       ]);
@@ -678,13 +803,60 @@ export function InventoryPage() {
     }
   }
 
+  async function refreshAmazonSales() {
+    if (salesRefreshLoading) return;
+    setSalesRefreshLoading(true);
+    setSalesRefreshMessage(null);
+    setSalesRefreshError(null);
+    try {
+      const toDate = new Date().toISOString().slice(0, 10);
+      const range = buildInclusiveDateWindow(toDate, 90);
+      const res = await fetch("/api/amazon/reports/fba-sales/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(range),
+      });
+      const json = await res.json().catch(() => ({})) as { ok?: boolean; error?: string };
+      if (!res.ok || json.ok === false) throw new Error(json.error ?? `HTTP ${res.status}`);
+      setSalesRefreshMessage(`Ventas Amazon actualizadas: ${range.fromDate} a ${range.toDate}.`);
+      if (selectedProductId) {
+        await loadDetail(selectedProductId, simulationOverride);
+      }
+    } catch (error) {
+      setSalesRefreshError(error instanceof Error ? error.message : "Error actualizando ventas Amazon.");
+    } finally {
+      setSalesRefreshLoading(false);
+    }
+  }
+
   useEffect(() => {
     void loadAmazonHealth();
   }, []);
 
   const flatProducts = listData ? flattenProducts(listData.products) : [];
+
+  const normalizedSearch = search.trim().toLowerCase();
+  
+  const filteredLiteProducts = useMemo(() => {
+    if (!normalizedSearch) return liteProducts;
+  
+    return liteProducts.filter((product) => {
+      const sku = product.sku?.toLowerCase() ?? "";
+      const nombre = product.nombre?.toLowerCase() ?? "";
+  
+      return (
+        sku.includes(normalizedSearch) ||
+        nombre.includes(normalizedSearch)
+      );
+    });
+  }, [liteProducts, normalizedSearch]);
+  
   const showLiteProducts = !listData && liteProducts.length > 0;
-  const visibleProductsCount = listData ? flatProducts.length : liteProducts.length;
+  
+  const visibleProductsCount = listData
+    ? flatProducts.length
+    : filteredLiteProducts.length;
+
   const parentOfSelected = listData?.products.find(
     (p) =>
       p.productoId === selectedId ||
@@ -810,7 +982,7 @@ export function InventoryPage() {
               ))}
             </select>
           </label>
-          <div className="flex items-end">
+          <div className="flex flex-wrap items-end gap-2">
             <button
               type="button"
               onClick={() => void refreshAmazonInventory()}
@@ -824,10 +996,21 @@ export function InventoryPage() {
               )}
               {amazonRefreshLoading ? "Actualizando Amazon…" : "Actualizar inventario Amazon"}
             </button>
+            <button
+              type="button"
+              onClick={() => void refreshAmazonSales()}
+              disabled={salesRefreshLoading}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {salesRefreshLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {salesRefreshLoading ? "Actualizando ventas…" : "Actualizar ventas Amazon"}
+            </button>
           </div>
         </div>
         {amazonRefreshMessage ? <Text className="mt-3 text-xs text-emerald-700">{amazonRefreshMessage}</Text> : null}
         {amazonRefreshError ? <Text className="mt-3 text-xs text-rose-700">{amazonRefreshError}</Text> : null}
+        {salesRefreshMessage ? <Text className="mt-3 text-xs text-emerald-700">{salesRefreshMessage}</Text> : null}
+        {salesRefreshError ? <Text className="mt-3 text-xs text-rose-700">{salesRefreshError}</Text> : null}
         <div className="mt-3 flex flex-wrap gap-2">
           {[
             { key: "criticos", label: "Solo críticos", value: soloCriticos, set: setSoloCriticos },
@@ -885,7 +1068,7 @@ export function InventoryPage() {
                     if (x.risk === "bajo" && acc !== "critico") return "bajo";
                     return acc;
                   },
-                  "ok",
+                  "saludable",
                 );
                 return (
                   <button
@@ -937,7 +1120,7 @@ export function InventoryPage() {
                 );
               })
             ) : (
-              liteProducts.map((p) => {
+            filteredLiteProducts.map((p) => {
                 const active = selectedId === p.id;
                 return (
                   <button
@@ -1046,58 +1229,49 @@ export function InventoryPage() {
                   </Link>
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {[
-                    { label: "Stock total", value: fmtNum(detail.product.stockTotal) },
-                    { label: "FBA", value: fmtNum(detail.product.stockFba) },
-                    { label: "FBM", value: fmtNum(detail.product.stockFbm) },
-                    {
-                      label: `Ventas ${detail.periodLabel}`,
-                      value: fmtNum(detail.product.salesUnitsPeriod),
-                    },
-                    {
-                      label: "Cobertura",
-                      value:
-                        detail.product.coverageDays != null
-                          ? `${Math.round(detail.product.coverageDays)} d`
-                          : "—",
-                    },
-                    {
-                      label: "Riesgo",
-                      value: riskLabel(detail.product.risk),
-                    },
-                    {
-                      label: "Inbound conf.",
-                      value: fmtNum(detail.inboundUnitsConfirmedTotal ?? detail.inboundUnitsTotal),
-                    },
-                    {
-                      label: "Inbound prov.",
-                      value: fmtNum(detail.inboundUnitsProvisionalTotal ?? 0),
-                    },
-                    {
-                      label: "Forecast",
-                      value: forecastMethodLabel(detail.forecast.method),
-                    },
-                  ].map(({ label, value }) => (
-                    <div
-                      key={label}
-                      className="rounded-lg border border-slate-100 bg-slate-50/60 p-2"
-                    >
-                      <Text className="text-[10px] uppercase text-slate-400">
-                        {label}
-                      </Text>
-                      <p className="text-sm font-semibold text-slate-900">{value}</p>
-                    </div>
-                  ))}
-                </div>
+                <InventoryKpiGrid detail={detail} forecast={forecastData?.forecast}/>
               </Card>
 
               {detail.operationalStock ? (
                 <OperationalStockPanel stock={detail.operationalStock} />
               ) : null}
 
+{forecastData?.etaRisk ? (
+  <Card className="ring-1 ring-slate-100 p-4">
+    <Title className="text-base">Riesgo ETA</Title>
+
+    {forecastData.etaRisk.stockoutBeforeInbound ? (
+      <div className="mt-2 text-sm text-rose-700">
+        <p className="font-semibold">
+          Rotura prevista {fmtDate(forecastData.etaRisk.stockoutDate)}
+        </p>
+
+        <p>
+          Próxima llegada confirmada:{" "}
+          {fmtDate(forecastData.etaRisk.nextRelevantConfirmedEta)}
+        </p>
+
+        <p>
+          Gap sin stock:{" "}
+          {forecastData.etaRisk.gapDays == null
+            ? "sin llegada confirmada posterior"
+            : `${forecastData.etaRisk.gapDays} días`}
+        </p>
+
+        <p className="mt-2 text-xs text-slate-500">
+          Acciones informativas: revisar precio · revisar publicidad · acelerar
+          reposición.
+        </p>
+      </div>
+    ) : (
+      <Text className="mt-2 text-emerald-700">OK</Text>
+    )}
+  </Card>
+) : null}
+
               <Card className="ring-1 ring-slate-100 p-4">
-                <Title className="text-base mb-3">Stock por país</Title>
+                <Title className="text-base mb-1">Stock físico por país</Title>
+                <Text className="mb-3 text-xs text-slate-500">Distribución logística del Inventory Ledger; no se suma como FBA operativo.</Text>
                 <CountryStockTableV2
                   countries={detail.countries}
                   expandedPais={expandedPais}
@@ -1120,60 +1294,87 @@ export function InventoryPage() {
                 <InboundSection inbound={detail.inbound} locale={locale} />
               </Card>
 
-              <Card className="ring-1 ring-slate-100 p-4">
-                <Title className="text-base mb-3">Simulación de forecast</Title>
-                <InventoryForecastSimulationPanel
-                  productId={detail.product.productoId}
-                  isSimulationActive={isSimulationActiveForSelectedProduct}
-                  dataAvailability={
-                    detail.annualForecast.methodInfo?.dataAvailability ?? {
-                      hasOwnSales: detail.annualForecast.previousYearTotalUnits > 0,
-                      hasBenchmark: false,
-                    }
-                  }
-                  stockoutRiskHint={
-                    detail.product.risk === "critico" ||
-                    detail.product.risk === "bajo"
-                  }
-                  onSimulate={async (override) => {
-                    simulationProductIdRef.current = detail.product.productoId;
-                    setSimulationOverride(override);
-                  }}
-                  onSaved={async () => {
-                    simulationProductIdRef.current = null;
-                    setSimulationOverride(null);
-                  }}
-                />
-              </Card>
+             
+              {forecastLoading && !forecastData ? (
+  <Card className="ring-1 ring-slate-100 p-4">
+    <div className="flex items-center gap-2 text-sm text-slate-500">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Calculando forecast…
+    </div>
+  </Card>
+) : forecastError ? (
+  <Card className="border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+    {forecastError}
+  </Card>
+) : forecastData ? (
+  <Card className="ring-1 ring-slate-100 p-4">
+    <Title className="mb-3 text-base">Simulación de forecast</Title>
 
-              <Card className="ring-1 ring-slate-100 p-4">
-                <Title className="text-base mb-2">Forecast / reposición</Title>
-                <ForecastPanel
-                  detail={detail}
-                  simulationActive={isSimulationActiveForSelectedProduct}
-                />
-              </Card>
+    <InventoryForecastSimulationPanel
+      productId={detail.product.productoId}
+      isSimulationActive={isSimulationActiveForSelectedProduct}
+      dataAvailability={
+        forecastData.annualForecast.methodInfo?.dataAvailability ?? {
+          hasOwnSales:
+            forecastData.annualForecast.previousYearTotalUnits > 0,
+          hasBenchmark: false,
+        }
+      }
+      stockoutRiskHint={
+        detail.product.risk === "critico" ||
+        detail.product.risk === "bajo"
+      }
+      onSimulate={async (override) => {
+        simulationProductIdRef.current = detail.product.productoId;
+        setSimulationOverride(override);
+      }}
+      onSaved={async () => {
+        simulationProductIdRef.current = null;
+        setSimulationOverride(null);
+      }}
+    />
+  </Card>
+) : null}
 
-              <Card className="ring-1 ring-slate-100 p-4">
-                <Title className="text-base mb-1">Forecast anual</Title>
-                <Text className="mb-3 text-xs text-slate-500">
-                  Combina histórico del año base, stock operativo actual y entradas
-                  previstas para proyectar el año en curso.
-                </Text>
-                <AnnualForecastPanel
-                  detail={detail}
-                  simulationActive={isSimulationActiveForSelectedProduct}
-                  showStockoutDebug={showStockoutDebug}
-                />
-              </Card>
-            </>
-          ) : (
-            <Card className="p-8 text-center text-slate-500 ring-1 ring-slate-100">
-              Selecciona un producto para ver el detalle.
-            </Card>
-          )}
-        </div>
-      </div>
+
+
+  {fullDetail ? (
+  <Card className="ring-1 ring-slate-100 p-4">
+    <Title className="mb-2 text-base">Forecast / reposición</Title>
+
+    <ForecastPanel
+      detail={fullDetail}
+      simulationActive={isSimulationActiveForSelectedProduct}
+    />
+  </Card>
+) : null}
+
+
+{fullDetail ? (
+  <Card className="ring-1 ring-slate-100 p-4">
+    <Title className="mb-1 text-base">Forecast anual</Title>
+
+    <Text className="mb-3 text-xs text-slate-500">
+      Combina histórico del año base, stock operativo actual y entradas
+      previstas para proyectar el año en curso.
+    </Text>
+
+    <AnnualForecastPanel
+      detail={fullDetail}
+      simulationActive={isSimulationActiveForSelectedProduct}
+      showStockoutDebug={showStockoutDebug}
+    />
+  </Card>
+) : null}
+
+</>
+) : (
+  <Card className="p-8 text-center text-slate-500 ring-1 ring-slate-100">
+    Selecciona un producto para ver el detalle.
+  </Card>
+)}
+</div>
+</div>
       <PriceDistributionModal
         state={priceDistributionModal}
         onClose={() => setPriceDistributionModal(null)}
@@ -1182,20 +1383,7 @@ export function InventoryPage() {
   );
 }
 
-function operationalFbaSourceLabel(
-  source: NonNullable<InventoryProductDetailResponse["operationalStock"]>["stockOperationalFbaSource"],
-): string {
-  switch (source) {
-    case "fba_inventory_snapshot":
-      return "snapshot FBA operativo";
-    case "country_inventory":
-      return "stock por país actualizado";
-    case "ledger":
-      return "ledger FBA";
-    default:
-      return "sin stock FBA registrado";
-  }
-}
+
 
 function InventoryDiagnosticsPanel({
   diagnostics,
@@ -1321,95 +1509,7 @@ function InventoryDiagnosticsPanel({
   );
 }
 
-function OperationalStockPanel({
-  stock,
-}: {
-  stock: NonNullable<InventoryProductDetailResponse["operationalStock"]>;
-}) {
-  const syncStatus = stock.fbaInventorySyncStatus;
-  const countrySummary = stock.stockFbaAppByCountry
-    .map((row) => `${row.pais} ${fmtNum(row.stockFba + row.stockFbm)}`)
-    .join(" · ");
 
-  return (
-    <Card className="ring-1 ring-slate-100 p-4">
-      <Title className="text-base mb-3">Stock operativo</Title>
-      <div className="space-y-2 text-sm text-slate-800">
-        <p>
-          <span className="text-slate-500">Stock FBA operativo usado: </span>
-          <span className="font-semibold text-slate-900">
-            {stock.stockOperationalFbaSource === "none"
-              ? "NO DISPONIBLE"
-              : `${fmtNum(stock.stockOperationalFba)} uds`}
-          </span>
-        </p>
-        <p className="text-xs text-slate-500">
-          Fuente: {operationalFbaSourceLabel(stock.stockOperationalFbaSource)}
-        </p>
-        <p className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-950">
-          {syncStatus?.lastSuccessAt
-            ? "Stock operativo procedente del último snapshot COMPLETE."
-            : "Amazon ha limitado temporalmente la actualización. Todavía no existe un snapshot operativo válido."}
-        </p>
-        {stock.stockFbaLatestSnapshot != null && stock.stockFbaLatestSnapshotAt ? (
-          <p className="text-xs text-slate-500">
-            Snapshot FBA operativo: {fmtNum(stock.stockFbaLatestSnapshot)} uds ·{" "}
-            {fmtDate(stock.stockFbaLatestSnapshotAt)}
-            <span className="block text-[11px] text-slate-400">
-              Fuente principal: {stock.stockFbaLatestSnapshotSource ?? "SP-API FBA Inventory"}. FBA Country queda como distribución auxiliar.
-            </span>
-          </p>
-        ) : (
-          <p className="text-xs text-slate-500">
-            NO DISPONIBLE / SIN SNAPSHOT. El Ledger físico sigue visible por país, pero no sustituye el stock operativo actual.
-          </p>
-        )}
-        {syncStatus ? (
-          <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            <p className="font-medium text-slate-800">Sincronización automática FBA</p>
-            <p>Última ejecución: {fmtDateTime(syncStatus.lastRunAt)}</p>
-            <p>{syncStatus.lastSuccessAt ? `Último éxito: ${fmtDateTime(syncStatus.lastSuccessAt)}` : "Sin snapshot COMPLETE"}</p>
-            <p>Estado: {syncStatus.lastStatus ?? "—"}</p>
-            <p>Filas actualizadas: {fmtNum(syncStatus.lastRowsUpserted)}</p>
-            {syncStatus.nextRunHint ? <p>Próxima ejecución: {syncStatus.nextRunHint}</p> : null}
-            {syncStatus.lastError ? (
-              <p className="mt-1 text-rose-700">Error: {syncStatus.lastError}</p>
-            ) : null}
-          </div>
-        ) : null}
-        <p>
-          <span className="text-slate-500">FBM: </span>
-          <span className="font-semibold">{fmtNum(stock.stockOperationalFbm)} uds</span>
-        </p>
-        <p>
-          <span className="text-slate-500">Total operativo (forecast ALL/ALL): </span>
-          <span className="font-semibold text-slate-900">
-            {fmtNum(stock.stockOperationalTotal)} uds
-          </span>
-        </p>
-        <p className="text-xs text-slate-500">
-          Stock por país (inventario_paises): {countrySummary || "—"}
-        </p>
-        {stock.stockFbaLatestLedger != null && stock.stockFbaLatestLedgerDate ? (
-          <p className="text-xs text-slate-500">
-            Referencia ledger FBA: {fmtNum(stock.stockFbaLatestLedger)} uds ·{" "}
-            {fmtDate(stock.stockFbaLatestLedgerDate)}
-            <span className="block text-[11px] text-slate-400">
-              Solo auditoría; no es el stock FBA operativo actual.
-            </span>
-          </p>
-        ) : (
-          <p className="text-xs text-slate-500">Sin referencia ledger FBA importada.</p>
-        )}
-        {stock.stockFbaDiscrepancy ? (
-          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-            {stock.discrepancyMessage}
-          </p>
-        ) : null}
-      </div>
-    </Card>
-  );
-}
 
 function CountryStockTableV2({
   countries,

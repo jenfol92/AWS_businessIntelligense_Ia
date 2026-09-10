@@ -1,4 +1,5 @@
 "use client";
+import { accountingDate } from "../utils/accountingDate";
 
 import { useEffect, useMemo, useState } from "react";
 import { Check, Search, X } from "lucide-react";
@@ -19,13 +20,15 @@ const money = (value: number, currency: string) =>
 export function LinkedPurchasePaymentModal({
   onClose,
   onSaved,
+  initialMode = "selected_payments",
 }: {
+  initialMode?: PurchasePaymentEntryMode;
   onClose: () => void;
   onSaved: (batchId: string, reference: string | null) => Promise<void>;
 }) {
   const [data, setData] = useState<PurchasePaymentCandidateResponse | null>(null);
   const [query, setQuery] = useState("");
-  const [mode, setMode] = useState<PurchasePaymentEntryMode>("selected_payments");
+  const [mode, setMode] = useState<PurchasePaymentEntryMode>(initialMode);
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [selectedCandidates, setSelectedCandidates] = useState(
     () => new Map<string, PurchasePaymentCandidate>(),
@@ -40,7 +43,7 @@ export function LinkedPurchasePaymentModal({
   const [actualAmountEur, setActualAmountEur] = useState("");
   const [bankFeeEur, setBankFeeEur] = useState("");
   const [ffFeeEur, setFfFeeEur] = useState("");
-  const [paidAt, setPaidAt] = useState(new Date().toISOString().slice(0, 10));
+  const [paidAt, setPaidAt] = useState(accountingDate());
   const [bankReference, setBankReference] = useState("");
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(true);
@@ -202,7 +205,7 @@ export function LinkedPurchasePaymentModal({
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-3">
       <div className="mx-auto my-4 w-full max-w-6xl border border-slate-200 bg-white shadow-2xl">
         <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div><h2 className="text-base font-semibold text-slate-950">Crear pago vinculado</h2><p className="text-xs text-slate-500">Transferencia al agente aplicada a obligaciones de compra</p></div>
+          <div><h2 className="text-base font-semibold text-slate-950">{mode === "free_amount" ? "Crear pago parcial" : "Crear pago vinculado"}</h2><p className="text-xs text-slate-500">Selecciona las obligaciones a las que aplicar el pago. El pago parcial permite abonar solo una parte.</p></div>
           <button type="button" onClick={onClose} className="p-2 text-slate-500 hover:text-slate-900" title="Cerrar"><X className="h-5 w-5" /></button>
         </header>
         <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -212,7 +215,7 @@ export function LinkedPurchasePaymentModal({
                 {(["selected_payments", "free_amount"] as const).map((value) => (
                   <button key={value} type="button" onClick={() => setMode(value)}
                     className={`px-3 py-1.5 text-xs font-medium ${mode === value ? "bg-slate-900 text-white" : "text-slate-600"}`}>
-                    {value === "selected_payments" ? "Seleccionar obligaciones" : "Importe libre"}
+                    {value === "selected_payments" ? "Seleccionar obligaciones" : "Pago parcial"}
                   </button>
                 ))}
               </div>

@@ -19,6 +19,10 @@ test("inclusive windows contain exactly N calendar dates", () => {
     fromDate: "2026-08-03",
     toDate: "2026-09-01",
   });
+  assert.deepEqual(buildInclusiveDateWindow("2026-09-01", 60), {
+    fromDate: "2026-07-04",
+    toDate: "2026-09-01",
+  });
   assert.deepEqual(buildInclusiveDateWindow("2026-09-01", 90), {
     fromDate: "2026-06-04",
     toDate: "2026-09-01",
@@ -67,6 +71,8 @@ test("Inventory sales readers share the inclusive period and close the query at 
   );
 
   assert.match(repository, /buildInclusiveDateWindow\(periodTo, 90\)\.fromDate/);
+  assert.match(repository, /buildInclusiveDateWindow\(periodTo, 60\)\.fromDate/);
+  assert.match(repository, /buildInclusiveDateWindow\(periodTo, 30\)\.fromDate/);
   assert.match(repository, /buildInclusiveDateWindow\(toDate, safe30\)\.fromDate/);
   assert.match(repository, /buildInclusiveDateWindow\(toDate, safe90\)\.fromDate/);
   assert.match(repository, /\.gte\("sale_date", queryFrom\)[\s\S]*?\.lte\("sale_date", toDate\)/);

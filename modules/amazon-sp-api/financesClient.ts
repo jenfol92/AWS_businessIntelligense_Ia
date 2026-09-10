@@ -27,6 +27,7 @@ type Request = typeof spApiRequest;
 export function createFinancesClient(request: Request = spApiRequest) {
   return {
     async listFinancialEventGroups(input: {
+      signal?: AbortSignal;
       startedAfter: string;
       startedBefore?: string;
       maxResultsPerPage?: number;
@@ -35,6 +36,7 @@ export function createFinancesClient(request: Request = spApiRequest) {
           payload?: { FinancialEventGroupList?: FinancialEventGroup[]; NextToken?: string };
         }>({
           method: "GET",
+          signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
           path: `${FINANCES_V0}/financialEventGroups`,
           query: nextToken
             ? { NextToken: nextToken }
@@ -47,6 +49,7 @@ export function createFinancesClient(request: Request = spApiRequest) {
     },
 
     async listTransactions(input: {
+      signal?: AbortSignal;
       financialEventGroupId?: string;
       transactionStatus?: FinancesTransactionStatus;
       postedAfter?: string;
@@ -59,6 +62,7 @@ export function createFinancesClient(request: Request = spApiRequest) {
           };
         }>({
           method: "GET",
+          signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
           path: `${FINANCES_2024}/transactions`,
           query: {
             ...(nextToken ? { nextToken } : {}),

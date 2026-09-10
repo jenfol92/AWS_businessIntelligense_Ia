@@ -34,12 +34,12 @@ export const DEFAULT_INVENTORY_MARKETPLACE_POOL_PLAN: InventoryMarketplacePoolPl
   reason: "PAN_EU_AND_UK_OPERATIONAL_POOLS_PREVIEW_ONLY",
 };
 
-/** Current production publication scope. Do not add UK until authorized. */
+/** Production publication scope: both independent operational pools are atomic. */
 export const PUBLISHED_INVENTORY_MARKETPLACE_POOL_PLAN: InventoryMarketplacePoolPlan = {
-  kind: "PAN_EU_REFERENCE_ONLY",
+  kind: "PAN_EU_PLUS_GB",
   panEuRepresentative: PAN_EU_REFERENCE_MARKETPLACE_ID,
-  marketplaceIds: [PAN_EU_REFERENCE_MARKETPLACE_ID],
-  reason: "ES_REFERENCE_FOR_PAN_EU_OPERATIONAL_INVENTORY",
+  marketplaceIds: [PAN_EU_REFERENCE_MARKETPLACE_ID, UK_REFERENCE_MARKETPLACE_ID],
+  evidenceId: "dual-operational-pools-required",
 };
 
 export function resolveOperationalInventoryMarketplaceIds(

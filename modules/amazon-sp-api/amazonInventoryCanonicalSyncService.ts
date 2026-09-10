@@ -9,7 +9,6 @@ import {
 import { runWithCanonicalSyncLease } from "./canonicalSyncCoordinator";
 import { loadConfirmedOperationalAmazonSellerSkus } from "./operationalAmazonIdentityRepository";
 import {
-  UK_REFERENCE_MARKETPLACE_ID,
   resolvePublishedInventoryMarketplaceIds,
 } from "./inventorySummaryPoolPolicy";
 
@@ -130,9 +129,6 @@ export async function syncAmazonInventoryCanonical(
       try {
         const confirmedSellerSkus = await (dependencies.confirmedSellerSkus ?? loadConfirmedOperationalAmazonSellerSkus)();
         const marketplaceIds = resolvePublishedInventoryMarketplaceIds(options.marketplaceIds);
-        if (options.publishSnapshot !== false && marketplaceIds.includes(UK_REFERENCE_MARKETPLACE_ID)) {
-          throw new Error("DUAL_OPERATIONAL_POOL_PUBLICATION_NOT_ENABLED");
-        }
         const inventory = await dependencies.inventory({
           marketplaceIds,
           sellerSkus: confirmedSellerSkus,

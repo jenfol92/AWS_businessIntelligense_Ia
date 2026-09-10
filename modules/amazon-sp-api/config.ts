@@ -6,6 +6,7 @@ export type SpApiConfig = {
   lwaClientId: string;
   lwaClientSecret: string;
   lwaRefreshToken: string;
+  sellerId?: string;
   marketplaceIds: string[];
   /** Legacy opt-in: AWS SigV4 (no requerido desde oct-2023 para apps actuales). */
   useAwsSigV4: boolean;
@@ -93,6 +94,7 @@ export function loadSpApiConfig(): SpApiConfig {
     lwaClientId: process.env.AMAZON_LWA_CLIENT_ID!.trim(),
     lwaClientSecret: process.env.AMAZON_LWA_CLIENT_SECRET!.trim(),
     lwaRefreshToken: process.env.AMAZON_LWA_REFRESH_TOKEN!.trim(),
+    sellerId: process.env.AMAZON_SELLER_ID?.trim() || undefined,
     marketplaceIds,
     useAwsSigV4,
     awsRegion:

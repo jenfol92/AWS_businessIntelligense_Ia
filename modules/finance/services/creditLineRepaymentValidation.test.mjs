@@ -68,7 +68,7 @@ test("requires at least one positive component", () => {
 
 test("repository uses only finance_create_credit_line_repayment_v2 for the v2 operation", async () => {
   const source = await readFile(path.join(process.cwd(), "modules/finance/repositories/creditLineLedgerRepository.ts"), "utf8");
-  const block = source.match(/export async function createCreditLineRepaymentV2Rpc[\s\S]*?\n}\n/)?.[0] ?? "";
+  const block = source.replace(/\r\n/g, "\n").match(/export async function createCreditLineRepaymentV2Rpc[\s\S]*?\n}\n/)?.[0] ?? "";
   assert.match(block, /\.rpc\("finance_create_credit_line_repayment_v2"/);
   assert.doesNotMatch(block, /\.rpc\("finance_create_credit_line_repayment"/);
 });

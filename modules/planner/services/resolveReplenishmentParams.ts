@@ -114,7 +114,7 @@ function resolveMoqSource(
   if (fromSupply != null) {
     return { moq: fromSupply, source: "producto_supply_config.moq" };
   }
-  return { moq: null, source: "none" };
+  return { moq: DEFAULT_GLOBAL_FACTORY_MOQ, source: "business_rule.global_factory_moq_100" };
 }
 
 function resolveUnitsPerCartonSource(
@@ -386,3 +386,4 @@ export function applyMoqAndCartonToQuantity(
 
   return { quantity: result, moqApplied, cartonMultipleApplied };
 }
+export const DEFAULT_GLOBAL_FACTORY_MOQ = 100;

@@ -17,6 +17,7 @@ function row({
   fnsku,
   fulfillable,
   reserved = 0,
+  pendingTransshipment = 0,
   inbound = 0,
   unfulfillable = 0,
   aliases = [],
@@ -30,6 +31,7 @@ function row({
     seller_sku_aliases: aliases,
     fulfillable_quantity: fulfillable,
     reserved_quantity: reserved,
+    pending_transshipment_quantity: pendingTransshipment,
     inbound_total_quantity: inbound,
     unfulfillable_quantity: unfulfillable,
     researching_quantity: 0,
@@ -49,6 +51,66 @@ test("ALAIA suma 644 + 50 como dos FNSKU canónicos del mismo producto/pool/run"
   assert.equal(stock?.inboundQuantity, 633);
   assert.equal(stock?.unfulfillableQuantity, 5);
   assert.equal(stock?.snapshotRunId, RUN);
+});
+test("MOVITY incorpora pending transshipment al stock operativo por pool", () => {
+  const snapshot = aggregateCanonicalSnapshotAcrossOperationalPools([
+    row({
+      pool: "EU",
+      fnsku: "B0GTZGM7TP",
+      fulfillable: 59,
+      reserved: 132,
+      pendingTransshipment: 129,
+      inbound: 1,
+    }),
+    row({
+      pool: "UK",
+      fnsku: "B0GTZGM7TP",
+      fulfillable: 235,
+      reserved: 0,
+      pendingTransshipment: 0,
+    }),
+  ]).get("P");
+
+  assert.ok(snapshot);
+
+  assert.equal(snapshot.fulfillableQuantity, 294);
+  assert.equal(snapshot.pendingTransshipmentQuantity, 129);
+
+  assert.equal(snapshot.stockFbaPanEu, 188);
+  assert.equal(snapshot.stockFbaUk, 235);
+  assert.equal(snapshot.stockFbaTotal, 423);
+});
+test("MOVITY total operativo suma FBA físico más FBM", () => {
+  const snapshot = aggregateCanonicalSnapshotAcrossOperationalPools([
+    row({
+      pool: "EU",
+      fnsku: "B0GTZGM7TP",
+      fulfillable: 59,
+      reserved: 132,
+      pendingTransshipment: 129,
+    }),
+    row({
+      pool: "UK",
+      fnsku: "B0GTZGM7TP",
+      fulfillable: 235,
+      pendingTransshipment: 0,
+    }),
+  ]).get("P");
+
+  const resolved = buildOperationalStockSummary(
+    [],
+    null,
+    snapshot,
+    { now: new Date("2026-08-20T12:00:00Z") },
+    {
+      availableQuantity: 182,
+      observedAt: AT,
+    },
+  );
+
+  assert.equal(resolved.stockOperationalFba, 423);
+  assert.equal(resolved.stockOperationalFbm, 182);
+  assert.equal(resolved.stockOperationalTotal, 605);
 });
 
 test("Seller SKU aliases ya deduplicados son provenance y no alteran cantidades", () => {
@@ -82,20 +144,29 @@ test("snapshot_run_id distintos no se mezclan y gana el run más reciente", () =
   assert.equal(stock?.fulfillableQuantity, 694);
 });
 
-test("snapshot fresh gana al legacy", () => {
+test("snapshot FBA canónico gana al legacy y FBM desconocido permanece null", () => {
   const snapshot = aggregateCanonicalSnapshotByProductPool(alaiaRows(), "EU").get("P");
   const inventoryRows = [{ producto_id: "P", pais: "ES", stock_fba: 664, stock_fbm: 0, updated_at: AT }];
   const resolved = buildOperationalStockSummary(inventoryRows, null, snapshot, { now: new Date("2026-08-20T12:00:00Z") });
   assert.equal(resolved.stockOperationalFbaSource, "fba_inventory_snapshot");
   assert.equal(resolved.stockOperationalFba, 694);
-  assert.equal(resolved.stockOperationalTotal, 694);
+  assert.equal(resolved.stockOperationalFbm, null);
+  assert.equal(resolved.stockOperationalTotal, null);
 });
 
-test("snapshot ausente conserva fallback legacy fresh", () => {
+test("snapshot ausente no recupera fallback legacy", () => {
   const inventoryRows = [{ producto_id: "P", pais: "ES", stock_fba: 664, stock_fbm: 0, updated_at: AT }];
   const resolved = buildOperationalStockSummary(inventoryRows, null, null, { now: new Date("2026-08-20T12:00:00Z") });
-  assert.equal(resolved.stockOperationalFbaSource, "country_inventory");
-  assert.equal(resolved.stockOperationalFba, 664);
+  assert.equal(resolved.stockOperationalFbaSource, "none");
+  assert.equal(resolved.stockOperationalFba, 0);
+});
+
+test("FBM canónico habilita total operativo sin leer stock_fbm legacy", () => {
+  const snapshot = aggregateCanonicalSnapshotByProductPool(alaiaRows(), "EU").get("P");
+  const inventoryRows = [{ producto_id: "P", pais: "ES", stock_fba: 664, stock_fbm: 999, updated_at: AT }];
+  const resolved = buildOperationalStockSummary(inventoryRows, null, snapshot, { now: new Date("2026-08-20T12:00:00Z") }, { availableQuantity: 7, observedAt: AT });
+  assert.equal(resolved.stockOperationalFbm, 7);
+  assert.equal(resolved.stockOperationalTotal, 701);
 });
 
 test("cantidades distintas entre FNSKU se suman y no producen ambigüedad", () => {
@@ -132,6 +203,31 @@ test("read model conserva PAN_EU, UK y total del mismo run", () => {
   assert.equal(snapshot?.stockFbaTotal, 1012);
   assert.equal(snapshot?.fulfillableQuantity, 1012);
   assert.equal(snapshot?.dualPoolComplete, true);
+});
+
+test("ALAIA real: une por producto_id y conserva 498 PAN_EU + 279 UK", () => {
+  const rows = [
+    row({ fnsku: "B0DJBQGKBT", fulfillable: 498, reserved: 12, inbound: 633 }),
+    row({ fnsku: "X00259GEWP", fulfillable: 0, reserved: 3 }),
+    row({ pool: "UK", fnsku: "B0DJBQGKBT", fulfillable: 184, reserved: 3 }),
+    row({ pool: "UK", fnsku: "X00259GEWP", fulfillable: 95, reserved: 0 }),
+  ];
+  const snapshots = aggregateCanonicalSnapshotAcrossOperationalPools(rows);
+  assert.equal(snapshots.has("P"), true);
+  const snapshot = snapshots.get("P");
+  assert.equal(snapshot?.stockFbaPanEu, 498);
+  assert.equal(snapshot?.stockFbaUk, 279);
+  assert.equal(snapshot?.fulfillableQuantity, 777);
+  assert.equal(snapshot?.dualPoolComplete, true);
+  const resolved = buildOperationalStockSummary(
+    [{ producto_id: "P", pais: "ES", stock_fba: 9999, stock_fbm: 9999, updated_at: AT }],
+    { snapshotDate: "2026-08-13", stockSellable: 9999, stockTotal: 9999 },
+    snapshot,
+    { now: new Date("2026-08-20T12:00:00Z") },
+  );
+  assert.equal(resolved.stockOperationalFba, 777);
+  assert.equal(resolved.stockOperationalFbaSource, "fba_inventory_snapshot");
+  assert.equal(resolved.stockOperationalFbm, null);
 });
 
 test("read model no mezcla pools pertenecientes a snapshot_run_id distintos", () => {

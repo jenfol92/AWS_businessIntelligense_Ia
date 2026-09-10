@@ -191,14 +191,18 @@ export async function fetchAmazonSyncJobStatuses(
 /** Producto activo seleccionado y su familia minima para el detalle de inventario. */
 export async function fetchInventoryProductScope(
   productId: string,
+  signal?: AbortSignal,
 ): Promise<ProductBaseRow[]> {
   const supabase = createSupabaseRouteClient();
+
   const { data: selected, error: selectedError } = await supabase
     .from("productos")
     .select(PRODUCT_BASE_SELECT)
     .eq("id", productId)
     .eq("estado", "activo")
+    .abortSignal(signal)
     .maybeSingle();
+    
 
   if (selectedError) throw new Error(selectedError.message);
   if (!selected) return [];
@@ -213,13 +217,17 @@ export async function fetchInventoryProductScope(
         .select(PRODUCT_BASE_SELECT)
         .eq("id", selectedProduct.parent_id)
         .eq("estado", "activo")
+        .abortSignal(signal)
         .maybeSingle(),
+       
+
       supabase
         .from("productos")
         .select(PRODUCT_BASE_SELECT)
         .eq("parent_id", selectedProduct.parent_id)
         .eq("estado", "activo")
-        .order("sku", { ascending: true }),
+        .order("sku", { ascending: true })
+        .abortSignal(signal),
     ]);
 
     if (parentResult.error) throw new Error(parentResult.error.message);
@@ -233,7 +241,8 @@ export async function fetchInventoryProductScope(
       .select(PRODUCT_BASE_SELECT)
       .eq("parent_id", selectedProduct.id)
       .eq("estado", "activo")
-      .order("sku", { ascending: true });
+      .order("sku", { ascending: true })
+      .abortSignal(signal);
 
     if (childrenError) throw new Error(childrenError.message);
     products.push(...((children ?? []) as ProductBaseRow[]));
@@ -297,6 +306,8 @@ export async function fetchSalesAggregates(
   const periodFrom =
     normalizeIsoDate(periodRange?.fromDate) ?? addDaysIso(periodTo, -(safeWindow - 1));
   const from90Str = buildInclusiveDateWindow(periodTo, 90).fromDate;
+  const from60Str = buildInclusiveDateWindow(periodTo, 60).fromDate;
+  const from30Str = buildInclusiveDateWindow(periodTo, 30).fromDate;
   const fromStr = periodFrom < from90Str ? periodFrom : from90Str;
 
   const canalNorm =
@@ -335,21 +346,23 @@ export async function fetchSalesAggregates(
         const pais = row.pais ?? "—";
         const ck = salesKey(pid, pais);
         const curCountry =
-          byProductCountry.get(ck) ?? { unitsPeriod: 0, units30: 0, units90: 0 };
+          byProductCountry.get(ck) ?? { unitsPeriod: 0, units30: 0, units60: 0, units90: 0 };
         if (row.fecha >= from90Str) curCountry.units90 += units;
+        if (row.fecha >= from60Str) curCountry.units60 += units;
+        if (row.fecha >= from30Str) curCountry.units30 += units;
         if (row.fecha >= periodFrom && row.fecha <= periodTo) {
           curCountry.unitsPeriod += units;
-          curCountry.units30 += units;
         }
         byProductCountry.set(ck, curCountry);
 
         const gk = salesKeyGlobal(pid);
         const curGlobal =
-          byProductGlobal.get(gk) ?? { unitsPeriod: 0, units30: 0, units90: 0 };
+          byProductGlobal.get(gk) ?? { unitsPeriod: 0, units30: 0, units60: 0, units90: 0 };
         if (row.fecha >= from90Str) curGlobal.units90 += units;
+        if (row.fecha >= from60Str) curGlobal.units60 += units;
+        if (row.fecha >= from30Str) curGlobal.units30 += units;
         if (row.fecha >= periodFrom && row.fecha <= periodTo) {
           curGlobal.unitsPeriod += units;
-          curGlobal.units30 += units;
         }
         byProductGlobal.set(gk, curGlobal);
       }
@@ -425,6 +438,7 @@ export async function fetchMarketplaceSalesAggregates(
     window90Days?: number;
     periodRange?: { fromDate?: string | null; toDate?: string | null };
   } = {},
+  signal?: AbortSignal,
 ): Promise<{
   byProductMarketplace: MarketplaceSalesByProductCountry;
 }> {
@@ -455,7 +469,8 @@ export async function fetchMarketplaceSalesAggregates(
         .lte("sale_date", toDate)
         .in("producto_id", chunk)
         .order("sale_date", { ascending: true })
-        .range(offset, offset + pageSize - 1);
+        .range(offset, offset + pageSize - 1)
+        .abortSignal(signal);
 
       if (error) throw new Error(error.message);
 
@@ -1530,6 +1545,7 @@ export async function fetchTopPriceByProductCountry(params: {
  */
 export async function fetchLatestFbaLedgerStockByProductIds(
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, import("../services/resolveOperationalStock").LatestFbaLedgerStock>> {
   const result = new Map<
     string,
@@ -1540,10 +1556,12 @@ export async function fetchLatestFbaLedgerStockByProductIds(
   const supabase = createSupabaseRouteClient();
 
   for (const chunk of chunkArray(productIds, 100)) {
-    const { data, error } = await supabase.rpc(
+    const { data, error } = await supabase
+    .rpc(
       "get_latest_fba_ledger_stock_by_products",
       { product_ids: chunk },
-    );
+    )
+    .abortSignal(signal);
 
     if (error) {
       console.error(
@@ -1601,6 +1619,7 @@ function parseFbaInventoryDispositions(
  */
 export async function fetchLatestFbaInventoryByProductCountry(
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, FbaInventoryCountryStockRow[]>> {
   const result = new Map<string, FbaInventoryCountryStockRow[]>();
   if (productIds.length === 0) return result;
@@ -1614,7 +1633,8 @@ export async function fetchLatestFbaInventoryByProductCountry(
         "producto_id, pais, snapshot_date, last_imported_at, stock_fba_sellable, stock_fba_unsellable, stock_fba_physical_total, dispositions, is_stale, stale_days",
       )
       .in("producto_id", chunk)
-      .order("pais", { ascending: true });
+      .order("pais", { ascending: true })
+      .abortSignal(signal);
 
     if (error) throw new Error(error.message);
 
@@ -1652,6 +1672,7 @@ export async function fetchLatestFbaInventoryByProductCountry(
 
 export async function fetchLatestFbaInventorySnapshotByProductIds(
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<
   Map<
     string,
@@ -1663,20 +1684,41 @@ export async function fetchLatestFbaInventorySnapshotByProductIds(
   const supabase = createSupabaseRouteClient();
   const snapshotRows: CanonicalInventorySnapshotReadRow[] = [];
 
+  const { data: latestReadyRun, error: latestReadyRunError } = await supabase
+    .from("amazon_fba_inventory_snapshot_runs")
+    .select("id")
+    .eq("status", "COMPLETE")
+    .eq("publication_ready", true)
+    .contains("complete_operational_pools", ["EU", "UK"])
+    .eq("identity_conflict_count", 0)
+    .order("observed_at", { ascending: false })
+    .order("completed_at", { ascending: false })
+    .limit(1)
+    .abortSignal(signal)
+    .maybeSingle();
+
+  if (latestReadyRunError) {
+    console.error("[inventory] latest publication-ready FBA run failed", latestReadyRunError);
+    return new Map();
+  }
+  if (!latestReadyRun?.id) return new Map();
+
   for (const chunk of chunkArray(productIds, 100)) {
     const { data, error } = await supabase
       .from("v_latest_amazon_fba_inventory_snapshot")
       .select(
-        "snapshot_run_id, producto_id, snapshot_at, operational_pool, fnsku, seller_sku_aliases, fulfillable_quantity, reserved_quantity, inbound_total_quantity, unfulfillable_quantity, researching_quantity, source",
+        "snapshot_run_id, producto_id, snapshot_at, operational_pool, fnsku, seller_sku_aliases, fulfillable_quantity, reserved_quantity, pending_transshipment_quantity,inbound_total_quantity, unfulfillable_quantity, researching_quantity, source",
       )
+      .eq("snapshot_run_id", latestReadyRun.id)
       .in("producto_id", chunk)
-      .in("operational_pool", ["EU", "UK"]);
+      .in("operational_pool", ["EU", "UK"])
+      .abortSignal(signal);
 
     if (error) {
       console.error(
-        "[inventory] latest FBA inventory snapshot failed",
+        "[inventory] latest publication-ready FBA inventory snapshot failed",
         error,
-        "No se pudo obtener v_latest_amazon_fba_inventory_snapshot. Revisa que la migraciÃ³n SP-API forecast estÃ© aplicada.",
+        "No se pudo obtener el ultimo snapshot FBA dual listo para publicar.",
       );
       return new Map();
     }
@@ -1685,4 +1727,31 @@ export async function fetchLatestFbaInventorySnapshotByProductIds(
   }
 
   return aggregateCanonicalSnapshotAcrossOperationalPools(snapshotRows);
+}
+
+export async function fetchLatestFbmInventorySnapshotByProductIds(
+  productIds: string[],
+  signal?: AbortSignal,
+): Promise<Map<string, { availableQuantity: number; observedAt: string }>> {
+  const result = new Map<string, { availableQuantity: number; observedAt: string }>();
+  if (productIds.length === 0) return result;
+  const supabase = createSupabaseRouteClient();
+  for (const chunk of chunkArray(productIds, 100)) {
+    const { data, error } = await supabase
+      .from("v_latest_amazon_fbm_inventory_by_product")
+      .select("producto_id,stock_fbm,observed_at")
+      .in("producto_id", chunk)
+      .abortSignal(signal);
+      
+    if (error) throw new Error(error.message);
+    for (const raw of data ?? []) {
+      const productId = String(raw.producto_id ?? "");
+      if (!productId) continue;
+      const current = result.get(productId) ?? { availableQuantity: 0, observedAt: String(raw.observed_at ?? "") };
+      current.availableQuantity += Number(raw.stock_fbm ?? 0);
+      if (String(raw.observed_at ?? "") > current.observedAt) current.observedAt = String(raw.observed_at);
+      result.set(productId, current);
+    }
+  }
+  return result;
 }

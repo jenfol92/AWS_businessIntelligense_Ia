@@ -1,4 +1,6 @@
 "use client";
+import { planningRequest } from "../utils/planningRequest";
+import { accountingDate } from "../utils/accountingDate";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -29,6 +31,9 @@ import {
   creditLineNonDrawdownDebtLabel,
   isActiveCreditLineStatus,
 } from "../utils/creditLineStatus";
+import { RecurringPaymentModal } from "./RecurringPaymentModal";
+import { buildMonthlyTotals } from "../utils/buildMonthlyTotals";
+import { unvaluedPayments } from "../utils/monthlyPaymentSummary";
 import { LinkedPurchasePaymentModal } from "./LinkedPurchasePaymentModal";
 import { PurchasePaymentBatchDetailModal } from "./PurchasePaymentBatchDetailModal";
 import { CreditLineMaturityPaymentModal } from "./CreditLineMaturityPaymentModal";
@@ -135,13 +140,13 @@ function eventMatchesStatus(event: FinancePlanningEvent, estado: StatusFilter): 
       return false;
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = accountingDate();
     return event.date >= today && event.date <= addDaysIso(today, 30);
   }
 
   if (estado === "vencido") {
     if (!event.date || event.status === "pagado") return false;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = accountingDate();
     return event.status === "vencido" || event.date < today;
   }
 
@@ -268,7 +273,7 @@ function PaymentModal({
   onClose: () => void;
   onSaved: (batchId: string | null, reference: string | null) => Promise<void>;
 }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = accountingDate();
   const isEurPayment = event.originalCurrency.trim().toUpperCase() === "EUR";
   const originalAmount = event.pendingAmountOriginal ?? event.originalAmount ?? 0;
   const activeCreditLines = creditLines.filter((line) =>
@@ -750,6 +755,14 @@ function EventCard({
   const isCreditLineEvent = isCreditLineMaturity || isPlannedCreditMaturity || isCreditLineInfo;
   const showSupplierPaymentTrace = isSupplierPaymentEvent(event);
 
+  if (event.type === "unlinked_obligation" || event.type === "unlinked_payment_settlement") {
+    return <article className="rounded-lg border border-slate-200 border-l-4 border-l-emerald-500 bg-white p-3 shadow-sm">
+      <div className="flex justify-between gap-2"><span className="text-xs font-semibold text-emerald-700">{event.paymentTypeName ?? "Pago recurrente"}</span><span className={statusClass(event.status)}>{event.status}</span></div>
+      <h3 className="mt-2 font-semibold text-slate-900">{event.title}</h3><p className="text-xs text-slate-500">{dateLabel(event.date)}</p>
+      <p className="my-3 text-sm font-bold">{event.status === "pagado" ? "Pagado" : "Pendiente"}: {eur(event.status === "pagado" ? event.paidAmountEur ?? 0 : event.plannedAmountEur)}</p>
+      {event.canMarkPaid && event.status !== "pagado" && <button type="button" onClick={() => onMarkPaid(event)} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white">Registrar pago</button>}
+    </article>;
+  }
   if (isPlannedCreditMaturity) {
     return (
       <article className={`bg-white border border-slate-200 border-l-4 ${eventAccent(event)} rounded-lg p-3 shadow-sm`}>
@@ -957,39 +970,63 @@ export function FinancialPlanningPage() {
   const [selectedPaymentEvent, setSelectedPaymentEvent] =
     useState<FinancePlanningEvent | null>(null);
   const [linkedPaymentOpen, setLinkedPaymentOpen] = useState(false);
+  const [partialPayment, setPartialPayment] = useState(false);
+  const [recurringOpen, setRecurringOpen] = useState(false);
+  const [recurringEvent, setRecurringEvent] = useState<FinancePlanningEvent | undefined>();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const refreshBusy = useRef(false);
+  const requestVersion = useRef(0);
   const [detailBatchId, setDetailBatchId] = useState<string | null>(null);
   const [maturityPaymentEvent, setMaturityPaymentEvent] = useState<FinancePlanningEvent | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [filters, setFilters] = useState<FinanceFiltersState>(EMPTY_FILTERS);
   const [urlFiltersReady, setUrlFiltersReady] = useState(false);
 
+  const initialPlanningRequest = useRef<Promise<FinancePlanningResponse> | null>(null);
   const loadPlanning = useCallback(async () => {
+    const version = ++requestVersion.current;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/finance/planning?months=6", {
-        cache: "no-store",
-      });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error ?? "Error cargando planificacion");
-      setData(json);
+      const pending = initialPlanningRequest.current ?? planningRequest<FinancePlanningResponse>("/api/finance/planning?months=6");
+      initialPlanningRequest.current = pending;
+      const json = await pending;
+      if (version === requestVersion.current) setData(json);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error desconocido");
+      if (version === requestVersion.current) setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) { initialPlanningRequest.current = null; setLoading(false); }
     }
   }, []);
 
   const reloadPlanning = useCallback(async () => {
-    const res = await fetch("/api/finance/planning?months=6", {
-      cache: "no-store",
-    });
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error ?? "Error refrescando planificacion");
-    setData(json);
+    const version = ++requestVersion.current;
+    const json = await planningRequest<FinancePlanningResponse>("/api/finance/planning?months=6");
+    if (version === requestVersion.current) setData(json);
+    return json as FinancePlanningResponse;
   }, []);
 
+  const handleRefresh = useCallback(async () => {
+    if (refreshBusy.current) return;
+    refreshBusy.current = true;
+    setRefreshing(true); setRefreshError(null); setSuccessMessage(null);
+    try {
+      const sync = await planningRequest<{ state: "running" | "succeeded" | "failed" }>(
+        "/api/finance/amazon-refresh", { method: "POST" }, 120_000);
+      await reloadPlanning();
+      if (sync?.state === "failed") setRefreshError("Amazon no pudo completar la actualización. Se muestran los últimos datos disponibles.");
+      else setSuccessMessage(sync?.state === "running"
+        ? "Ya hay una sincronización de Amazon en curso. Se han recargado los datos guardados; todavía no se confirma una actualización."
+        : sync?.state === "succeeded"
+          ? "Consulta de saldos Amazon completada y planificación recargada. Los importes pueden no haber cambiado."
+          : "Planificación recargada desde los datos guardados.");
+    } catch (caught) { setRefreshError(caught instanceof Error ? caught.message : "No se pudo actualizar."); }
+    finally { refreshBusy.current = false; setRefreshing(false); }
+  }, [reloadPlanning]);
+
   const openSupplierPaymentModal = useCallback((event: FinancePlanningEvent) => {
+    if (event.type === "unlinked_obligation" && event.canMarkPaid) { setRecurringEvent(event); setRecurringOpen(true); return; }
     if (!isSupplierPaymentEvent(event)) return;
     if (event.status === "pagado") return;
     setSelectedPaymentEvent(event);
@@ -1069,10 +1106,11 @@ export function FinancialPlanningPage() {
 
   const filteredMonths = useMemo(
     () =>
-      data?.months.map((month) => ({
-        ...month,
-        events: month.events.filter((event) => eventMatchesFilters(event, filters)),
-      })) ?? [],
+      data?.months.map((month) => {
+        const events = month.events.filter((event) => eventMatchesFilters(event, filters));
+        return { ...month, ...buildMonthlyTotals(events), events,
+          hasUnvaluedForeignDebt: Object.keys(unvaluedPayments(events)).length > 0 };
+      }) ?? [],
     [data, filters],
   );
 
@@ -1150,14 +1188,14 @@ export function FinancialPlanningPage() {
                 ? `Amazon: datos de ${data.amazonSync.lastSuccessfulAmazonSyncAt ? new Date(data.amazonSync.lastSuccessfulAmazonSyncAt).toLocaleString("es-ES") : "sin sincronizacion previa"} · actualizacion pendiente`
                 : `Amazon actualizado: ${data.amazonSync?.lastSuccessfulAmazonSyncAt ? new Date(data.amazonSync.lastSuccessfulAmazonSyncAt).toLocaleString("es-ES") : "ahora"}`}
             </p>
-            <button
-              type="button"
-              onClick={() => setLinkedPaymentOpen(true)}
-              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-            >
-              <Link2 className="h-4 w-4" />
-              Crear pago vinculado
-            </button>
+            {data.permissions.canManageCreditLineRegularizations && <details className="relative mt-3 inline-block">
+              <summary className="cursor-pointer rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Crear pago ▾</summary>
+              <div className="absolute left-0 z-20 mt-1 grid w-56 gap-1 rounded-lg border bg-white p-2 shadow-lg" onClick={e => { e.currentTarget.closest("details")?.removeAttribute("open"); }}>
+                <button type="button" className="rounded px-3 py-2 text-left text-sm hover:bg-slate-100" onClick={() => { setPartialPayment(false); setLinkedPaymentOpen(true); }}>Pago vinculado</button>
+                <button type="button" className="rounded px-3 py-2 text-left text-sm hover:bg-slate-100" onClick={() => { setPartialPayment(true); setLinkedPaymentOpen(true); }}>Pago parcial</button>
+                <button type="button" className="rounded px-3 py-2 text-left text-sm hover:bg-slate-100" onClick={() => { setRecurringEvent(undefined); setRecurringOpen(true); }}>Pago recurrente</button>
+              </div>
+            </details>}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1209,7 +1247,7 @@ export function FinancialPlanningPage() {
               <p className="mt-1 text-xs text-slate-500">AVAILABLE es dinero que puede solicitarse a Amazon, pero todavía no está en banco.</p>
               <p className="mt-1 text-[11px] text-slate-400">Última actualización: {data.amazonSync?.lastSuccessfulAmazonSyncAt ? new Date(data.amazonSync.lastSuccessfulAmazonSyncAt).toLocaleString("es-ES") : "no disponible"}</p>
             </div>
-            <button type="button" onClick={() => void reloadPlanning()} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">Actualizar</button>
+            <button type="button" disabled={refreshing} onClick={() => void handleRefresh()} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">{refreshing ? "Actualizando…" : "Actualizar"}</button>
           </div>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1291,6 +1329,9 @@ export function FinancialPlanningPage() {
           Es una referencia estimada y nunca sustituye el cambio bancario real de cada pago.
         </div>
 
+        {refreshing && <p role="status" className="text-sm text-slate-600">Consultando la actualización. Amazon tiene un límite de espera de 2 minutos; después se recarga la planificación.</p>}
+        {refreshError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{refreshError}</p>}
+        {data.recurringPaymentsWarning && <p role="alert" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{data.recurringPaymentsWarning}</p>}
         {successMessage ? (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-700">
             {successMessage}
@@ -1378,27 +1419,25 @@ export function FinancialPlanningPage() {
                   <Clock className="h-5 w-5 text-slate-300" />
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-200">
-                  <div><b className="text-white">Pendiente: {eur(month.pendingBreakdown.total)}</b><div>Lineas {eur(month.pendingBreakdown.lines)}</div><div>Depositos {eur(month.pendingBreakdown.deposits)}</div><div>Balances {eur(month.pendingBreakdown.balances)}</div><div>Otros {eur(month.pendingBreakdown.others)}</div></div>
+                  <div><b className="text-white">{hasActiveFilters ? "Pendiente filtrado" : "Pendiente"}{month.hasUnvaluedForeignDebt ? " (parcial)" : ""}: {eur(month.pendingBreakdown.total)}</b>
+                    {([['lines','Líneas'],['deposits','Depósitos'],['balances','Balances'],['others','Otros']] as const).map(([key,label]) => {
+                      const unvalued = Object.entries(unvaluedPayments(month.events,key));
+                      return <div key={key}>{label}: {unvalued.length && month.pendingBreakdown[key] === 0 ? "Pendiente de valorar" : eur(month.pendingBreakdown[key])}
+                        {unvalued.map(([currency,amount]) => <span className="block text-amber-300" key={currency}>{originalMoney(amount,currency)} · cambio previsto pendiente</span>)}
+                      </div>;
+                    })}
+                  </div>
                   <div><b className="text-white">Pagado: {eur(month.paidBreakdown.total)}</b><div>Lineas {eur(month.paidBreakdown.lines)}</div><div>Depositos {eur(month.paidBreakdown.deposits)}</div><div>Balances {eur(month.paidBreakdown.balances)}</div><div>Otros {eur(month.paidBreakdown.others)}</div></div>
+                  <span className="col-span-2">Importes pendientes en EUR estimados con el cambio previsto; pagados con importes reales.</span>
                   <span>Amazon disponible: {eur(month.amazonAvailableEur)}</span>
                   <span>Amazon pendiente banco: {eur(month.amazonPendingBankEur)}</span>
                   <span>Amazon diferido: {eur(month.amazonDeferredEur)}</span>
-                  <span>Amazon futuro: {eur(month.amazonFutureEur)}</span>
+                  <span className="col-span-2 font-semibold text-amber-200">Estimación ingresos AWS: {month.amazonMonthlyEstimateEur == null ? "Sin estimación" : eur(month.amazonMonthlyEstimateEur)}<span className="block font-normal text-slate-300">Previsión del mes; no es saldo bancario disponible.</span></span>
                   <span>Amazon recibido: {eur(month.amazonReceivedEur)}</span>
                   {month.hasUnvaluedForeignDebt ? <span className="text-amber-300">FX pendiente: {month.pendingFxObligations} obligación(es), importe EUR no valorado</span> : null}
                   <span>Liberacion prevista: {eur(month.totalCreditReleases)}</span>
                   <span>Intereses: {combinedKnownEur(month.recordedInterestEur, month.plannedCreditInterestEur)}</span>
                   <span>Comisiones: {combinedKnownEur(month.recordedFeesEur, month.plannedCreditFeesEur)}</span>
-                </div>
-              </div>
-              <div className="px-4 py-3 border-b border-slate-200 grid grid-cols-2 gap-2 text-xs bg-white">
-                <div className="flex items-center gap-2 text-slate-600">
-                  <Banknote className="h-4 w-4" />
-                  Caja: <b>{eur(month.projectedCashBalance)}</b>
-                </div>
-                <div className="flex items-center gap-2 text-slate-600">
-                  <CreditCard className="h-4 w-4" />
-                  Disponible real actual: <b>{eur(month.projectedCreditAvailable)}</b>
                 </div>
               </div>
               <div className="p-3 space-y-3 min-h-44">
@@ -1464,8 +1503,12 @@ export function FinancialPlanningPage() {
           onSaved={refreshAfterIndividualPayment}
         />
       ) : null}
+      {recurringOpen && <RecurringPaymentModal event={recurringEvent} onClose={() => { setRecurringOpen(false); setRecurringEvent(undefined); }} onSaved={async () => {
+        await reloadPlanning(); setSuccessMessage("Pago recurrente guardado. Planificación y saldo de cuenta actualizados.");
+      }} />}
       {linkedPaymentOpen ? (
         <LinkedPurchasePaymentModal
+          initialMode={partialPayment ? "free_amount" : "selected_payments"}
           onClose={() => setLinkedPaymentOpen(false)}
           onSaved={refreshAfterLinkedPayment}
         />

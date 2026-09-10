@@ -25,7 +25,7 @@ const CONTRACT_PREFIXES = [
 
 function extractCode(error: unknown): string | null {
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
-    if (/^[A-Z][A-Z0-9_]+$/.test(error.code)) return error.code;
+    if (/^[A-Z][A-Z0-9_]+$/.test(error.code) && !/^[A-Z0-9]{5}$/.test(error.code) && !error.code.startsWith("PGRST")) return error.code;
   }
   const message = error instanceof Error ? error.message : "";
   const match = message.match(/\b([A-Z][A-Z0-9_]{2,})\b/);
@@ -43,6 +43,9 @@ export function mapUnlinkedApiError(error: unknown): { code: string; error: stri
   }
   if (error instanceof UnlinkedObligationsApiError) return { code: error.code, error: error.message, status: error.status };
   const rawCode = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+  if (["22P02", "22003", "22007", "22008", "22023"].includes(rawCode)) {
+    return { code: "INVALID_PAYMENT_PAYLOAD", error: "Revisa el importe, las fechas y las cuentas del pago.", status: 422 };
+  }
   const code = extractCode(error) ?? "INTERNAL_ERROR";
   if (rawCode === "42501" || code === "ADMIN_OR_ACCOUNTING_REQUIRED" || code === "TREASURY_READ_REQUIRED") {
     return { code: code === "42501" ? "FINANCE_ACCESS_DENIED" : code, error: "Finance access denied", status: 403 };

@@ -19,6 +19,7 @@ import {
   fetchInventoryRows,
 
   fetchLatestFbaInventorySnapshotByProductIds,
+  fetchLatestFbmInventorySnapshotByProductIds,
 
   fetchLatestFbaInventoryByProductCountry,
 
@@ -141,53 +142,51 @@ async function timed<T>(
 
 
 async function fetchLatestFbaLedgerStockWithTimeout(
-
   productIds: string[],
-
+  parentSignal?: AbortSignal,
 ) {
+  const controller = new AbortController();
+  const abortFromParent = () => {
+    controller.abort();
+  };
 
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  if (parentSignal?.aborted) {
+    controller.abort();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, {
+      once: true,
+    });
+  }
 
-  const ledgerPromise = fetchLatestFbaLedgerStockByProductIds(productIds).catch(
+  const timeoutId = setTimeout(() => {
+    console.warn("[inventory] latest FBA ledger aborted by timeout", {
+      productIdsCount: productIds.length,
+    });
 
-    (error) => {
+    controller.abort();
+  }, 700);
 
-      console.error(
-
-        "[inventory] latest FBA ledger failed",
-
-        { productIdsCount: productIds.length, error },
-
-      );
-
+  try {
+    return await fetchLatestFbaLedgerStockByProductIds(
+      productIds,
+      controller.signal,
+    );
+  } catch (error) {
+    if (controller.signal.aborted) {
       return new Map();
+    }
 
-    },
+    console.error(
+      "[inventory] latest FBA ledger failed",
+      { productIdsCount: productIds.length, error },
+    );
 
-  );
-
-  const timeoutPromise = new Promise<Awaited<typeof ledgerPromise>>((resolve) => {
-
-    timeoutId = setTimeout(() => {
-
-      console.warn("[inventory] latest FBA ledger skipped by timeout", {
-
-        productIdsCount: productIds.length,
-
-      });
-
-      resolve(new Map());
-
-    }, 700);
-
-  });
-
-  const result = await Promise.race([ledgerPromise, timeoutPromise]);
-
-  if (timeoutId) clearTimeout(timeoutId);
-
-  return result;
-
+    return new Map();
+    
+  } finally {
+    clearTimeout(timeoutId);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
 }
 
 
@@ -202,6 +201,7 @@ async function loadInventoryContextFromProducts(
   periodRange?: { fromDate?: string | null; toDate?: string | null },
 
   productIdForLog?: string | null,
+  signal?: AbortSignal,
 
 ) {
 
@@ -247,6 +247,7 @@ async function loadInventoryContextFromProducts(
     fbaInventoryCountryLatest,
 
     fbaInventorySnapshotLatest,
+    fbmInventorySnapshotLatest,
 
   ] = await Promise.all([
 
@@ -262,14 +263,18 @@ async function loadInventoryContextFromProducts(
     ),
 
     timed(productIdForLog ?? null, productIds.length, "fetchMarketplaceSalesAggregates", () =>
-      fetchMarketplaceSalesAggregates(productIds, {
-        window30Days: safeWindowDays,
-        window90Days: 90,
-        periodRange: {
-          fromDate: periodFrom,
-          toDate: periodTo,
+      fetchMarketplaceSalesAggregates(
+        productIds,
+        {
+          window30Days: safeWindowDays,
+          window90Days: 90,
+          periodRange: {
+            fromDate: periodFrom,
+            toDate: periodTo,
+          },
         },
-      }),
+        signal,
+      ),
     ),
 
     timed(productIdForLog ?? null, productIds.length, "fetchProductDetailsMap", () =>
@@ -297,17 +302,20 @@ async function loadInventoryContextFromProducts(
     ),
 
     timed(productIdForLog ?? null, productIds.length, "fetchLatestFbaLedgerStockByProductIds", () =>
-      fetchLatestFbaLedgerStockWithTimeout(productIds),
+      fetchLatestFbaLedgerStockWithTimeout(productIds, signal),
     ),
 
     timed(productIdForLog ?? null, productIds.length, "fetchLatestFbaInventoryByProductCountry", () =>
       productIdForLog
-        ? fetchLatestFbaInventoryByProductCountry(productIds)
+        ? fetchLatestFbaInventoryByProductCountry(productIds, signal)
         : Promise.resolve(new Map()),
     ),
 
     timed(productIdForLog ?? null, productIds.length, "fetchLatestFbaInventorySnapshotByProductIds", () =>
-      fetchLatestFbaInventorySnapshotByProductIds(productIds),
+      fetchLatestFbaInventorySnapshotByProductIds(productIds, signal),
+    ),
+    timed(productIdForLog ?? null, productIds.length, "fetchLatestFbmInventorySnapshotByProductIds", () =>
+      fetchLatestFbmInventorySnapshotByProductIds(productIds, signal),
     ),
 
   ]);
@@ -357,6 +365,7 @@ async function loadInventoryContextFromProducts(
     fbaInventoryCountryLatest,
 
     fbaInventorySnapshotLatest,
+    fbmInventorySnapshotLatest,
 
   };
 
@@ -365,35 +374,30 @@ async function loadInventoryContextFromProducts(
 
 
 export async function loadInventoryContext(
-
   canalRaw?: string,
-
   windowDays: number = 30,
-
   periodRange?: { fromDate?: string | null; toDate?: string | null },
-
+  signal?: AbortSignal,
 ) {
-
   const products = await fetchActiveProducts();
 
-  return loadInventoryContextFromProducts(products, canalRaw, windowDays, periodRange);
-
+  return loadInventoryContextFromProducts(
+    products,
+    canalRaw,
+    windowDays,
+    periodRange,
+    undefined,
+    signal,
+  );
 }
-
-
 export async function loadInventoryContextForProduct(
-
   productId: string,
-
   canalRaw?: string,
-
   windowDays: number = 30,
-
   periodRange?: { fromDate?: string | null; toDate?: string | null },
-
+  signal?: AbortSignal,
 ) {
-
-  const products = await fetchInventoryProductScope(productId);
+  const products = await fetchInventoryProductScope(productId, signal);
 
   return loadInventoryContextFromProducts(
     products,
@@ -401,8 +405,8 @@ export async function loadInventoryContextForProduct(
     windowDays,
     periodRange,
     productId,
+    signal,
   );
-
 }
 
 
@@ -454,26 +458,16 @@ export function applyScopedProductMetrics(
 
 
 
-      let stockFba = 0;
-      let stockFbm = 0;
-      let stockTotal = 0;
-      
-      for (const row of scopedInv) {
-        stockFba += Number(row.stock_fba ?? 0);
-        stockFbm += Number(row.stock_fbm ?? 0);
-      }
-      stockTotal = stockFba + stockFbm;
-
       const snapshot = ctx.fbaInventorySnapshotLatest.get(product.productoId);
-      const useGlobalSnapshot =
-        countryScope.countries == null && snapshot?.fulfillableQuantity != null;
-      if (useGlobalSnapshot) {
-        stockFba = snapshot.fulfillableQuantity;
-        stockTotal = stockFba + stockFbm;
-      }
+      const fbmSnapshot = ctx.fbmInventorySnapshotLatest.get(product.productoId);
 
+      const stockFba = snapshot ? snapshot.fulfillableQuantity + (snapshot.pendingTransshipmentQuantity ?? 0) : 0;
 
+      const stockFbm = fbmSnapshot?.availableQuantity ?? null;
+      const stockTotal = stockFbm == null ? stockFba : stockFba + stockFbm;
   let salesUnitsWindow = 0;
+  let salesUnits30 = 0;
+  let salesUnits60 = 0;
 
   let salesUnits90 = 0;
 
@@ -486,6 +480,8 @@ export function applyScopedProductMetrics(
     );
 
     salesUnitsWindow = globalSales?.unitsPeriod ?? globalSales?.units30 ?? 0;
+    salesUnits30 = globalSales?.units30 ?? 0;
+    salesUnits60 = globalSales?.units60 ?? 0;
 
     salesUnits90 = globalSales?.units90 ?? 0;
 
@@ -500,6 +496,8 @@ export function applyScopedProductMetrics(
       );
 
       salesUnitsWindow += agg?.unitsPeriod ?? agg?.units30 ?? 0;
+      salesUnits30 += agg?.units30 ?? 0;
+      salesUnits60 += agg?.units60 ?? 0;
 
       salesUnits90 += agg?.units90 ?? 0;
 
@@ -511,7 +509,7 @@ export function applyScopedProductMetrics(
 
   const avgUsed = Math.max(
 
-    avgDaily(salesUnitsWindow, ctx.periodDays),
+    avgDaily(salesUnits30, 30),
 
   );
 
@@ -531,16 +529,17 @@ export function applyScopedProductMetrics(
 
     salesUnitsPeriod: salesUnitsWindow,
 
-    salesUnits30: salesUnitsWindow,
+    salesUnits30,
+    salesUnits60,
 
     salesUnits90,
 
     coverageDays: scopedCoverage,
     risk: countryRisk(stockTotal, scopedCoverage),
 
-    stockFbaOperationalSource: useGlobalSnapshot
+    stockFbaOperationalSource: snapshot
       ? "SP-API FBA Inventory"
-      : product.stockFbaOperationalSource,
+      : "none",
 
     stockFbaLatestSnapshot:
       snapshot?.fulfillableQuantity ?? product.stockFbaLatestSnapshot ?? null,
@@ -548,11 +547,11 @@ export function applyScopedProductMetrics(
     stockFbaLatestSnapshotAt:
       snapshot?.snapshotAt ?? product.stockFbaLatestSnapshotAt ?? null,
 
-    stockOperationalTotal: stockTotal,
+    stockOperationalTotal: stockFbm == null ? null : stockTotal,
 
-    stockOperationalSource: useGlobalSnapshot
+    stockOperationalSource: snapshot
       ? "SP-API FBA Inventory"
-      : product.stockOperationalSource,
+      : "none",
 
     hasFbaSnapshot: Boolean(snapshot ?? product.hasFbaSnapshot),
   };

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { Lock, Mail, Loader2 } from "lucide-react";
 import { createSupabaseBrowserClient } from "@/server/supabase/client";
 
@@ -12,6 +12,8 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
 
   const router = useRouter();
+  const params = useParams();
+  const locale = Array.isArray(params.locale) ? params.locale[0] : params.locale;
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -38,7 +40,7 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/productos");
+    router.push(`/${locale ?? "es"}`);
     router.refresh();
   }
 

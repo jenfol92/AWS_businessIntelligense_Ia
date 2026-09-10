@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
+import { buildCanonicalSalesMarketplaceScope } from "@/modules/amazon-sp-api/marketplaceMapping";
 import { supabaseAdmin } from "@/server/supabase/adminClient";
 
 export const dynamic = "force-dynamic";
@@ -230,19 +231,28 @@ export async function POST(request: NextRequest) {
     }
 
     const requestedMarketplaceIds = normalizeMarketplaceIds(body.marketplaceIds);
-    const marketplaceIds =
-      requestedMarketplaceIds ??
-      (await loadMarketplaceIdsFromView({ startDate, endDate }));
-    const effectiveMarketplaceIds =
-      marketplaceIds.length > 0 ? marketplaceIds : parseMarketplaceEnv();
+    const configuredOrExplicitMarketplaceIds =
+      requestedMarketplaceIds ?? parseMarketplaceEnv();
+    const observedValidMarketplaceIds = await loadMarketplaceIdsFromView({
+      startDate,
+      endDate,
+    });
+    const canonicalSyncMarketplaceIds = buildCanonicalSalesMarketplaceScope(
+      configuredOrExplicitMarketplaceIds,
+      observedValidMarketplaceIds,
+    );
+    if (canonicalSyncMarketplaceIds.length === 0) {
+      throw new Error(
+        "No hay marketplaces solicitados u observados validos para sincronizar ventas FBA canonical.",
+      );
+    }
 
     const { data, error } = await supabaseAdmin.rpc(
       "sync_ventas_diarias_from_amazon_fba_sales",
       {
         p_start_date: startDate,
         p_end_date: endDate,
-        p_marketplace_ids:
-          effectiveMarketplaceIds.length > 0 ? effectiveMarketplaceIds : null,
+        p_marketplace_ids: canonicalSyncMarketplaceIds,
         p_tipo_cliente: tipoCliente,
         p_source: source,
       },
@@ -289,7 +299,10 @@ export async function POST(request: NextRequest) {
       source,
       tipoCliente,
       range: { startDate, endDate },
-      marketplaceIds: effectiveMarketplaceIds.length > 0 ? effectiveMarketplaceIds : resultMarketplaces,
+      marketplaceIds:
+        canonicalSyncMarketplaceIds.length > 0
+          ? canonicalSyncMarketplaceIds
+          : resultMarketplaces,
       deletedPreviousRows: Number(result.deleted ?? 0),
       insertedRows,
       insertedUnits,

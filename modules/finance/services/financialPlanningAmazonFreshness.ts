@@ -3,6 +3,19 @@ import { syncAmazonFinancialPlanning } from "./amazonFinancialPlanningSync";
 
 export const AMAZON_FINANCE_FRESHNESS_MS=30*60*1000;
 
+/** Screen reads never start a sync. Explicit refresh/cron own that operation. */
+export async function readAmazonPlanningFreshness(now = new Date()): Promise<AmazonPlanningFreshness> {
+  try {
+    const state = await getAmazonSyncState();
+    const age = state.lastSuccessfulAt ? now.getTime() - new Date(state.lastSuccessfulAt).getTime() : Infinity;
+    const stale = state.status !== "succeeded" || age < 0 || age >= AMAZON_FINANCE_FRESHNESS_MS;
+    return { stale, warning: stale ? "AMAZON_FINANCE_SYNC_STALE" : null,
+      lastSuccessfulAmazonSyncAt: state.lastSuccessfulAt, syncAttempted: false };
+  } catch {
+    return { stale: true, warning: "AMAZON_FINANCE_SYNC_STALE", lastSuccessfulAmazonSyncAt: null, syncAttempted: false };
+  }
+}
+
 export type AmazonPlanningFreshness = {
   stale: boolean;
   warning: "AMAZON_FINANCE_SYNC_STALE" | null;

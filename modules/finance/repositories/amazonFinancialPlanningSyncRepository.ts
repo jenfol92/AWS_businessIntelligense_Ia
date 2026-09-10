@@ -1,3 +1,4 @@
+import { assertAmazonObservationSchemaError } from "../utils/amazonObservationSchema";
 import { supabaseAdmin } from "@/server/supabase/adminClient";
 import type { AmazonProjectedCycle, AmazonSyncState } from "../types/amazonFinancialPlanningSync.types";
 import type { AmazonSettlementCandidate, AmazonSettlementReconciliation } from "../types/amazonSettlement.types";
@@ -10,12 +11,12 @@ export async function getAmazonSyncState(): Promise<AmazonSyncState> {
   return {status:data.status,lastSuccessfulAt:data.last_successful_at,lockedUntil:data.locked_until,lastResult:data.last_result};
 }
 
-export async function tryAcquireAmazonSync(runId:string,leaseSeconds=300) {
-  const {data,error}=await supabaseAdmin.rpc("finance_try_acquire_amazon_sync",{p_run_id:runId,p_lease_seconds:leaseSeconds});fail(error);return data as {acquired:boolean;lastSuccessfulAt:string|null};
+export async function tryAcquireAmazonSync(runId:string,leaseSeconds=300,signal?:AbortSignal) {
+  const {data,error}=await supabaseAdmin.rpc("finance_try_acquire_amazon_sync",{p_run_id:runId,p_lease_seconds:leaseSeconds}).abortSignal(signal??AbortSignal.timeout(15_000));fail(error);return data as {acquired:boolean;lastSuccessfulAt:string|null};
 }
 
 export async function finishAmazonSync(runId:string,succeeded:boolean,result:unknown,errorMessage:string|null) {
-  const {data,error}=await supabaseAdmin.rpc("finance_finish_amazon_sync",{p_run_id:runId,p_succeeded:succeeded,p_result:result,p_error:errorMessage});fail(error);return data;
+  const {data,error}=await supabaseAdmin.rpc("finance_finish_amazon_sync",{p_run_id:runId,p_succeeded:succeeded,p_result:result,p_error:errorMessage}).abortSignal(AbortSignal.timeout(15_000));fail(error);return data;
 }
 
 export async function upsertProjectedAmazonCycle(cycle:AmazonProjectedCycle):Promise<"created"|"updated"|"locked"> {
@@ -87,7 +88,7 @@ export type AmazonTreasuryObservation = {
   source:string; evidence:Record<string,unknown>;
 };
 
-export async function insertAmazonTreasuryObservationAdmin(item:AmazonTreasuryObservation){
+export async function insertAmazonTreasuryObservationAdmin(item:AmazonTreasuryObservation,signal?:AbortSignal){
   const {data,error}=await supabaseAdmin.rpc("finance_insert_amazon_treasury_observation",{
     p_observation_key:item.observationKey,p_source_key:item.sourceKey,p_marketplace:item.marketplace,
     p_economic_state:item.economicState,p_observed_at:item.observedAt,
@@ -103,7 +104,7 @@ export async function insertAmazonTreasuryObservationAdmin(item:AmazonTreasuryOb
     p_fx_source:item.fxSource,p_fx_observed_at:item.fxObservedAt??null,p_fx_kind:item.fxKind,
     p_estimated_fx_rate:item.estimatedFxRate??null,p_realized_fx_rate:item.realizedFxRate??null,p_realized_amount_eur:item.realizedAmountEur??null,
     p_source:item.source,p_evidence:item.evidence,
-  });fail(error);return data;
+  }).abortSignal(signal??AbortSignal.timeout(15_000));assertAmazonObservationSchemaError(error);return data;
 }
 
 export async function observeAmazonDeferredReleaseAdmin(transactionId:string,observedAt:string){
@@ -115,9 +116,9 @@ export async function retireStaleAmazonTreasuryStatesAdmin(states:Array<"AVAILAB
   const {error}=await supabaseAdmin.from("finance_amazon_income_forecasts").update({economic_state:null,treasury_amount_eur:null,expected_bank_date:null,updated_at:new Date().toISOString()}).in("economic_state",states).lt("snapshot_at",snapshotAt);fail(error);
 }
 
-export async function readAmazonTreasurySettingsAdmin(){
+export async function readAmazonTreasurySettingsAdmin(signal?:AbortSignal){
   const keys=["amazon_transfer_request_weekdays","amazon_bank_lag_days","amazon_treasury_percentile","amazon_min_history_samples"];
-  const {data,error}=await supabaseAdmin.from("finance_settings").select("key,value").in("key",keys);fail(error);
+  const {data,error}=await supabaseAdmin.from("finance_settings").select("key,value").in("key",keys).abortSignal(signal??AbortSignal.timeout(15_000));fail(error);
   const values=new Map((data??[]).map(row=>[String(row.key),row.value]));
   const rawWeekdays=values.get("amazon_transfer_request_weekdays");
   let weekdays=[1,3];try{const parsed=typeof rawWeekdays==="string"?JSON.parse(rawWeekdays):rawWeekdays;if(Array.isArray(parsed)&&parsed.every(v=>Number.isInteger(Number(v))&&Number(v)>=1&&Number(v)<=7))weekdays=parsed.map(Number);}catch{}
@@ -134,4 +135,11 @@ export async function readRecentAmazonSalesAdmin(productIds:string[],marketplace
     const weekday=Array(7).fill(0),counts=Array(7).fill(0);for(const row of rows){const d=new Date(`${row.fecha}T00:00:00Z`).getUTCDay();weekday[d]+=Number(row.unidades_vendidas??0);counts[d]++;}for(let i=0;i<7;i++)weekday[i]=counts[i]?weekday[i]/counts[i]:0;
     out.set(id,{rate7:sum(7),rate14:sum(14),rate30:sum(30),weekday});}
   return out;
+}
+
+export async function assertAmazonObservationSchemaReady(signal?:AbortSignal) {
+  const {error}=await supabaseAdmin.from("finance_amazon_treasury_forecast_snapshots")
+    .select("fx_kind,estimated_fx_rate,realized_amount_eur,realized_fx_rate").limit(0)
+    .abortSignal(signal??AbortSignal.timeout(15_000));
+  assertAmazonObservationSchemaError(error);
 }

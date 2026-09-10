@@ -175,9 +175,34 @@ function buildPlannerStats(
     totalCapitalExposure: annualPurchasePlan.totalCapitalExposure,
   };
 }
+async function timedPlanner<T>(
+  productIds: string[],
+  label: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const start = Date.now();
+
+  try {
+    return await fn();
+  } finally {
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+        `[planner timing] productIds=${productIds.length} ${label}: ${Date.now() - start}ms`,
+      );
+    }
+  }
+}
 
 export async function analyzeProducts(params: PlannerParams) {
-  const products = await getProductsForPlanning(params);
+  const productsStart = Date.now();
+
+const products = await getProductsForPlanning(params);
+
+if (process.env.NODE_ENV === "development") {
+  console.log(
+    `[planner timing] getProductsForPlanning: ${Date.now() - productsStart}ms`,
+  );
+}
   const productIds = products.map((p) => p.id);
   const candidateSkus = products.map((p) => p.sku).filter(Boolean);
 
@@ -203,32 +228,70 @@ export async function analyzeProducts(params: PlannerParams) {
     recentSales90Map,
     calendarEvents,
   ] = await Promise.all([
-    getCompetitorBenchmarksForPlanning(
+    timedPlanner(
       productIds,
-      candidateSkus,
-      params.country,
+      "getCompetitorBenchmarksForPlanning",
+      () =>
+        getCompetitorBenchmarksForPlanning(
+          productIds,
+          candidateSkus,
+          params.country,
+        ),
     ),
-    findProductSupplyConfigsByProductoIds(productIds),
-    fetchLastOrderLeadTimesByProductIds(productIds),
-    fetchPreviousYearMonthlySalesBatch(
+  
+    timedPlanner(
       productIds,
-      baseYear,
-      countryScope.countries,
-      channelScope.ventasCanal,
+      "findProductSupplyConfigsByProductoIds",
+      () => findProductSupplyConfigsByProductoIds(productIds),
     ),
-    fetchRecentSalesByProductIds(
+  
+    timedPlanner(
       productIds,
-      30,
-      params.country,
-      channelScope.ventasCanal,
+      "fetchLastOrderLeadTimesByProductIds",
+      () => fetchLastOrderLeadTimesByProductIds(productIds),
     ),
-    fetchRecentSalesByProductIds(
+  
+    timedPlanner(
       productIds,
-      90,
-      params.country,
-      channelScope.ventasCanal,
+      "fetchPreviousYearMonthlySalesBatch",
+      () =>
+        fetchPreviousYearMonthlySalesBatch(
+          productIds,
+          baseYear,
+          countryScope.countries,
+          channelScope.ventasCanal,
+        ),
     ),
-    loadLogisticsCalendarEventsForPlanning(),
+  
+    timedPlanner(
+      productIds,
+      "fetchRecentSales30",
+      () =>
+        fetchRecentSalesByProductIds(
+          productIds,
+          30,
+          params.country,
+          channelScope.ventasCanal,
+        ),
+    ),
+  
+    timedPlanner(
+      productIds,
+      "fetchRecentSales90",
+      () =>
+        fetchRecentSalesByProductIds(
+          productIds,
+          90,
+          params.country,
+          channelScope.ventasCanal,
+        ),
+    ),
+  
+    timedPlanner(
+      productIds,
+      "loadLogisticsCalendarEventsForPlanning",
+      () => loadLogisticsCalendarEventsForPlanning(),
+    ),
   ]);
 
   const supplyConfigsByProductId = new Map<string, ProductSupplyConfig>();

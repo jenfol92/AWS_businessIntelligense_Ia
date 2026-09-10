@@ -28,8 +28,9 @@ export function clearLwaAccessTokenCache(): void {
 
 export async function getLwaAccessToken(
   config: SpApiConfig,
-  options: { forceRefresh?: boolean } = {},
+  options: { forceRefresh?: boolean; signal?: AbortSignal } = {},
 ): Promise<LwaAccessTokenResult> {
+  options.signal?.throwIfAborted();
   const now = Date.now();
   if (!options.forceRefresh && cachedToken && cachedToken.expiresAtMs > now) {
     return {
@@ -52,6 +53,7 @@ export async function getLwaAccessToken(
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
+      ...(options.signal ? { signal: options.signal, redirect: "error" as const } : {}),
     });
   } catch (error) {
     throw mapUpstreamFetchError(error, "LWA", LWA_TOKEN_URL);

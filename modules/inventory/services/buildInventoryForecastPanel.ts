@@ -100,6 +100,7 @@ export async function buildInventoryForecastPanel(
   stockSuggestion: StockSuggestion,
 
   scope: ForecastPanelParams = {},
+  signal?: AbortSignal,
 
 ): Promise<InventoryForecastPanel> {
 
@@ -124,6 +125,8 @@ export async function buildInventoryForecastPanel(
     channel,
 
     includeNewProducts: true,
+    
+    productIds: [product.productoId],
 
     forecastConfigOverrides: scope.forecastOverride
 
@@ -144,8 +147,7 @@ export async function buildInventoryForecastPanel(
       },
     },
 
-  });
-
+  }, signal);
 
 
   const forecast =

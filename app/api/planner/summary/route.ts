@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { analyzeProducts } from "@/modules/planner/services/analyzeProducts";
 import { enrichPlannerSummary } from "@/modules/planner/services/enrichPlannerSummary";
+import { buildPlannerFundingSummary } from "@/modules/planner/services/buildPlannerFundingSummary";
+import { buildPlannerAnnualChart } from "@/modules/planner/services/buildPlannerAnnualChart";
+import { buildFinancialPlanning } from "@/modules/finance/services/buildFinancialPlanning";
 import { fetchAgentsMap } from "@/modules/planner/repositories/plannerRepository";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import type { PlannerParams } from "@/modules/planner/types/planner.types";
@@ -133,6 +136,22 @@ export async function GET(req: Request) {
       agentsMap,
     );
 
+    let funding:ReturnType<typeof buildPlannerFundingSummary>|null=null;
+    let fundingWarning:string|null=null;
+    try{
+      const finance=await buildFinancialPlanning({months:parsed.params.horizonMonths??12});
+      funding=buildPlannerFundingSummary({
+        purchaseCapitalRequired:result.annualPurchasePlan.totalPurchaseCapitalRequired,
+        capitalAlreadyCommitted:result.annualPurchasePlan.capitalAlreadyCommitted,
+        operatingCashAvailableAboveReserveEur:finance.summary.operatingCashAvailableAboveReserveEur,
+        totalCreditAvailableEur:finance.summary.totalCreditAvailable,
+        amazonExpectedEur:finance.summary.amazonExpected,
+      });
+    }catch(error){
+      fundingWarning=error instanceof Error?error.message:"Financiación no disponible";
+      console.error("[planner/summary] financial capacity unavailable",error);
+    }
+
     const carlyDebug = enriched.lines
       .filter((l) => (l.sku ?? "").toUpperCase().includes("CARLY"))
       .map((l) => ({
@@ -157,6 +176,14 @@ export async function GET(req: Request) {
         portGroups: enriched.portGroups,
         containerGroups: enriched.containerGroups,
       },
+      funding,
+      fundingWarning,
+      annualChart: buildPlannerAnnualChart({
+        products: result.products,
+        replenishmentLines: enriched.lines,
+        newProductBudgetEur: funding?.suggestedNewProductBudgetEur ?? 0,
+        horizonMonths: parsed.params.horizonMonths ?? 12,
+      }),
     });
   } catch (error) {
     const message =

@@ -11,6 +11,7 @@ import type {
   SalesAgg,
 } from "../types/inventory.types";
 import type { InventoryContext } from "./loadInventoryContext";
+import { buildOperationalStockSummary } from "./resolveOperationalStock";
 import {
   avgDaily,
   countryRisk,
@@ -70,7 +71,7 @@ export function buildCountryRowsForProduct(
     });
     const sales =
       ctx.sales.byProductCountry.get(salesKey(productId, pais)) ??
-      ({ unitsPeriod: 0, units30: 0, units90: 0 } as SalesAgg);
+      ({ unitsPeriod: 0, units30: 0, units60: 0, units90: 0 } as SalesAgg);
     const marketplaceSales = ctx.marketplaceSales.byProductMarketplace.get(
       salesKey(productId, pais),
     );
@@ -95,6 +96,7 @@ export function buildCountryRowsForProduct(
       stockTotal,
       salesUnitsPeriod,
       salesUnits30: sales.units30,
+      salesUnits60: sales.units60,
       salesUnits90: sales.units90,
       marketplaceSalesUnits30: marketplaceSales?.units30 ?? 0,
       marketplaceSalesUnits90: marketplaceSales?.units90 ?? 0,
@@ -129,28 +131,17 @@ export function buildProductSummary(
     (country) => country.stockFbaLedgerSnapshotDate != null,
   );
 
-  let stockFba = 0;
-  let stockFbm = 0;
-  let stockTotal = 0;
+  const operational = buildOperationalStockSummary(
+    ctx.inventoryRows.filter((row) => row.producto_id === product.id),
+    ctx.fbaLedgerLatest.get(product.id),
+    ctx.fbaInventorySnapshotLatest.get(product.id),
+    {},
+    ctx.fbmInventorySnapshotLatest.get(product.id),
+  );
+  let stockFba = operational.stockOperationalFba;
+  let stockFbm = operational.stockOperationalFbm;
+  let stockTotal = operational.stockOperationalTotal ?? stockFba;
   const legacyFba = stockView?.stock_fba ?? 0;
-
-  if (hasLedgerCountryRows) {
-    for (const c of countries) {
-      stockFba += c.stockFba;
-      stockFbm += c.stockFbm;
-    }
-    stockTotal = stockFba + stockFbm;
-  } else if (stockView) {
-    stockFba = legacyFba;
-    stockFbm = stockView.stock_fbm;
-    stockTotal = stockView.stock_actual;
-  } else {
-    for (const c of countries) {
-      stockFba += c.stockFba;
-      stockFbm += c.stockFbm;
-    }
-    stockTotal = stockFba + stockFbm;
-  }
 
   const latestLedgerDate =
     countries
@@ -158,11 +149,7 @@ export function buildProductSummary(
       .filter(Boolean)
       .sort()
       .at(-1) ?? null;
-  const canonicalFbaOperationalSource = hasLedgerCountryRows
-    ? "Inventory Ledger Amazon"
-    : stockView
-      ? "Legacy pais"
-      : "Sin fuente FBA";
+  const canonicalFbaOperationalSource = operational.stockOperationalFbaSource;
 
   if (
     hasLedgerCountryRows &&
@@ -183,22 +170,18 @@ export function buildProductSummary(
 
   const globalSales =
     ctx.sales.byProductGlobal.get(salesKeyGlobal(product.id)) ??
-    ({ unitsPeriod: 0, units30: 0, units90: 0 } as SalesAgg);
+    ({ unitsPeriod: 0, units30: 0, units60: 0, units90: 0 } as SalesAgg);
 
   const hasHistory = globalSales.units90 > 0;
   const hasBenchmark = ctx.benchmarkIds.has(product.id);
   const inboundRows = ctx.inbound.get(product.id) ?? [];
   const hasInbound = inboundRows.length > 0;
   const salesUnitsPeriod = globalSales.unitsPeriod ?? globalSales.units30;
-  const avgDailyDemand = avgDaily(salesUnitsPeriod, ctx.periodDays);
+  const avgDailyDemand = avgDaily(globalSales.units30, 30);
 
-  const coverage = hasLedgerCountryRows
-    ? coverageDays(stockTotal, avgDailyDemand)
-    : stockView?.dias_cobertura ?? coverageDays(stockTotal, avgDailyDemand);
+  const coverage = coverageDays(stockTotal, avgDailyDemand);
   const countryRisks = countries.map((c) => c.risk);
-  const risk = hasLedgerCountryRows
-    ? productRisk(countryRisks, undefined)
-    : productRisk(countryRisks, stockView?.riesgo);
+  const risk = productRisk(countryRisks, undefined);
 
   return {
     productoId: product.id,
@@ -214,13 +197,14 @@ export function buildProductSummary(
     stockFba,
     stockFbm,
     stockFbaOperationalSource: canonicalFbaOperationalSource,
-    stockFbaLatestSnapshot: hasLedgerCountryRows ? stockFba : null,
-    stockFbaLatestSnapshotAt: latestLedgerDate,
+    stockFbaLatestSnapshot: operational.stockFbaLatestSnapshot,
+    stockFbaLatestSnapshotAt: operational.stockFbaLatestSnapshotAt,
     stockOperationalTotal: stockTotal,
     stockOperationalSource: canonicalFbaOperationalSource,
-    hasFbaSnapshot: hasLedgerCountryRows,
+    hasFbaSnapshot: operational.stockOperationalFbaSource === "fba_inventory_snapshot",
     salesUnitsPeriod,
     salesUnits30: globalSales.units30,
+    salesUnits60: globalSales.units60,
     salesUnits90: globalSales.units90,
     coverageDays: coverage,
     risk,
@@ -311,8 +295,12 @@ export function riskLabel(risk: InventoryRiskLevel): string {
       return "Bajo";
     case "sin_ventas":
       return "Sin ventas";
+      case "exceso":
+        return "Exceso";
+    case "saludable":
+      return "Saludable";
     default:
-      return "OK";
+      return "Saludable";
   }
 }
 

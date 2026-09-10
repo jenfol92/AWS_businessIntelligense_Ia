@@ -101,7 +101,7 @@ export async function middleware(req: NextRequest) {
   // Ya autenticado → fuera del login
   if (session && path === "/login") {
     return NextResponse.redirect(
-      new URL(`/${currentLocale}/productos`, req.url)
+      new URL(`/${currentLocale}`, req.url)
     );
   }
 

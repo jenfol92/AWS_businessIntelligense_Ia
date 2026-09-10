@@ -25,9 +25,12 @@ test("operational preview defaults exactly to PAN_EU/ES and UK/GB", () => {
   assert.equal(inventorySummaryRequestCount(135), 6);
 });
 
-test("production publication default remains PAN_EU/ES only", () => {
-  assert.equal(PUBLISHED_INVENTORY_MARKETPLACE_POOL_PLAN.kind, "PAN_EU_REFERENCE_ONLY");
-  assert.deepEqual(resolvePublishedInventoryMarketplaceIds(), ["A1RKKUPIHCS9HS"]);
+test("production publication requires atomic PAN_EU/ES plus UK/GB", () => {
+  assert.equal(PUBLISHED_INVENTORY_MARKETPLACE_POOL_PLAN.kind, "PAN_EU_PLUS_GB");
+  assert.deepEqual(resolvePublishedInventoryMarketplaceIds(), [
+    "A1RKKUPIHCS9HS",
+    "A1F83G8C2ARO7P",
+  ]);
 });
 
 test("explicit multi-marketplace diagnostics remain available", () => {

@@ -25,7 +25,21 @@ const SALES_CHANNEL_TO_MARKETPLACE_ID: Record<string, string> = {
   "amazon.pl": "A1C3SOZRARQ6R3",
   "amazon.ie": "A28R8C7NBKEWEA",
   "amazon.ae": "A2VIGQ35RCS4UG",
+  "amazon.sa": "A17E79C6D8DWNP",
 };
+
+export function buildCanonicalSalesMarketplaceScope(
+  requestedMarketplaceIds: readonly string[],
+  observedMarketplaceIds: readonly string[],
+): string[] {
+  return Array.from(
+    new Set(
+      [...requestedMarketplaceIds, ...observedMarketplaceIds]
+        .map((marketplaceId) => marketplaceId.trim())
+        .filter(Boolean),
+    ),
+  ).sort();
+}
 
 export function salesChannelToMarketplaceCountry(
   salesChannel: string | null | undefined,
@@ -43,6 +57,16 @@ export function salesChannelToMarketplaceId(
   const normalized = String(salesChannel ?? "").trim().toLowerCase();
   if (!normalized) return null;
   return SALES_CHANNEL_TO_MARKETPLACE_ID[normalized] ?? null;
+}
+
+export function observedValidSalesMarketplaceId(params: {
+  saleDate: string | null;
+  sku: string;
+  quantity: number;
+  salesChannel: string | null | undefined;
+}): string | null {
+  if (!params.saleDate || !params.sku.trim() || params.quantity === 0) return null;
+  return salesChannelToMarketplaceId(params.salesChannel);
 }
 
 export function resolveFbaSaleCountry(params: {

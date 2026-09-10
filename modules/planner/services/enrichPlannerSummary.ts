@@ -13,6 +13,7 @@ import {
   resolveSupplierPreferredPort,
 } from "../repositories/plannerRepository";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
+import { fetchMarketplaceSalesAggregates } from "@/modules/inventory/repositories/inventoryRepository";
 import type {
   AnnualPurchasePlanResult,
   ContainerOptimizationGroup,
@@ -29,6 +30,54 @@ import { buildContainerOptimizationGroups } from "./buildContainerOptimizationGr
 import { buildRecommendationInsights } from "./buildRecommendationInsights";
 
 const UNKNOWN_PORT_KEY = "UNKNOWN_PORT";
+
+type DestinationSignal={country:string;projectedShortage:number;averageDailySales:number;daysOfCover:number|null;observedAt:string|null};
+
+async function fetchRecommendedDestinationSignals(supabase:ReturnType<typeof createSupabaseRouteClient>,productIds:string[]):Promise<Map<string,DestinationSignal>>{
+  if(!productIds.length)return new Map();
+  const {data,error}=await supabase.from("v_amazon_forecast_logistics_read_model").select("producto_id,country,date,avg_daily_sales_30d,days_of_cover,projected_shortage,operational_observed_at").in("producto_id",productIds).order("date",{ascending:false}).limit(Math.max(500,productIds.length*20));
+  if(error){
+    console.warn("[planner/summary] destination read model unavailable; using Inventory sales fallback",error.message);
+    const fallback = new Map<string,DestinationSignal>();
+    try {
+      const { byProductMarketplace } = await fetchMarketplaceSalesAggregates(productIds, { window30Days: 30, window90Days: 90 });
+      for (const [key, sales] of Array.from(byProductMarketplace.entries())) {
+        const productId = key.split("::")[0];
+        const candidate:DestinationSignal = {
+          country: sales.marketplaceCountry,
+          projectedShortage: 0,
+          averageDailySales: sales.units30 > 0 ? sales.units30 / 30 : sales.units90 / 90,
+          daysOfCover: null,
+          observedAt: null,
+        };
+        const current = fallback.get(productId);
+        if (!current || candidate.averageDailySales > current.averageDailySales) fallback.set(productId, candidate);
+      }
+    } catch (fallbackError) {
+      console.warn("[planner/summary] Inventory marketplace sales fallback unavailable", fallbackError);
+    }
+    return fallback;
+  }
+  const latestDateByProduct=new Map<string,string>();
+  const grouped=new Map<string,DestinationSignal>();
+  for(const row of data??[]){
+    const productId=String(row.producto_id??""),country=String(row.country??"").toUpperCase(),date=String(row.date??"");
+    if(!productId||!country||!date)continue;
+    const latest=latestDateByProduct.get(productId);
+    if(latest&&date<latest)continue;
+    if(!latest||date>latest){latestDateByProduct.set(productId,date);for(const key of Array.from(grouped.keys()))if(key.startsWith(`${productId}|`))grouped.delete(key);}
+    const key=`${productId}|${country}`,current=grouped.get(key)??{country,projectedShortage:0,averageDailySales:0,daysOfCover:null,observedAt:null};
+    current.projectedShortage+=Number(row.projected_shortage??0);
+    current.averageDailySales+=Number(row.avg_daily_sales_30d??0);
+    const cover=row.days_of_cover==null?null:Number(row.days_of_cover);
+    current.daysOfCover=current.daysOfCover==null?cover:cover==null?current.daysOfCover:Math.min(current.daysOfCover,cover);
+    current.observedAt=String(row.operational_observed_at??"")||current.observedAt;
+    grouped.set(key,current);
+  }
+  const result=new Map<string,DestinationSignal>();
+  for(const [key,signal] of Array.from(grouped.entries())){const productId=key.split("|")[0];const previous=result.get(productId);if(!previous||signal.projectedShortage>previous.projectedShortage||(signal.projectedShortage===previous.projectedShortage&&signal.averageDailySales>previous.averageDailySales))result.set(productId,signal);}
+  return result;
+}
 
 type AnalyzeResult = {
   annualPurchasePlan: AnnualPurchasePlanResult;
@@ -154,10 +203,11 @@ export async function enrichPlannerSummary(
         ? "AMAZON_FBA"
         : null;
 
-  const [portNames, salesWindows, puertosFabrica] = await Promise.all([
+  const [portNames, salesWindows, puertosFabrica, destinationSignals] = await Promise.all([
     fetchPortNamesMap(portIds),
     fetchSales30And90Days(productIds, country, canal),
     fetchPuertosFabricaBySupplier(supabase, supplierIds),
+    fetchRecommendedDestinationSignals(supabase,productIds),
   ]);
 
   const enrichedLines: EnrichedAnnualPurchasePlanLine[] =
@@ -166,6 +216,7 @@ export async function enrichPlannerSummary(
       const forecast = forecastById.get(line.productId);
       const simulation = simulationById.get(line.productId);
       const sales = salesWindows.get(line.productId);
+      const destinationSignal=destinationSignals.get(line.productId);
 
       const insights =
         product && forecast && simulation
@@ -206,6 +257,29 @@ export async function enrichPlannerSummary(
 
       return {
         ...line,
+        currentStock: product?.stockTotal ?? 0,
+        inboundConfirmed: product?.stockInboundConfirmed ?? 0,
+        inboundProvisional: product?.stockInboundProvisional ?? 0,
+        existingInboundDestinations: Array.from(new Set((product?.inboundSchedule??[]).filter(entry=>entry.usableForPlanning!==false).map(entry=>entry.forecastCountry).filter((value):value is string=>Boolean(value)))),
+        recommendedDestination: params.country&&params.country!=="ALL"
+          ? params.country
+          : destinationSignal
+            ? destinationSignal.projectedShortage > 0
+              ? `${destinationSignal.country} · déficit ${Math.round(destinationSignal.projectedShortage)} uds`
+              : `${destinationSignal.country} · mayor venta ${destinationSignal.averageDailySales.toFixed(1)} uds/día`
+            : "Sin evidencia fiable por país",
+        monthlyForecastUnits: forecast?.monthly.map(month=>month.forecastUnits)??[],
+        monthlyInboundUnits: simulation?.months.map(month=>month.inboundUnits)??[],
+        forecastMethod: forecast?.method ?? "NO_HISTORY",
+        monthlyInboundDetails: (product?.inboundSchedule ?? []).map((entry) => ({
+          eta: entry.eta,
+          units: entry.units,
+          orderId: entry.ordenId ?? null,
+          orderNumber: entry.numeroOrden ?? null,
+          country: entry.forecastCountry,
+          channel: entry.forecastChannel,
+          confidence: entry.confidence,
+        })),
         supplierPreferredPortId: preferredPort.id,
         supplierPreferredPortName: preferredPort.name,
         displayPortName: preferredPort.name,

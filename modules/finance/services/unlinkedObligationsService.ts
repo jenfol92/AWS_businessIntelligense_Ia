@@ -263,7 +263,7 @@ export function mapUnlinkedObligationTemplate(row: RawRow): UnlinkedObligationTe
   return {
     id: assertUuid(row.id), concept: text(row.concept, "concept"), category: oneOf(row.category, CATEGORIES, "category"),
     counterpartyName: nullableText(row.counterparty_name), description: nullableText(row.description), amount: amountFromRow(row),
-    startDate: assertDateOnly(row.start_date, "start_date"), endDate: assertDateOnly(row.end_date, "end_date"),
+    startDate: assertDateOnly(row.start_date, "start_date"), endDate: row.end_date == null ? null : assertDateOnly(row.end_date, "end_date"),
     anchorDay: integer(row.anchor_day, "anchor_day"), anchorMonth: integer(row.anchor_month, "anchor_month"),
     frequencyUnit: "month", frequencyInterval: interval as UnlinkedFrequencyInterval,
     status: oneOf(row.status, TEMPLATE_STATUSES, "status") as UnlinkedTemplateStatus,

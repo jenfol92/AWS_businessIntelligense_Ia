@@ -7,13 +7,12 @@ import {
   fetchAmazonSyncJobStatus,
   fetchTopPriceByProductCountry,
 } from "../repositories/inventoryRepository";
-import type { InventoryProductDetailResponse } from "../types/inventory.types";
+import type { InventoryProductCoreResponse } from "../types/inventory.types";
 import {
   buildCountryRowsForProduct,
   buildProductSummary,
 } from "./buildInventoryProduct";
-import { buildAnnualInventoryForecast } from "./buildAnnualInventoryForecast";
-import { buildInventoryForecastPanel } from "./buildInventoryForecastPanel";
+
 import { resolveCountryScope } from "./inventoryScope";
 import {
   applyScopedProductMetrics,
@@ -21,6 +20,7 @@ import {
   loadInventoryContextForProduct,
 } from "./loadInventoryContext";
 import { buildOperationalStockSummary } from "./resolveOperationalStock";
+
 
 function logInventoryDetailTiming(
   productId: string,
@@ -42,6 +42,7 @@ export type ProductInventoryDetailParams = {
   periodTo?: string;
   forecastOverride?: ProductForecastConfigUpsertBody | null;
   debugStockout?: boolean;
+  signal?: AbortSignal;
 };
 
 function todayIsoDate(): string {
@@ -51,14 +52,16 @@ function todayIsoDate(): string {
 export async function buildProductInventoryDetail(
   productId: string,
   params: ProductInventoryDetailParams = {},
-): Promise<InventoryProductDetailResponse | null> {
+): Promise<InventoryProductCoreResponse | null> {
   const totalStart = Date.now();
   let productIdsCount = 0;
 
   try {
   const windowDays = params.windowDays ?? 30;
   const contextStart = Date.now();
-  const ctx = await loadInventoryContextForProduct(
+
+const [ctx, fbaInventorySyncStatus] = await Promise.all([
+  loadInventoryContextForProduct(
     productId,
     params.canal,
     windowDays,
@@ -66,23 +69,27 @@ export async function buildProductInventoryDetail(
       fromDate: params.periodFrom,
       toDate: params.periodTo,
     },
-  );
-  productIdsCount = ctx.productIds.length;
-  logInventoryDetailTiming(
-    productId,
-    productIdsCount,
-    "loadInventoryContextForProduct",
-    contextStart,
-  );
-  const fbaInventorySyncStatus = await fetchAmazonSyncJobStatus(
+    params.signal,
+  ),
+  fetchAmazonSyncJobStatus(
     "amazon_fba_inventory_snapshot",
-  );
+  ),
+]);
+
+productIdsCount = ctx.productIds.length;
+
+logInventoryDetailTiming(
+  productId,
+  productIdsCount,
+  "loadInventoryContextForProduct",
+  contextStart,
+);
   const productRow = findProductInContext(ctx, productId);
 
   const assembleDetail = async (
     targetId: string,
     product: ReturnType<typeof buildProductSummary>,
-  ): Promise<InventoryProductDetailResponse> => {
+  ): Promise<InventoryProductCoreResponse> => {
     const scopedStart = Date.now();
     const scopedProduct = applyScopedProductMetrics(
       product,
@@ -158,18 +165,7 @@ export async function buildProductInventoryDetail(
         }
       : null;
 
-    const baseProduct =
-      productRow ?? ctx.products.find((p) => p.id === targetId);
-    if (!baseProduct) {
-      throw new Error("Producto no encontrado en contexto");
-    }
-
-    const stockoutRiskHint =
-      scopedProduct.risk === "critico" ||
-      scopedProduct.risk === "bajo" ||
-      (stockSuggestion?.diasCobertura != null &&
-        stockSuggestion.leadTimeDays != null &&
-        stockSuggestion.diasCobertura < stockSuggestion.leadTimeDays);
+ 
 
     const productInvRows = ctx.inventoryRows.filter(
       (r) => r.producto_id === targetId,
@@ -179,6 +175,8 @@ export async function buildProductInventoryDetail(
       productInvRows,
       ctx.fbaLedgerLatest.get(targetId),
       ctx.fbaInventorySnapshotLatest.get(targetId),
+      {},
+      ctx.fbmInventorySnapshotLatest.get(targetId),
     );
 
     const operationalStock = {
@@ -192,59 +190,17 @@ export async function buildProductInventoryDetail(
       operationalStockStart,
     );
 
-    const annualForecastStart = Date.now();
-    const annualForecast = await buildAnnualInventoryForecast(
-      baseProduct,
-      ctx.inventoryRows,
-      inbound,
-      ctx.products,
-      {
-        pais: params.pais,
-        canal: params.canal,
-        forecastOverride: params.forecastOverride,
-        debugStockout: params.debugStockout,
-        operationalStock: operationalStockBase,
-      },
-    );
-    logInventoryDetailTiming(
-      targetId,
-      productIdsCount,
-      "buildAnnualInventoryForecast",
-      annualForecastStart,
-    );
-
-    const forecastPanelStart = Date.now();
-    const forecast = await buildInventoryForecastPanel(
-      scopedProduct,
-      stockSuggestion,
-      {
-        pais: params.pais,
-        canal: params.canal,
-        windowDays,
-        forecastOverride: params.forecastOverride,
-        hasBenchmark: annualForecast.methodInfo?.dataAvailability.hasBenchmark,
-        stockoutRiskHint,
-        annualForecast,
-      },
-    );
-    logInventoryDetailTiming(
-      targetId,
-      productIdsCount,
-      "buildInventoryForecastPanel",
-      forecastPanelStart,
-    );
 
     return {
       ok: true,
       product: scopedProduct,
       countries: countriesWithPriceTop,
       inbound,
-      inboundUnitsTotal: inboundUnitsConfirmedTotal + inboundUnitsProvisionalTotal,
+      inboundUnitsTotal:
+        inboundUnitsConfirmedTotal + inboundUnitsProvisionalTotal,
       inboundUnitsConfirmedTotal,
       inboundUnitsProvisionalTotal,
       stockSuggestion,
-      forecast,
-      annualForecast,
       operationalStock,
       recentWindowDays: windowDays,
       periodLabel: ctx.periodLabel,

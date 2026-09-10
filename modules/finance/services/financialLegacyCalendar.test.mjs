@@ -24,9 +24,11 @@ test("legacy cards expose costs, state and the single payment action", () => {
   assert.equal((page.match(/Pagar y liberar/g) ?? []).length, 2);
 });
 
+const monthlyTotals = readFileSync(new URL("../utils/buildMonthlyTotals.ts", import.meta.url), "utf8");
+
 test("legacy principal is in Lines while known costs affect projected cash and treasury", () => {
-  assert.match(builder, /eventCategory\(event\)/);
-  assert.match(builder, /pending\[category\] \+= event\.plannedAmountEur/);
+  assert.match(monthlyTotals, /eventCategory\(event\)/);
+  assert.match(monthlyTotals, /pending\[category\] \+= event\.plannedAmountEur/);
   assert.match(builder, /projectedCash -= event\.plannedAmountEur \+ \(event\.expectedInterestEur \?\? 0\) \+ \(event\.expectedFeesEur \?\? 0\)/);
   assert.match(builder, /event\.type==="credit_line_maturity"\?event\.plannedAmountEur\+\(event\.expectedInterestEur\?\?0\)\+\(event\.expectedFeesEur\?\?0\)/);
 });

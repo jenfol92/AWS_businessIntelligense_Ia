@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { analyzeProducts } from "@/modules/planner/services/analyzeProducts";
 import {supabaseAdmin} from "@/server/supabase/adminClient";
 import {runWithSupabaseRouteClient} from "@/server/supabase/routeClient";
-import {finishAmazonSync,readAmazonExpectedNetRatioAdmin,readRecentAmazonSalesAdmin,tryAcquireAmazonSync,upsertProjectedAmazonCycle} from "../repositories/amazonFinancialPlanningSyncRepository";
+import {assertAmazonObservationSchemaReady,finishAmazonSync,readAmazonExpectedNetRatioAdmin,readRecentAmazonSalesAdmin,tryAcquireAmazonSync,upsertProjectedAmazonCycle} from "../repositories/amazonFinancialPlanningSyncRepository";
 import type {AmazonFinancialPlanningSyncResult,AmazonProjectedCycle} from "../types/amazonFinancialPlanningSync.types";
 import {projectRemainingMonth,roundMoney} from "./amazonTreasuryModel";
 import {isTwinlyProduct} from "./amazonCashForecast";
@@ -26,13 +26,15 @@ export async function buildProjectedAmazonCycles(now=new Date()):Promise<AmazonP
   return cycles;
 }
 
-export async function syncAmazonFinancialPlanning(options:{now?:Date;startedAfter?:string;startedBefore?:string;observationsOnly?:boolean}={}):Promise<AmazonFinancialPlanningSyncResult>{
-  const started=Date.now();const now=options.now??new Date();const runId=randomUUID();const lock=await tryAcquireAmazonSync(runId,300);
+export async function syncAmazonFinancialPlanning(options:{now?:Date;startedAfter?:string;startedBefore?:string;observationsOnly?:boolean;signal?:AbortSignal}={}):Promise<AmazonFinancialPlanningSyncResult>{
+  await assertAmazonObservationSchemaReady(options.signal);
+  const started=Date.now();const now=options.now??new Date();const runId=randomUUID();const lock=await (async()=>{console.info("[finance/amazon-sync] lock start");const value=await tryAcquireAmazonSync(runId,300,options.signal);console.info("[finance/amazon-sync] lock result",{acquired:value.acquired});return value;})();
   const result:AmazonFinancialPlanningSyncResult={successful:false,skipped:!lock.acquired,skipReason:lock.acquired?null:"already_running",projectedCreated:0,projectedUpdated:0,projected:[],settlementsFound:0,closed:0,open:0,matched:0,unmatched:0,ambiguous:0,confirmedAmountEur:0,availableUpserted:0,deferredUpserted:0,deferredReleasedObserved:0,pendingBankUpserted:0,settlementDiagnostics:[],errors:[],durationMs:0,lastSyncAt:now.toISOString()};
   if(!lock.acquired){result.durationMs=Date.now()-started;return result;}
   try{
     if(!options.observationsOnly){result.projected=await buildProjectedAmazonCycles(now);for(const cycle of result.projected){const outcome=await upsertProjectedAmazonCycle(cycle);if(outcome==="created")result.projectedCreated++;else if(outcome==="updated")result.projectedUpdated++;}}
-    const observations=await observeAmazonTreasurySnapshots({now,startedAfter:options.startedAfter,startedBefore:options.startedBefore});result.settlementsFound=observations.groups;result.availableUpserted=observations.available;result.pendingBankUpserted=observations.pendingBank;result.deferredUpserted=observations.deferred;result.unmatched=observations.unresolved;result.errors.push(...observations.errors);
-    result.durationMs=Date.now()-started;result.lastSyncAt=new Date().toISOString();result.successful=result.errors.length===0;await finishAmazonSync(runId,result.successful,{...result,observations},result.successful?null:result.errors.map(error=>`${error.scope}:${error.message}`).join(" | "));return result;
+    console.info("[finance/amazon-sync] observations start");
+    const observations=await observeAmazonTreasurySnapshots({now,startedAfter:options.startedAfter,startedBefore:options.startedBefore,signal:options.signal});options.signal?.throwIfAborted();result.settlementsFound=observations.groups;result.availableUpserted=observations.available;result.pendingBankUpserted=observations.pendingBank;result.deferredUpserted=observations.deferred;result.unmatched=observations.unresolved;result.errors.push(...observations.errors);
+    result.durationMs=Date.now()-started;result.lastSyncAt=new Date().toISOString();result.successful=result.errors.length===0;console.info("[finance/amazon-sync] saving result",{successful:result.successful,errorCount:result.errors.length});await finishAmazonSync(runId,result.successful,{...result,observations},result.successful?null:result.errors.map(error=>`${error.scope}:${error.message}`).join(" | "));return result;
   }catch(error){result.durationMs=Date.now()-started;result.errors.push({scope:"sync",message:error instanceof Error?error.message:String(error)});await finishAmazonSync(runId,false,result,result.errors.at(-1)?.message??"AMAZON_FINANCE_SYNC_FAILED");throw error;}
 }

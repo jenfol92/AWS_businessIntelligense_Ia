@@ -22,6 +22,9 @@ export type PlannerParams = {
 
   includeNewProducts?: boolean;
 
+    /** Limita el análisis a productos concretos cuando un consumidor lo necesita. */
+    productIds?: string[];
+
   /** Overrides temporales por producto_id (simulación inventario). */
   forecastConfigOverrides?: Record<string, import("@/modules/planning/types").ProductForecastConfigUpsertBody>;
 
@@ -123,6 +126,23 @@ export type AnnualPurchasePlanLine = {
 
 /** Línea enriquecida para UI y API summary (nombres legibles + explicación). */
 export type EnrichedAnnualPurchasePlanLine = AnnualPurchasePlanLine & {
+  currentStock: number;
+  inboundConfirmed: number;
+  inboundProvisional: number;
+  existingInboundDestinations: string[];
+  recommendedDestination: string;
+  monthlyForecastUnits: number[];
+  monthlyInboundUnits: number[];
+  forecastMethod: DemandForecastResult["method"];
+  monthlyInboundDetails: Array<{
+    eta: string;
+    units: number;
+    orderId: string | null;
+    orderNumber: string | null;
+    country: string | null;
+    channel: string;
+    confidence: "confirmed" | "provisional";
+  }>;
   /** Puerto preferido del proveedor (proveedores.puerto_preferido_id → puertos_china). */
   supplierPreferredPortId: string | null;
   supplierPreferredPortName: string;
@@ -427,4 +447,3 @@ export type PortPurchaseGroup = {
   consolidationWarnings: string[];
   reason: string;
 };
-

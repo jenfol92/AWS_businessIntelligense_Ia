@@ -47,6 +47,24 @@ type EnrichedLine = PlannerLineForBasket & {
   businessImpact: string;
   urgencyLabel: string;
   readableTiming: string;
+  currentStock: number;
+  inboundConfirmed: number;
+  inboundProvisional: number;
+  existingInboundDestinations: string[];
+  recommendedDestination: string;
+  monthlyForecastUnits: number[];
+  monthlyInboundUnits: number[];
+  moqApplied: boolean;
+  forecastMethod: "HISTORICAL_SIMPLE" | "NO_HISTORY" | "NEW_PRODUCT_BENCHMARK";
+  monthlyInboundDetails: Array<{
+    eta: string;
+    units: number;
+    orderId: string | null;
+    orderNumber: string | null;
+    country: string | null;
+    channel: string;
+    confidence: "confirmed" | "provisional";
+  }>;
 };
 
 type PlannerStats = {
@@ -57,6 +75,21 @@ type PlannerStats = {
   goodCandidateGroups: number;
   earliestCriticalDate: string | null;
   dueThisWeekLines?: number;
+  capitalAlreadyCommitted?: number;
+};
+
+type PlannerFundingSummary={
+  purchaseCapitalRequired:number;
+  capitalAlreadyCommitted:number;
+  operatingCashAvailableAboveReserveEur:number;
+  totalCreditAvailableEur:number;
+  amazonExpectedEur:number;
+  immediateFundingCapacityEur:number;
+  capacityIncludingExpectedAmazonEur:number;
+  uncoveredImmediateNeedEur:number;
+  surplusAfterCorePurchasesEur:number;
+  suggestedNewProductBudgetEur:number;
+  fundingStatus:"COVERED"|"CREDIT_REQUIRED"|"FUNDING_GAP";
 };
 
 type PlannerSummarySuccess = {
@@ -64,6 +97,23 @@ type PlannerSummarySuccess = {
   stats: PlannerStats;
   annualPurchasePlan: { lines: EnrichedLine[] };
   purchasePlan: { containerGroups: ContainerOptimizationGroup[] };
+  funding: PlannerFundingSummary | null;
+  fundingWarning?: string | null;
+  annualChart: {
+    investmentQuarter: string | null;
+    months: Array<{
+      monthIndex: number;
+      yearMonth: string;
+      confirmedInboundUnits: number;
+      confirmedInboundRetailValueEur: number;
+      inboundValueIncomplete: boolean;
+      replenishmentUnits: number;
+      replenishmentCostEur: number;
+      newProductInvestmentBudgetEur: number;
+      inboundItems: Array<{ productId:string; sku:string; productName:string; units:number; retailValueEur:number|null; eta:string; orderId:string|null; orderNumber:string|null; country:string|null }>;
+      replenishmentItems: Array<{ productId:string; sku:string; productName:string; units:number; orderDate:string; estimatedArrivalDate:string|null; destination:string; purchaseCostEur:number|null; logisticsCalendarRisk:boolean; warnings:string[] }>;
+    }>;
+  };
 };
 
 type PlannerFilters = {
@@ -226,6 +276,11 @@ export default function PlanificadorPage() {
   const lines = data?.annualPurchasePlan.lines ?? [];
   const groups = data?.purchasePlan.containerGroups ?? [];
   const stats = data?.stats;
+  const [selectedPlanMonth, setSelectedPlanMonth] = useState<number | null>(null);
+  const monthlyPlan = data?.annualChart.months ?? [];
+  const monthlyUnitsMax=Math.max(1,...monthlyPlan.flatMap(month=>[month.replenishmentUnits,month.confirmedInboundUnits]));
+  const monthlyInvestmentMax=Math.max(1,...monthlyPlan.map(month=>month.newProductInvestmentBudgetEur));
+  const selectedMonth=selectedPlanMonth==null?null:monthlyPlan[selectedPlanMonth];
 
   const reviewGroup = groups.find((g) => g.groupId === reviewGroupId) ?? null;
 
@@ -289,6 +344,51 @@ export default function PlanificadorPage() {
         ))}
       </div>
 
+      {data?.funding ? (
+        <Card className="ring-1 ring-slate-200 p-4">
+          <Flex justifyContent="between" alignItems="start" className="gap-3 flex-wrap">
+            <div>
+              <Title className="text-base">Capacidad para ejecutar el plan</Title>
+              <Text className="mt-1 text-slate-600">La caja disponible ya excluye la reserva operativa. Las órdenes existentes sin llegada se mantienen como capital comprometido y como inbound del cálculo de la próxima fecha.</Text>
+            </div>
+            <Badge color={data.funding.fundingStatus==="COVERED"?"emerald":data.funding.fundingStatus==="CREDIT_REQUIRED"?"amber":"rose"}>
+              {data.funding.fundingStatus==="COVERED"?"Cubierto con caja":data.funding.fundingStatus==="CREDIT_REQUIRED"?"Necesita crédito":"Falta financiación"}
+            </Badge>
+          </Flex>
+          <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+            <div><Text className="text-xs">Compras recomendadas</Text><p className="font-semibold text-slate-900">{formatEur(data.funding.purchaseCapitalRequired)}</p></div>
+            <div><Text className="text-xs">Ya comprometido</Text><p className="font-semibold text-slate-900">{formatEur(data.funding.capitalAlreadyCommitted)}</p></div>
+            <div><Text className="text-xs">Caja sobre reserva</Text><p className="font-semibold text-emerald-700">{formatEur(data.funding.operatingCashAvailableAboveReserveEur)}</p></div>
+            <div><Text className="text-xs">Crédito disponible</Text><p className="font-semibold text-indigo-700">{formatEur(data.funding.totalCreditAvailableEur)}</p></div>
+            <div><Text className="text-xs">Cobros Amazon previstos</Text><p className="font-semibold text-sky-700">{formatEur(data.funding.amazonExpectedEur)}</p></div>
+            <div><Text className="text-xs">Necesidad no cubierta hoy</Text><p className="font-semibold text-rose-700">{formatEur(data.funding.uncoveredImmediateNeedEur)}</p></div>
+            <div><Text className="text-xs">Pruebas producto nuevo</Text><p className="font-semibold text-violet-700">{formatEur(data.funding.suggestedNewProductBudgetEur)}</p></div>
+          </div>
+        </Card>
+      ):data?.fundingWarning?<Callout title="Capacidad financiera no disponible" color="amber">El plan de unidades continúa visible, pero la validación de caja y crédito necesita revisión.</Callout>:null}
+
+      {monthlyPlan.length>0?(
+        <Card className="ring-1 ring-slate-200 p-4">
+          <Flex justifyContent="between" className="gap-3 flex-wrap"><div><Title className="text-base">Plan anual de reposición e inversión</Title><Text className="mt-1 text-slate-600">Haz clic en un mes para auditar cada producto, orden y fecha.</Text></div><div className="flex flex-wrap gap-3 text-xs text-slate-600"><span><i className="inline-block h-2 w-2 rounded-sm bg-blue-600 mr-1"/>Reposición necesaria (uds)</span><span><i className="inline-block h-2 w-2 rounded-sm bg-emerald-500 mr-1"/>Inbound confirmado (uds)</span><span><i className="inline-block h-2 w-2 rounded-sm bg-violet-500 mr-1"/>Nuevos productos (€)</span></div></Flex>
+          <Callout title="Qué significa cada barra" color="slate" className="mt-3">
+            <strong>Reposición</strong> es lo que habría que pedir en ese mes después de proyectar ventas, stock disponible, inbound confirmado por ETA, cobertura, lead time, stock de seguridad, MOQ, cajas y cubicaje. Los periodos de <code>logistics_calendar</code> amplían el lead time y se señalan como riesgo. <strong>Inbound</strong> sólo incluye órdenes confirmadas y muestra también su valor potencial de venta. <strong>Nuevos productos</strong> es presupuesto de inversión, no unidades ni órdenes creadas, reservado en meses sin reposición del primer trimestre disponible.
+          </Callout>
+          <div className="mt-4 grid grid-cols-6 gap-2 md:grid-cols-12" aria-label="Gráfica anual de reposición, inbound confirmado e inversión en nuevos productos">
+            {monthlyPlan.map(month=>{const date=new Date(`${month.yearMonth}-01T00:00:00Z`);return <button type="button" key={month.yearMonth} onClick={()=>setSelectedPlanMonth(month.monthIndex)} className={`min-w-0 rounded p-1 text-left hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 ${selectedPlanMonth===month.monthIndex?"bg-blue-50 ring-2 ring-blue-500":""}`} aria-label={`Ver detalle de ${month.yearMonth}`}><div className="mb-1 space-y-0.5 text-center text-[9px] leading-tight"><p className="font-semibold text-blue-700">{formatNum(month.replenishmentUnits)} u</p><p className="font-semibold text-emerald-700">{formatNum(month.confirmedInboundUnits)} u</p><p className="font-semibold text-violet-700">{formatEur(month.newProductInvestmentBudgetEur)}</p></div><div className="flex h-28 items-end justify-center gap-0.5 rounded bg-slate-50 px-1"><span className="w-1/3 bg-blue-600" style={{height:`${month.replenishmentUnits===0?0:Math.max(2,month.replenishmentUnits/monthlyUnitsMax*100)}%`}}/><span className="w-1/3 bg-emerald-500" style={{height:`${month.confirmedInboundUnits===0?0:Math.max(2,month.confirmedInboundUnits/monthlyUnitsMax*100)}%`}}/><span className="w-1/3 bg-violet-500" style={{height:`${month.newProductInvestmentBudgetEur===0?0:Math.max(2,month.newProductInvestmentBudgetEur/monthlyInvestmentMax*100)}%`}}/></div><p className="mt-1 text-center text-[10px] text-slate-500">{new Intl.DateTimeFormat("es-ES",{month:"short",year:"2-digit",timeZone:"UTC"}).format(date)}</p></button>})}
+          </div>
+          {selectedMonth?(
+            <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+              <Flex justifyContent="between"><Title className="text-sm">Detalle de {new Intl.DateTimeFormat("es-ES",{month:"long",year:"numeric",timeZone:"UTC"}).format(new Date(`${selectedMonth.yearMonth}-01T00:00:00Z`))}</Title><button type="button" onClick={()=>setSelectedPlanMonth(null)} aria-label="Cerrar detalle"><X className="h-4 w-4 text-slate-500"/></button></Flex>
+              <div className="mt-3 grid gap-4 lg:grid-cols-3">
+                <div><p className="font-semibold text-blue-700">Reposición · {formatNum(selectedMonth.replenishmentUnits)} uds · {formatEur(selectedMonth.replenishmentCostEur)}</p><div className="mt-2 max-h-52 space-y-2 overflow-auto">{selectedMonth.replenishmentItems.length?selectedMonth.replenishmentItems.map(item=><div key={item.productId} className="rounded bg-blue-50 p-2 text-xs"><p className="font-medium text-slate-800">{item.productName} · {formatNum(item.units)} uds</p><p className="text-slate-600">Pedir {formatDate(item.orderDate)} · llegada {formatDate(item.estimatedArrivalDate)}</p><p className="text-slate-500">Destino: {item.destination} · {formatEur(item.purchaseCostEur)}</p>{item.logisticsCalendarRisk?<p className="mt-1 font-semibold text-amber-700">Fecha afectada por logistics_calendar</p>:null}</div>):<Text>Este mes no necesita reposición.</Text>}</div></div>
+                <div><p className="font-semibold text-emerald-700">Inbound confirmado · {formatNum(selectedMonth.confirmedInboundUnits)} uds · {formatEur(selectedMonth.confirmedInboundRetailValueEur)}{selectedMonth.inboundValueIncomplete?" + valor pendiente":""}</p><div className="mt-2 max-h-52 space-y-2 overflow-auto">{selectedMonth.inboundItems.length?selectedMonth.inboundItems.map((item,index)=><div key={`${item.productId}-${item.orderId}-${item.eta}-${index}`} className="rounded bg-emerald-50 p-2 text-xs"><p className="font-medium text-slate-800">{item.productName} · {formatNum(item.units)} uds · {formatEur(item.retailValueEur)}</p><p className="text-slate-600">Orden {item.orderNumber??item.orderId??"sin número"} · ETA {formatDate(item.eta)}</p><p className="text-slate-500">Destino: {item.country??"pendiente"}</p></div>):<Text>Sin órdenes confirmadas con ETA este mes.</Text>}</div></div>
+                <div><p className="font-semibold text-violet-700">Nuevos productos · {formatEur(selectedMonth.newProductInvestmentBudgetEur)}</p><div className="mt-2 rounded bg-violet-50 p-3 text-xs text-slate-600">{selectedMonth.newProductInvestmentBudgetEur>0?<>Presupuesto disponible para validar nuevos productos. Se reserva en {data?.annualChart.investmentQuarter??"el trimestre seleccionado"} y no representa una orden hasta aprobar productos, MOQ y rentabilidad.</>:<>No se asigna inversión este mes porque hay reposición prevista o está fuera del trimestre de inversión.</>}</div></div>
+              </div>
+            </div>
+          ):null}
+        </Card>
+      ):null}
+
       {/* Tabla principal — desktop */}
       <section>
         <Title className="text-base mb-3">Necesidades de compra</Title>
@@ -321,10 +421,13 @@ export default function PlanificadorPage() {
                     <p className="text-xs font-mono text-slate-500">{row.sku}</p>
                     {row.supplierName && <p className="text-xs text-slate-500">{row.supplierName}</p>}
                     <div className="grid grid-cols-2 gap-2 mt-3 text-sm text-slate-700">
-                      <span>{formatNum(row.recommendedOrderUnits)} uds</span>
+                      <span>Stock: {formatNum(row.currentStock)} uds</span>
+                      <span>Inbound: {formatNum(row.inboundConfirmed)} uds</span>
+                      <span>{formatNum(row.recommendedOrderUnits)} uds{row.moqApplied?<small className="block text-amber-700">MOQ mínimo aplicado</small>:null}</span>
                       <span>{formatNum(row.cbmTotal, 2)} m³</span>
                       <span>{formatEur(row.purchaseCapitalRequired)}</span>
                       <span>Puerto fábrica: {formatFactoryPort(row)}</span>
+                      <span>Destino: {row.recommendedDestination}</span>
                     </div>
                     <p className="text-sm text-slate-800 mt-2">{row.readableTiming}</p>
                     <p className="text-xs text-slate-600 mt-1">{row.recommendationExplanation}</p>
@@ -364,10 +467,13 @@ export default function PlanificadorPage() {
                   <tr>
                     <th className="px-3 py-2 text-left">Categoría</th>
                     <th className="px-3 py-2 text-left">Producto</th>
+                    <th className="px-3 py-2 text-right">Stock</th>
+                    <th className="px-3 py-2 text-right">Inbound</th>
                     <th className="px-3 py-2 text-right">Cant.</th>
                     <th className="px-3 py-2 text-right">CBM</th>
                     <th className="px-3 py-2 text-right">Capital</th>
                     <th className="px-3 py-2 text-left">Puerto fábrica</th>
+                    <th className="px-3 py-2 text-left">Destino</th>
                     <th className="px-3 py-2 text-left">Fecha límite</th>
                     <th className="px-3 py-2 text-left">ETA</th>
                     <th className="px-3 py-2 text-left">Argumento</th>
@@ -395,12 +501,15 @@ export default function PlanificadorPage() {
                               <p className="text-xs text-slate-400 truncate">{row.supplierName}</p>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-right font-medium">{formatNum(row.recommendedOrderUnits)}</td>
+                          <td className="px-3 py-2 text-right"><span className="font-medium">{formatNum(row.currentStock)}</span><span className="block text-[10px] text-slate-400">actual</span></td>
+                          <td className="px-3 py-2 text-right"><span className="font-medium text-emerald-700">{formatNum(row.inboundConfirmed)}</span>{row.inboundProvisional>0?<span className="block text-[10px] text-amber-600">+{formatNum(row.inboundProvisional)} provisional</span>:null}{row.existingInboundDestinations.length?<span className="block text-[10px] text-slate-400">{row.existingInboundDestinations.join(" + ")}</span>:null}</td>
+                          <td className="px-3 py-2 text-right"><span className="font-medium">{formatNum(row.recommendedOrderUnits)}</span>{row.moqApplied?<span className="block text-[10px] font-medium text-amber-700">MOQ mín. 100</span>:null}</td>
                           <td className="px-3 py-2 text-right">{formatNum(row.cbmTotal, 2)}</td>
                           <td className="px-3 py-2 text-right">{formatEur(row.purchaseCapitalRequired)}</td>
                           <td className="px-3 py-2 text-slate-800">
                             {formatFactoryPort(row)}
                           </td>
+                          <td className="px-3 py-2 text-slate-800 max-w-[150px]">{row.recommendedDestination}</td>
                           <td className="px-3 py-2 text-slate-800">{row.readableTiming}</td>
                           <td className="px-3 py-2">{formatDate(row.estimatedArrivalDate)}</td>
                           <td className="px-3 py-2 text-slate-700 max-w-[180px]">{row.recommendationReasonLabel}</td>
@@ -427,7 +536,7 @@ export default function PlanificadorPage() {
                         </tr>
                         {isOpen && (
                           <tr>
-                            <td colSpan={12} className="px-4 py-3 bg-blue-50/50">
+                            <td colSpan={15} className="px-4 py-3 bg-blue-50/50">
                               <ConsolidationPanel
                                 suggestions={suggestions}
                                 basket={basket}

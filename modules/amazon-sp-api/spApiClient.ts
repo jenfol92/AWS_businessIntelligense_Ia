@@ -7,6 +7,7 @@ import type { SpApiConfig } from "./config";
 import { resolveRateLimitRetryCount, resolveSpApiRetryDelayMs } from "./spApiRetryPolicy";
 
 export type SpApiRequestInput = {
+  signal?: AbortSignal;
   method: "GET" | "POST" | "PUT" | "DELETE";
   path: string;
   query?: Record<string, string | undefined>;
@@ -160,6 +161,7 @@ function withRetryDiagnostic(
 }
 
 async function executeSpApiRequest<T>(request: {
+  signal?: AbortSignal;
   url: string;
   method: string;
   headers: Record<string, string>;
@@ -173,6 +175,7 @@ async function executeSpApiRequest<T>(request: {
       method: request.method,
       headers: request.headers,
       body: request.body,
+      ...(request.signal ? { signal: request.signal, redirect: "error" as const } : {}),
     });
   } catch (error) {
     throw mapUpstreamFetchError(error, "SP_API", request.url);
@@ -214,10 +217,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function spApiRequest<T>(input: SpApiRequestInput): Promise<T> {
+  input.signal?.throwIfAborted();
   const config = loadSpApiConfig();
   const bodyString = serializeBody(input.body);
   const usedSigV4 = isAwsSigV4Configured(config);
-  const firstToken = await getLwaAccessToken(config);
+  const firstToken = await getLwaAccessToken(config, { signal: input.signal });
+  input.signal?.throwIfAborted();
   const firstRequest = await buildRequestInit({
     config,
     input,
@@ -225,6 +230,7 @@ export async function spApiRequest<T>(input: SpApiRequestInput): Promise<T> {
     bodyString,
   });
   const executableRequest = {
+    signal: input.signal,
     ...firstRequest,
     operation: input.operation ?? `${input.method} ${input.path}`,
     onResponseMetadata: input.onResponseMetadata,
@@ -280,7 +286,7 @@ export async function spApiRequest<T>(input: SpApiRequestInput): Promise<T> {
     let refreshedTokenExpiresIn: number | null = null;
     try {
       clearLwaAccessTokenCache();
-      const refreshedToken = await getLwaAccessToken(config, { forceRefresh: true });
+      const refreshedToken = await getLwaAccessToken(config, { forceRefresh: true, signal: input.signal });
       refreshedTokenExpiresIn = refreshedToken.expiresIn;
       const retryRequest = await buildRequestInit({
         config,
@@ -289,6 +295,7 @@ export async function spApiRequest<T>(input: SpApiRequestInput): Promise<T> {
         bodyString,
       });
       const result = await executeSpApiRequest<T>({
+        signal: input.signal,
         ...retryRequest,
         operation: executableRequest.operation,
         onResponseMetadata: executableRequest.onResponseMetadata,

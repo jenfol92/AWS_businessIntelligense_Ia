@@ -151,7 +151,7 @@ export type UnlinkedObligationTemplate = {
   description: string | null;
   amount: UnlinkedAmountBreakdown;
   startDate: string;
-  endDate: string;
+  endDate: string | null;
   anchorDay: number;
   anchorMonth: number;
   frequencyUnit: "month";

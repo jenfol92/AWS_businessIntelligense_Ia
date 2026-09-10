@@ -63,21 +63,14 @@ export async function GET(req: Request, { params }: RouteContext) {
     );
 
     const result = await buildProductInventoryDetail(params.id, {
-
       canal: url.searchParams.get("canal") ?? undefined,
-
       pais: url.searchParams.get("pais") ?? undefined,
-
       windowDays: parseWindowDays(url.searchParams.get("windowDays")),
-
       periodFrom: url.searchParams.get("periodFrom") ?? undefined,
-
       periodTo: url.searchParams.get("periodTo") ?? undefined,
-
       forecastOverride,
-
       debugStockout: url.searchParams.get("debugStockout") === "1",
-
+      signal: req.signal,
     });
 
 

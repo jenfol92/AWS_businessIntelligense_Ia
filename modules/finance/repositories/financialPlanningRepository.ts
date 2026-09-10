@@ -1,3 +1,5 @@
+import { accountingDate } from "../utils/accountingDate";
+import { readRecurringCalendar } from "./recurringPaymentsRepository";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import { supabaseAdmin } from "@/server/supabase/adminClient";
 import type { FinancePlanningQuery, FinancePlanningRawData } from "../types/planning.types";
@@ -48,7 +50,7 @@ export async function findFinancialPlanningData(
 ): Promise<FinancePlanningRawData> {
   const supabase = createSupabaseRouteClient();
   const today = new Date();
-  const fromMonth = query.fromMonth ?? today.toISOString().slice(0, 7);
+  const fromMonth = query.fromMonth ?? accountingDate(today).slice(0, 7);
   const months = query.months ?? 6;
   const fromDate = firstDayOfMonth(fromMonth);
   const toDate = lastDayOfWindow(fromMonth, months);
@@ -65,6 +67,7 @@ export async function findFinancialPlanningData(
     incomeResult,
     observationResult,
     settingsResult,
+    recurringResult,
   ] = await Promise.all([
     supabase
       .from("contenedores")
@@ -80,7 +83,7 @@ export async function findFinancialPlanningData(
            ordenes_compra(
              id, numero_orden, numero_pedido_agente, agente_id,
              estado, fecha_orden, eta, etd,
-             moneda_compra,
+             moneda_compra, planned_fx_foreign_per_eur,
              deposito_porcentaje, balance_dias_antes_eta,
              fecha_pago_balance, fob_puerto, destino,
              agentes_compra(contacto),
@@ -100,7 +103,7 @@ export async function findFinancialPlanningData(
         `*,
          ordenes_compra(
            id, numero_orden, numero_pedido_agente, estado,
-           moneda_compra,
+           moneda_compra, planned_fx_foreign_per_eur,
            deposito_porcentaje,
            agentes_compra(contacto)
          ),
@@ -155,6 +158,7 @@ export async function findFinancialPlanningData(
       .from("finance_settings")
       .select("*")
       .in("key", ["planned_usd_eur_rate", "minimum_operating_cash_reserve_eur", "amazon_expected_net_ratio", "amazon_transfer_request_weekdays", "amazon_bank_lag_days", "amazon_treasury_percentile", "amazon_min_history_samples"]),
+    readRecurringCalendar(supabase, fromDate, toDate),
   ]);
 
   for (const result of [
@@ -176,6 +180,8 @@ export async function findFinancialPlanningData(
   }
 
   return {
+    recurringPayments: recurringResult.rows,
+    recurringPaymentsWarning: recurringResult.warning,
     containers: (containersResult.data ?? []) as Record<string, unknown>[],
     supplierPayments: (supplierPaymentsResult.data ?? []) as Record<string, unknown>[],
     creditLines: (creditLinesResult.data ?? []) as Record<string, unknown>[],

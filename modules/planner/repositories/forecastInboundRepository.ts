@@ -111,20 +111,40 @@ async function fetchContainerQuantityMismatches(
   return map;
 }
 
-export async function fetchForecastInboundItems(params?: {
-  productoIds?: string[];
-}): Promise<ForecastInboundItem[]> {
+export async function fetchForecastInboundItems(
+  params?: {
+    productoIds?: string[];
+  },
+  signal?: AbortSignal,
+): Promise<ForecastInboundItem[]> {
   const supabase = createSupabaseRouteClient();
 
-  let query = supabase.from("v_forecast_inbound_items").select("*");
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
+  let query = supabase
+    .from("v_forecast_inbound_items")
+    .select("*");
+
   if (params?.productoIds?.length) {
     query = query.in("producto_id", params.productoIds);
   }
 
+  if (signal) {
+    query = query.abortSignal(signal);
+  }
+
   const { data, error } = await query;
+
   if (error) throw new Error(error.message);
 
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
   const rawRows = (data ?? []) as ForecastInboundItemRaw[];
+
   const enriched = rawRows
     .filter((row) => row.unidades_pendientes > 0)
     .map(enrichInboundItem);
@@ -137,14 +157,27 @@ export async function fetchForecastInboundItems(params?: {
     ),
   );
 
-  const mismatches = await fetchContainerQuantityMismatches(contenedorIds);
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
+  const mismatches =
+    await fetchContainerQuantityMismatches(contenedorIds);
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
   const mismatchWarning =
     "Las unidades del contenedor no coinciden con las unidades de las órdenes vinculadas.";
 
   return enriched.map((row) => {
     if (!row.contenedor_id) return row;
+
     const key = `${row.contenedor_id}|${row.producto_id}`;
+
     if (!mismatches.has(key)) return row;
+
     return {
       ...row,
       warnings: row.warnings.includes(mismatchWarning)
@@ -169,27 +202,47 @@ function buildScheduleForProduct(
 
 export async function fetchForecastInboundByProductIds(
   productIds: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, ForecastInboundProductSummary>> {
   const result = new Map<string, ForecastInboundProductSummary>();
   if (productIds.length === 0) return result;
 
-  const allItems = await fetchForecastInboundItems({ productoIds: productIds });
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
+  const allItems = await fetchForecastInboundItems(
+    { productoIds: productIds },
+    signal,
+  );
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
 
   for (const productId of productIds) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
     const items = allItems.filter((row) => row.producto_id === productId);
+
     let stockInboundConfirmed = 0;
     let stockInboundProvisional = 0;
     let capitalAlreadyCommitted = 0;
 
     for (const item of items) {
       const kind = resolveInboundPlanningKind(item);
+
       if (usableForPlanning(kind)) {
         stockInboundConfirmed += item.unidades_pendientes;
       } else {
         stockInboundProvisional += item.unidades_pendientes;
       }
+
       capitalAlreadyCommitted +=
-        item.unidades_pendientes * Number(item.coste_unitario_eur ?? 0);
+        item.unidades_pendientes *
+        Number(item.coste_unitario_eur ?? 0);
     }
 
     result.set(productId, {

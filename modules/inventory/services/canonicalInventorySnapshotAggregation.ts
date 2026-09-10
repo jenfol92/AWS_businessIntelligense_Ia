@@ -8,6 +8,7 @@ export type CanonicalInventorySnapshotReadRow = {
   fnsku: string | null;
   fulfillable_quantity: number | null;
   reserved_quantity: number | null;
+  pending_transshipment_quantity: number | null;
   inbound_total_quantity: number | null;
   unfulfillable_quantity: number | null;
   researching_quantity: number | null;
@@ -26,6 +27,7 @@ function operationalQuantitySignature(row: CanonicalInventorySnapshotReadRow): s
   return [
     row.fulfillable_quantity,
     row.reserved_quantity,
+    row.pending_transshipment_quantity,
     row.inbound_total_quantity,
     row.unfulfillable_quantity,
     row.researching_quantity,
@@ -84,6 +86,7 @@ export function aggregateCanonicalSnapshotByProductPool(
         snapshotAt: latestRun.snapshotAt,
         fulfillableQuantity: 0,
         reservedQuantity: 0,
+        pendingTransshipmentQuantity: 0,
         inboundQuantity: 0,
         unfulfillableQuantity: 0,
         source: "spapi_fba_inventory_summaries",
@@ -102,6 +105,10 @@ export function aggregateCanonicalSnapshotByProductPool(
       ),
       reservedQuantity: physicalRows.reduce(
         (sum, row) => sum + Number(row.reserved_quantity ?? 0),
+        0,
+      ),
+      pendingTransshipmentQuantity: physicalRows.reduce(
+        (sum, row) => sum + Number(row.pending_transshipment_quantity ?? 0),
         0,
       ),
       inboundQuantity: physicalRows.reduce(
@@ -145,16 +152,25 @@ export function aggregateCanonicalSnapshotAcrossOperationalPools(
     const panEuStock = panEu.get(productId);
     const ukStock = uk.get(productId);
     const identityConflict = panEuStock?.identityConflict === true || ukStock?.identityConflict === true;
-    const stockFbaPanEu = identityConflict ? 0 : panEuStock?.fulfillableQuantity ?? 0;
-    const stockFbaUk = identityConflict ? 0 : ukStock?.fulfillableQuantity ?? 0;
-    const stockFbaTotal = stockFbaPanEu + stockFbaUk;
+    const stockFbaPanEu = identityConflict
+    ? 0
+    : (panEuStock?.fulfillableQuantity ?? 0) +
+      (panEuStock?.pendingTransshipmentQuantity ?? 0);
+  
+  const stockFbaUk = identityConflict
+    ? 0
+    : (ukStock?.fulfillableQuantity ?? 0) +
+      (ukStock?.pendingTransshipmentQuantity ?? 0);
+  
+  const stockFbaTotal = stockFbaPanEu + stockFbaUk;
     result.set(productId, {
       snapshotRunId: latest.snapshot_run_id,
       operationalPool: panEuStock && ukStock ? "EU+UK" : panEuStock ? "EU" : "UK",
       identityConflict,
       snapshotAt: String(latest.snapshot_at),
-      fulfillableQuantity: stockFbaTotal,
+      fulfillableQuantity : identityConflict ? 0 : (panEuStock?.fulfillableQuantity ?? 0) + (ukStock?.fulfillableQuantity ?? 0),
       reservedQuantity: identityConflict ? 0 : (panEuStock?.reservedQuantity ?? 0) + (ukStock?.reservedQuantity ?? 0),
+      pendingTransshipmentQuantity: identityConflict ? 0 : (panEuStock?.pendingTransshipmentQuantity ?? 0) + (ukStock?.pendingTransshipmentQuantity ?? 0),
       inboundQuantity: identityConflict ? 0 : (panEuStock?.inboundQuantity ?? 0) + (ukStock?.inboundQuantity ?? 0),
       unfulfillableQuantity: identityConflict ? 0 : (panEuStock?.unfulfillableQuantity ?? 0) + (ukStock?.unfulfillableQuantity ?? 0),
       source: panEuStock?.source ?? ukStock?.source ?? "spapi_fba_inventory_summaries",

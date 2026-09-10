@@ -33,10 +33,10 @@ test("canonical owner loads only confirmed Seller SKU and batches at 50", async 
   assert.match(source, /sellerSkuBatchSize: 50/);
 });
 
-test("manual and cron remain on the explicitly published PAN_EU marketplace policy", async () => {
+test("manual and cron use the atomic PAN_EU plus UK publication policy", async () => {
   const source = await readFile("modules/amazon-sp-api/amazonInventoryCanonicalSyncService.ts", "utf8");
   assert.match(source, /resolvePublishedInventoryMarketplaceIds\(options\.marketplaceIds\)/);
-  assert.match(source, /DUAL_OPERATIONAL_POOL_PUBLICATION_NOT_ENABLED/);
+  assert.doesNotMatch(source, /DUAL_OPERATIONAL_POOL_PUBLICATION_NOT_ENABLED/);
   for (const file of files) {
     const entrypoint = await readFile(file, "utf8");
     assert.match(entrypoint, /syncAmazonInventoryCanonical/);

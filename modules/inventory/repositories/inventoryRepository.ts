@@ -1,3 +1,5 @@
+import { readLedgerPages } from "@/modules/imports/amazon-fba-ledger-summary/ledgerPagination";
+import { ledgerEnabled } from "@/modules/amazon-sp-api/fbaLedgerSyncPolicy";
 // modules/inventory/repositories/inventoryRepository.ts
 //
 // Acceso a Supabase para el módulo Inventario.
@@ -30,6 +32,7 @@ import {
   aggregateCanonicalSnapshotAcrossOperationalPools,
   type CanonicalInventorySnapshotReadRow,
 } from "../services/canonicalInventorySnapshotAggregation";
+import { aggregateLatestLedgerByCountry } from "../services/ledgerCountryStock";
 import {
   buildInclusiveDateWindow,
   isDateInInclusiveWindow,
@@ -262,7 +265,7 @@ export async function fetchInventoryRows(
   for (const chunk of chunkArray(productIds, 200)) {
     const { data, error } = await supabase
       .from("inventario_paises")
-      .select("producto_id, pais, stock_fba, stock_fbm, stock_pais, updated_at")
+      .select("producto_id, pais, stock_fba, updated_at")
       .in("producto_id", chunk);
 
     if (error) throw new Error(error.message);
@@ -678,7 +681,6 @@ export async function fetchStockSuggestionsMap(productIds: string[]) {
       lead_time_days: number | null;
       stock_actual: number;
       stock_fba: number;
-      stock_fbm: number;
     }
   >();
   if (productIds.length === 0) return map;
@@ -688,7 +690,7 @@ export async function fetchStockSuggestionsMap(productIds: string[]) {
     const { data, error } = await supabase
       .from("v_stock_seguridad_sugerido")
       .select(
-        "producto_id, dias_cobertura, unidades_a_pedir, riesgo, lead_time_days, stock_actual, stock_fba, stock_fbm",
+        "producto_id, dias_cobertura, unidades_a_pedir, riesgo, lead_time_days, stock_actual, stock_fba",
       )
       .in("producto_id", chunk);
 
@@ -704,7 +706,6 @@ export async function fetchStockSuggestionsMap(productIds: string[]) {
           r.lead_time_days != null ? Number(r.lead_time_days) : null,
         stock_actual: Number(r.stock_actual ?? 0),
         stock_fba: Number(r.stock_fba ?? 0),
-        stock_fbm: Number(r.stock_fbm ?? 0),
       });
     }
   }
@@ -1214,6 +1215,7 @@ export async function fetchProductFbaStockDailyByYear(
       .gte("snapshot_date", fromStr)
       .lte("snapshot_date", toStr)
       .order("snapshot_date", { ascending: true })
+      .order("sku_limpio")
       .range(offset, offset + pageSize - 1);
 
     if (error) throw new Error(error.message);
@@ -1231,13 +1233,6 @@ export async function fetchProductFbaStockDailyByYear(
 
   return result;
 }
-
-type LatestFbaLedgerStockRpcRow = {
-  producto_id: string;
-  snapshot_date: string;
-  stock_sellable: number | null;
-  stock_total: number | null;
-};
 
 type RawPriceRow = {
   unitPrice: number;
@@ -1543,131 +1538,23 @@ export async function fetchTopPriceByProductCountry(params: {
  * Último snapshot FBA ledger por producto (suma SKUs del día más reciente).
  * Fuente: v_product_fba_stock_daily.
  */
-export async function fetchLatestFbaLedgerStockByProductIds(
-  productIds: string[],
-  signal?: AbortSignal,
-): Promise<Map<string, import("../services/resolveOperationalStock").LatestFbaLedgerStock>> {
-  const result = new Map<
-    string,
-    import("../services/resolveOperationalStock").LatestFbaLedgerStock
-  >();
-  if (productIds.length === 0) return result;
-
-  const supabase = createSupabaseRouteClient();
-
-  for (const chunk of chunkArray(productIds, 100)) {
-    const { data, error } = await supabase
-    .rpc(
-      "get_latest_fba_ledger_stock_by_products",
-      { product_ids: chunk },
-    )
-    .abortSignal(signal);
-
-    if (error) {
-      console.error(
-        "[inventory-detail timing] fetchLatestFbaLedgerStockByProductIds failed",
-        error,
-        "No se pudo obtener latest FBA ledger stock. Revisa que la migración get_latest_fba_ledger_stock_by_products esté aplicada.",
-      );
-      return new Map();
-    }
-
-    const rows = (data ?? []) as LatestFbaLedgerStockRpcRow[];
-    for (const row of rows) {
-      if (!row.producto_id || !row.snapshot_date) continue;
-      result.set(String(row.producto_id), {
-        snapshotDate: row.snapshot_date.slice(0, 10),
-        stockSellable: Number(row.stock_sellable ?? 0),
-        stockTotal: Number(row.stock_total ?? 0),
-      });
-    }
-  }
-
-  return result;
+export async function fetchLatestFbaLedgerStockByProductIds(productIds:string[],signal?:AbortSignal):Promise<Map<string,import("../services/resolveOperationalStock").LatestFbaLedgerStock>> {
+  const countries=await fetchLatestFbaInventoryByProductCountry(productIds,signal);
+  return new Map(Array.from(countries).filter(([,rows])=>rows.every(row=>row.coverageValid === true)).map(([id,rows])=>[id,{snapshotDate:rows[0].snapshotDate,
+    stockSellable:rows.reduce((n,r)=>n+r.stockSellable,0),stockTotal:rows.reduce((n,r)=>n+r.stockTotal,0)}]));
 }
 
-type LatestFbaInventoryByCountryViewRow = {
-  producto_id: string | null;
-  pais: string | null;
-  snapshot_date: string | null;
-  last_imported_at: string | null;
-  stock_fba_sellable: number | null;
-  stock_fba_unsellable: number | null;
-  stock_fba_physical_total: number | null;
-  dispositions: unknown;
-  is_stale: boolean | null;
-  stale_days: number | null;
-};
-
-function parseFbaInventoryDispositions(
-  raw: unknown,
-): FbaInventoryCountryStockRow["dispositions"] {
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((item) => {
-    if (!item || typeof item !== "object") return [];
-    const record = item as Record<string, unknown>;
-    const disposition = String(record.disposition ?? "").trim() || "UNKNOWN";
-    const stock = Number(record.stock ?? 0);
-    if (!Number.isFinite(stock)) return [];
-    return [{ disposition, stock }];
-  });
-}
-
-/**
- * Fuente canónica UI: latest FBA Inventory Ledger by product/country view.
- * No consulta amazon_fba_inventory_ledger_daily directamente.
- */
-export async function fetchLatestFbaInventoryByProductCountry(
-  productIds: string[],
-  signal?: AbortSignal,
-): Promise<Map<string, FbaInventoryCountryStockRow[]>> {
-  const result = new Map<string, FbaInventoryCountryStockRow[]>();
-  if (productIds.length === 0) return result;
-
-  const supabase = createSupabaseRouteClient();
-
-  for (const chunk of chunkArray(productIds, 80)) {
-    const { data, error } = await supabase
-      .from("v_latest_fba_inventory_by_product_country")
-      .select(
-        "producto_id, pais, snapshot_date, last_imported_at, stock_fba_sellable, stock_fba_unsellable, stock_fba_physical_total, dispositions, is_stale, stale_days",
-      )
-      .in("producto_id", chunk)
-      .order("pais", { ascending: true })
-      .abortSignal(signal);
-
-    if (error) throw new Error(error.message);
-
-    for (const row of (data ?? []) as LatestFbaInventoryByCountryViewRow[]) {
-      if (!row.producto_id || !row.pais || !row.snapshot_date) continue;
-      const item: FbaInventoryCountryStockRow = {
-        productoId: row.producto_id,
-        pais: row.pais,
-        snapshotDate: row.snapshot_date.slice(0, 10),
-        lastImportedAt: row.last_imported_at ?? null,
-        stockSellable: Number(row.stock_fba_sellable ?? 0),
-        stockUnsellable: Number(row.stock_fba_unsellable ?? 0),
-        stockTotal: Number(row.stock_fba_physical_total ?? 0),
-        isStale: row.is_stale === true,
-        staleDays:
-          row.stale_days != null && Number.isFinite(Number(row.stale_days))
-            ? Number(row.stale_days)
-            : null,
-        dispositions: parseFbaInventoryDispositions(row.dispositions),
-      };
-
-      const list = result.get(item.productoId) ?? [];
-      list.push(item);
-      result.set(item.productoId, list);
-    }
+/** Physical end-of-day evidence, exclusively from atomically published documents. */
+export async function fetchLatestFbaInventoryByProductCountry(productIds:string[],signal?:AbortSignal):Promise<Map<string,FbaInventoryCountryStockRow[]>> {
+  if (!ledgerEnabled()) return new Map(); // No legacy evidence is implicitly certified before rollout.
+  const supabase=createSupabaseRouteClient();
+  const rows:import("../services/ledgerCountryStock").LedgerRowInput[]=[];
+  for(const chunk of chunkArray(productIds,80)) {
+    const page=await readLedgerPages((from,to)=>supabase.rpc("read_published_fba_ledger",{product_ids:chunk})
+      .order("id").range(from,to).abortSignal(signal),signal);
+    rows.push(...page);
   }
-
-  for (const [productId, rows] of Array.from(result.entries())) {
-    rows.sort((a, b) => a.pais.localeCompare(b.pais));
-    result.set(productId, rows);
-  }
-
-  return result;
+  return aggregateLatestLedgerByCountry(rows,todayIsoDate());
 }
 
 export async function fetchLatestFbaInventorySnapshotByProductIds(
@@ -1754,4 +1641,146 @@ export async function fetchLatestFbmInventorySnapshotByProductIds(
     }
   }
   return result;
+}
+
+/**
+ * Líneas de venta FBA de un producto en un rango (inclusive), con país de
+ * marketplace (sales-channel), precio y pedido. Fuente:
+ * amazon_fba_sales_daily_raw filtrado a GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL.
+ * Solo lectura; sin reglas de negocio (la agregación vive en el servicio).
+ */
+export async function fetchFbaSalesLinesForProduct(params: {
+  productId: string;
+  fromDate: string;
+  toDate: string;
+  signal?: AbortSignal;
+}): Promise<Array<import("../types/inventory.types").InventorySalesLine & { country: string }>> {
+  const lines: Array<
+    import("../types/inventory.types").InventorySalesLine & { country: string }
+  > = [];
+  if (!params.productId) return lines;
+
+  const supabase = supabaseAdmin;
+  const pageSize = 1000;
+  let offset = 0;
+
+  for (;;) {
+    let query = supabase
+      .from("amazon_fba_sales_daily_raw")
+      .select("sale_date, quantity, amount, currency, ship_to_country, sales_channel, raw")
+      .eq("producto_id", params.productId)
+      .gte("sale_date", params.fromDate)
+      .lte("sale_date", params.toDate)
+      .neq("quantity", 0)
+      .order("sale_date", { ascending: false })
+      .range(offset, offset + pageSize - 1);
+    if (params.signal) query = query.abortSignal(params.signal);
+
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+
+    for (const row of data ?? []) {
+      const r = row as {
+        sale_date: string | null;
+        quantity: number | null;
+        amount: number | null;
+        currency: string | null;
+        ship_to_country: string | null;
+        sales_channel: string | null;
+        raw: Record<string, unknown> | null;
+      };
+      const raw = r.raw ?? {};
+      if (String(raw.report_type ?? "") !== "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL") {
+        continue;
+      }
+      const salesChannel = String(r.sales_channel ?? raw["sales-channel"] ?? "").trim();
+      const country = salesChannelToMarketplaceCountry(salesChannel);
+      if (!country || !r.sale_date) continue;
+
+      const units = Number(r.quantity ?? 0);
+      if (!Number.isFinite(units) || units === 0) continue;
+      const amount = r.amount == null ? null : Number(r.amount);
+      const grossAmount = amount != null && Number.isFinite(amount) ? amount : null;
+
+      lines.push({
+        country,
+        saleDate: r.sale_date.slice(0, 10),
+        purchaseDate: String(raw["purchase-date"] ?? "").slice(0, 10) || null,
+        amazonOrderId: String(raw["amazon-order-id"] ?? "").trim() || null,
+        units,
+        unitPrice: grossAmount != null && grossAmount > 0 ? grossAmount / units : null,
+        grossAmount,
+        currency: String(r.currency ?? raw.currency ?? "EUR").trim().toUpperCase() || "EUR",
+        shipCountry: String(r.ship_to_country ?? raw["ship-country"] ?? "").trim().toUpperCase() || null,
+        fulfillmentCenter: String(raw["fulfillment-center-id"] ?? "").trim() || null,
+        salesChannel: salesChannel || null,
+      });
+    }
+
+    if ((data ?? []).length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return lines;
+}
+
+export type AmazonOrderItemReadRow = {
+  amazon_order_id: string;
+  purchase_date: string;
+  order_status: string | null;
+  item_status: string | null;
+  fulfillment_channel: string | null;
+  sales_channel: string | null;
+  marketplace_country: string | null;
+  ship_country: string | null;
+  quantity: number | null;
+  currency: string | null;
+  item_price: number | null;
+};
+
+/**
+ * Líneas de pedido Amazon (por fecha de compra) de un producto en un rango.
+ * Devuelve null si la tabla amazon_order_items no existe todavía en el entorno
+ * (migración 20260928_01 sin aplicar), para que el servicio use el fallback.
+ */
+export async function fetchAmazonOrderItemsForProduct(params: {
+  productId: string;
+  fromDate: string;
+  toDate: string;
+  signal?: AbortSignal;
+}): Promise<AmazonOrderItemReadRow[] | null> {
+  const rows: AmazonOrderItemReadRow[] = [];
+  const pageSize = 1000;
+  for (let offset = 0; ; offset += pageSize) {
+    let query = supabaseAdmin
+      .from("amazon_order_items")
+      .select(
+        "amazon_order_id, purchase_date, order_status, item_status, fulfillment_channel, sales_channel, marketplace_country, ship_country, quantity, currency, item_price",
+      )
+      .eq("producto_id", params.productId)
+      .gte("purchase_date", params.fromDate)
+      .lte("purchase_date", params.toDate)
+      .order("purchase_date", { ascending: false })
+      .range(offset, offset + pageSize - 1);
+    if (params.signal) query = query.abortSignal(params.signal);
+    const { data, error } = await query;
+    if (error) {
+      if (error.code === "42P01" || /amazon_order_items/.test(error.message)) return null;
+      throw new Error(error.message);
+    }
+    rows.push(...((data ?? []) as AmazonOrderItemReadRow[]));
+    if ((data ?? []).length < pageSize) break;
+  }
+  return rows;
+}
+
+/** Fecha de la última importación de pedidos (null si no hay tabla o está vacía). */
+export async function fetchAmazonOrdersLastImportedAt(): Promise<string | null> {
+  const { data, error } = await supabaseAdmin
+    .from("amazon_order_items")
+    .select("updated_at")
+    .order("updated_at", { ascending: false })
+    .limit(1);
+  if (error) return null;
+  return ((data?.[0] as { updated_at?: string } | undefined)?.updated_at) ?? null;
 }

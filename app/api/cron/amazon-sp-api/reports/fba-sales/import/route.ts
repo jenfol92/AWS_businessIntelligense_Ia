@@ -1,3 +1,5 @@
+import { isUtcDateOnly as isDateOnly, salesSyncHttpStatus } from "@/modules/amazon-sp-api/fbaSalesSyncPolicy";
+import { resumeFbaSalesSync } from "@/modules/amazon-sp-api/fbaSalesSyncCoordinator";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getMissingSpApiEnvKeys } from "@/modules/amazon-sp-api/config";
@@ -15,6 +17,7 @@ const AMAZON_FULFILLED_SHIPMENTS_REPORT_TYPE =
   "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL";
 
 type Body = {
+  jobId?: unknown;
   fromDate?: unknown;
   toDate?: unknown;
   startDate?: unknown;
@@ -45,10 +48,6 @@ async function readBody(request: NextRequest): Promise<Body> {
   if (!raw.trim()) return {};
   const parsed = JSON.parse(raw) as unknown;
   return parsed && typeof parsed === "object" ? (parsed as Body) : {};
-}
-
-function isDateOnly(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 function normalizeMarketplaceIds(value: unknown): string[] | undefined {
@@ -102,6 +101,10 @@ async function runImport(request: NextRequest, suppliedBody?: Body) {
 
   try {
     const body = suppliedBody ?? await readBody(request);
+    if (typeof body.jobId === "string") {
+      const result = await resumeFbaSalesSync(body.jobId);
+      return NextResponse.json(result, {status:salesSyncHttpStatus(result.status)});
+    }
     const fromDate = body.fromDate ?? body.startDate;
     const toDate = body.toDate ?? body.endDate;
 
@@ -150,42 +153,7 @@ async function runImport(request: NextRequest, suppliedBody?: Body) {
           reportType,
         });
 
-    const finishedAt = new Date().toISOString();
-    const response = {
-      ok: summary.ok,
-      reportId: summary.reportId,
-      reportType,
-      mode: existingReportId ? "existingReport" : "createReport",
-      range: { fromDate, toDate },
-      marketplaceIds:
-        summary.requestedCreateReportPayload?.marketplaceIds ??
-        marketplaceIds ??
-        [],
-      summary,
-      requestedCreateReportPayload: summary.requestedCreateReportPayload,
-      status: summary.status,
-      processingStatus: summary.processingStatus,
-      rowsParsed: summary.rowsParsed,
-      rowsUpserted: summary.rowsUpserted,
-      ventasDiariasUpserted: summary.ventasDiariasUpserted ?? 0,
-      ventasDiariasSync: summary.ventasDiariasSync ?? null,
-      skippedSourceConflicts: summary.skippedSourceConflicts ?? 0,
-      orphanRows: summary.orphanRows ?? 0,
-      orphanUnits: summary.orphanUnits ?? 0,
-      matchedRows: summary.matchedRows,
-      unmatchedRows: summary.unmatchedRows,
-      warnings: summary.warnings,
-      startedAt,
-      finishedAt,
-    };
-
-    if (!summary.ok) {
-      return NextResponse.json(response, {
-        status: summary.status === "RATE_LIMITED" ? 429 : 502,
-      });
-    }
-
-    return NextResponse.json(response);
+    return NextResponse.json({...summary,startedAt,finishedAt:new Date().toISOString()}, {status:salesSyncHttpStatus(summary.status)});
   } catch (error: unknown) {
     const mapped = mapGenericError(error);
     const finishedAt = new Date().toISOString();

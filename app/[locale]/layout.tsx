@@ -5,6 +5,7 @@ import { NextIntlClientProvider } from "next-intl";
 import { notFound } from "next/navigation";
 import { isLocale } from "@/config/i18n";
 import { Inter } from "next/font/google";
+import { SupabaseProvider } from "./supabase-provider";
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +25,13 @@ export default async function LocaleLayout({
 
   return (
     <NextIntlClientProvider locale={params.locale} messages={messages}>
+       <SupabaseProvider>
       <div
         className={`${inter.className} antialiased bg-slate-50 text-slate-900 min-h-screen`}
       >
         {children}
       </div>
+      </SupabaseProvider>
     </NextIntlClientProvider>
   );
 }

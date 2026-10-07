@@ -14,12 +14,14 @@
 
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, Scissors, Trash2, ArrowDown, ArrowUp } from "lucide-react";
+import { splitOrderItemsByCbm, mergeSplitOrderItems } from "@/modules/orders/calculations/splitOrderItemsByCbm";
 import { syncOrderLineCostFields } from "@/modules/orders/utils/syncOrderLineCostFields";
 import type { PreloadedItem } from "@/modules/orders/types/orderForm.types";
 import { useOrderCatalogs } from "@/modules/orders/hooks/useOrderCatalogs";
 import { useOrderProductSearch } from "@/modules/orders/hooks/useOrderProductSearch";
+import { useMarketFxRate } from "@/modules/orders/hooks/useMarketFxRate";
 import { useOrderFormLoader } from "@/modules/orders/hooks/useOrderFormLoader";
 import { useOrderLeadTimeSuggestions } from "@/modules/orders/hooks/useOrderLeadTimeSuggestions";
 import { buildOrderFormPayload } from "@/modules/orders/utils/buildOrderFormPayload";
@@ -200,6 +202,7 @@ export default function OrderFormModal({
   const [etdTouched, setEtdTouched] = useState(false);
   const [etaTouched, setEtaTouched] = useState(false);
   const [monedaCompra, setMonedaCompra] = useState(initialOrden?.moneda_compra ?? "USD");
+  const marketFx = useMarketFxRate(monedaCompra);
   const [numeroPedidoAgente, setNumeroPedidoAgente] = useState(
     initialOrden?.numero_pedido_agente ?? "",
   );
@@ -262,12 +265,11 @@ export default function OrderFormModal({
   // ─── Estado split (gestionar en varios pedidos) ───────────────────────────
 
   const [showSplit,    setShowSplit]    = useState(false);
-  const [items2,       setItems2]       = useState<OrderItem[]>([]);
-  const [fob2,         setFob2]         = useState("");
-  const [destino2,     setDestino2]     = useState("");
-  const [fecha2,       setFecha2]       = useState(new Date().toISOString().slice(0, 10));
-  const [cbmLimite2,   setCbmLimite2]   = useState<number>(CBM_LIMITE_DEFAULT);
-  const [notas2,       setNotas2]       = useState("");
+  const [extraOrders, setExtraOrders] = useState<Array<{
+    items: OrderItem[]; fob: string; destino: string; fecha: string;
+    cbmLimite: number; notas: string;
+  }>>([]);
+  const savedSplitIds = useRef<Array<string | undefined>>([]);
 
   // ─── Catálogos de puertos y agentes ──────────────────────────────────────
 
@@ -287,8 +289,6 @@ export default function OrderFormModal({
   const cbmTotal  = items.reduce((s, i) => s + i.cantidad * i.cbm_unitario, 0);
   const cbmPct    = Math.min((cbmTotal / cbmLimite) * 100, 100);
   const cbmOver   = cbmTotal > cbmLimite;
-  const cbmTotal2 = items2.reduce((s, i) => s + i.cantidad * i.cbm_unitario, 0);
-  const cbmPct2   = Math.min((cbmTotal2 / cbmLimite2) * 100, 100);
   const totalOriginal = items.reduce(
     (sum, item) => sum + Number(item.coste_unitario_moneda ?? 0) * Number(item.cantidad ?? 0),
     0,
@@ -460,42 +460,29 @@ export default function OrderFormModal({
     setSelectedForAdd(new Set());
   }
 
-  // ─── Split automático: mueve ítems de exceso a la Orden 2 ─────────────────
+  // ─── División automática por cantidades y límite de cubicaje ─────────────
 
   function handleSplit() {
-    setFob2(fob);
-    setDestino2(destino);
-    setFecha2(fecha);
-    setCbmLimite2(cbmLimite);
-    let acc = 0;
-    const keep: OrderItem[] = [];
-    const overflow: OrderItem[] = [];
-    for (const item of items) {
-      const itemCbm = item.cantidad * item.cbm_unitario;
-      if (acc + itemCbm <= cbmLimite) {
-        keep.push(item);
-        acc += itemCbm;
-      } else {
-        overflow.push(item);
-      }
+    try {
+      const groups = splitOrderItemsByCbm(items, cbmLimite);
+      setItems(groups[0] ?? []);
+      setExtraOrders(groups.slice(1).map((group) => ({
+        items: group, fob, destino, fecha, cbmLimite, notas,
+      })));
+      savedSplitIds.current = [];
+      setShowSplit(groups.length > 1);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error dividiendo la orden");
     }
-    setItems(keep);
-    setItems2(overflow);
-    setShowSplit(true);
   }
 
   function moveToOrder2(key: string) {
     const item = items.find((i) => i._key === key);
-    if (!item) return;
+    if (!item || !extraOrders.length) return;
     setItems((prev) => prev.filter((i) => i._key !== key));
-    setItems2((prev) => [...prev, item]);
-  }
-
-  function moveToOrder1(key: string) {
-    const item = items2.find((i) => i._key === key);
-    if (!item) return;
-    setItems2((prev) => prev.filter((i) => i._key !== key));
-    setItems((prev) => [...prev, item]);
+    setExtraOrders((prev) => prev.map((order, index) => index === 0
+      ? { ...order, items: mergeSplitOrderItems([...order.items, item]) } : order));
   }
 
   // ─── Guardado ─────────────────────────────────────────────────────────────
@@ -563,37 +550,47 @@ export default function OrderFormModal({
         return;
       }
 
+      if (showSplit) {
+        for (const order of [{ items, cbmLimite }, ...extraOrders]) {
+          if (!order.items.length) throw new Error("Cada orden debe contener productos.");
+          splitOrderItemsByCbm(order.items, order.cbmLimite);
+          const volume = order.items.reduce((sum, item) => sum + item.cantidad * item.cbm_unitario, 0);
+          if (volume > order.cbmLimite + 1e-9) {
+            throw new Error("Una orden supera su límite de m³. Ajusta sus cantidades antes de guardar.");
+          }
+        }
+      }
       const body1 = buildOrderFormPayload(items, headerOpts);
-      const url1 = isEdit ? `/api/orders/${initialOrden!.id}` : "/api/orders";
+      const firstId = savedSplitIds.current[0] ?? initialOrden?.id;
+      const url1 = firstId ? `/api/orders/${firstId}` : "/api/orders";
       const r1    = await fetch(url1, {
-        method:  isEdit ? "PUT" : "POST",
+        method:  firstId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify(body1),
       });
       const j1 = await r1.json();
-      if (!j1.ok) throw new Error(j1.error ?? "Error guardando la orden");
+      if (!r1.ok || !j1.ok) throw new Error(j1.error ?? "Error guardando la orden");
+      if (showSplit) savedSplitIds.current[0] = j1.orden.id;
       const warnings = (j1.warnings ?? []) as Array<{ code?: string }>;
       if (warnings.length > 0) {
         setSaveWarnings(["Algunas líneas no tienen coste histórico. Revísalas antes de confirmar."]);
       }
 
-      if (showSplit && items2.length > 0) {
-        const body2 = buildOrderFormPayload(items2, {
-          ...headerOpts,
-          tipoEnvio,
-          fob: fob2,
-          destino: destino2,
-          fecha: fecha2,
-          cbmLimite: cbmLimite2,
-          notas: notas2,
-        });
-        const r2 = await fetch("/api/orders", {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify(body2),
-        });
-        const j2 = await r2.json();
-        if (!j2.ok) throw new Error(j2.error ?? "Error guardando la segunda orden");
+      if (showSplit) {
+        for (let index = 0; index < extraOrders.length; index++) {
+          const order = extraOrders[index];
+          const id = savedSplitIds.current[index + 1];
+          const response = await fetch(id ? `/api/orders/${id}` : "/api/orders", {
+            method: id ? "PUT" : "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildOrderFormPayload(order.items, { ...headerOpts, ...order })),
+          });
+          const json = await response.json();
+          if (!response.ok || !json.ok) {
+            throw new Error(`Error guardando la orden ${index + 2}: ${json.error ?? "Error desconocido"}. Puedes reintentar sin duplicar las órdenes ya guardadas.`);
+          }
+          savedSplitIds.current[index + 1] = json.orden.id;
+        }
       }
 
       onSaved(j1.orden as OrdenRow | undefined);
@@ -830,7 +827,7 @@ export default function OrderFormModal({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">ProducciÃ³n</label>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Producción</label>
                 <input
                   type="number"
                   min={0}
@@ -843,7 +840,7 @@ export default function OrderFormModal({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">TrÃ¡nsito</label>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Tránsito</label>
                 <input
                   type="number"
                   min={0}
@@ -867,6 +864,15 @@ export default function OrderFormModal({
                     <option key={code} value={code}>{code}</option>
                   ))}
                 </select>
+                {monedaCompra !== "EUR" ? (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {marketFx.loading
+                      ? "Consultando BCE…"
+                      : marketFx.currency === monedaCompra && marketFx.foreignPerEur != null
+                        ? `Ref. BCE${marketFx.referenceDate ? ` ${marketFx.referenceDate}` : ""}: 1 EUR = ${marketFx.foreignPerEur} ${monedaCompra}. Se fija al confirmar.`
+                        : "Tipo de referencia no disponible; se pedirá al confirmar."}
+                  </p>
+                ) : null}
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">Nº pedido agente</label>
@@ -958,9 +964,9 @@ export default function OrderFormModal({
                 </div>
               </div>
             )}
-            {cbmOver && showSplit && (
+            {showSplit && (
               <p className="text-xs text-blue-600 mt-1">
-                Pedido dividido en 2 órdenes · ambas se guardarán como borrador
+                Pedido dividido en {extraOrders.length + 1} órdenes · se guardarán como borradores
               </p>
             )}
           </div>
@@ -1262,26 +1268,31 @@ export default function OrderFormModal({
             />
           </div>
 
-          {/* ── Orden 2 (split) ── */}
-          {showSplit && (
-            <div className="rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50/30 p-5 space-y-5">
+          {/* ── Órdenes adicionales de la división ── */}
+          {showSplit && extraOrders.map((order, orderIndex) => {
+            const { items: items2, fob: fob2, destino: destino2, fecha: fecha2, cbmLimite: cbmLimite2, notas: notas2 } = order;
+            const update = (patch: Partial<typeof order>) => setExtraOrders((prev) => prev.map((entry, index) => index === orderIndex ? { ...entry, ...patch } : entry));
+            const cbmTotal2 = items2.reduce((sum, item) => sum + item.cantidad * item.cbm_unitario, 0);
+            const cbmPct2 = cbmTotal2 / cbmLimite2 * 100;
+            return <div key={orderIndex} className="rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50/30 p-5 space-y-5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Scissors className="h-4 w-4 text-amber-600" />
                   <h3 className="text-sm font-bold text-amber-800">
-                    Orden 2 — Exceso de cubicaje
+                    Orden {orderIndex + 2} — Exceso de cubicaje
                   </h3>
                 </div>
                 <button
                   type="button"
+                  disabled={savedSplitIds.current.some(Boolean)}
                   onClick={() => {
                     setShowSplit(false);
-                    setItems((prev) => [...prev, ...items2]);
-                    setItems2([]);
+                    setItems((prev) => mergeSplitOrderItems([...prev, ...extraOrders.flatMap((entry) => entry.items)]));
+                    setExtraOrders([]);
                   }}
                   className="text-xs text-slate-500 hover:text-red-600 transition"
                 >
-                  Deshacer split
+                  Deshacer división
                 </button>
               </div>
 
@@ -1292,7 +1303,7 @@ export default function OrderFormModal({
                   </label>
                   <select
                     value={fob2}
-                    onChange={(e) => setFob2(e.target.value)}
+                    onChange={(e) => update({ fob: e.target.value })}
                     className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
                   >
                     <option value="">Selecciona puerto</option>
@@ -1303,7 +1314,7 @@ export default function OrderFormModal({
                   <label className="block text-xs font-medium text-slate-500 mb-1">Destino</label>
                   <select
                     value={destino2}
-                    onChange={(e) => setDestino2(e.target.value)}
+                    onChange={(e) => update({ destino: e.target.value })}
                     className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
                   >
                     <option value="">Selecciona destino</option>
@@ -1317,7 +1328,7 @@ export default function OrderFormModal({
                   <input
                     type="date"
                     value={fecha2}
-                    onChange={(e) => setFecha2(e.target.value)}
+                    onChange={(e) => update({ fecha: e.target.value })}
                     className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                   />
                 </div>
@@ -1326,7 +1337,7 @@ export default function OrderFormModal({
                   <input
                     type="number"
                     value={cbmLimite2}
-                    onChange={(e) => setCbmLimite2(Number(e.target.value))}
+                    onChange={(e) => update({ cbmLimite: Number(e.target.value) })}
                     className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                   />
                 </div>
@@ -1334,7 +1345,7 @@ export default function OrderFormModal({
 
               <div>
                 <div className="flex justify-between text-xs mb-1">
-                  <span className="font-semibold text-slate-500">Cubicaje orden 2</span>
+                  <span className="font-semibold text-slate-500">Cubicaje orden {orderIndex + 2}</span>
                   <span className={`font-bold ${cbmPct2 > 100 ? "text-red-600" : "text-emerald-600"}`}>
                     {cbmTotal2.toFixed(3)} / {cbmLimite2} m³
                   </span>
@@ -1377,13 +1388,11 @@ export default function OrderFormModal({
                             min={1}
                             value={item.cantidad}
                             onChange={(e) =>
-                              setItems2((prev) =>
-                                prev.map((i) =>
+                              update({ items: items2.map((i) =>
                                   i._key === item._key
                                     ? { ...i, cantidad: Math.max(1, Number(e.target.value)) }
                                     : i,
-                                ),
-                              )
+                                ) })
                             }
                             className="w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-amber-400"
                           />
@@ -1395,7 +1404,10 @@ export default function OrderFormModal({
                           <div className="flex gap-1">
                             <button
                               type="button"
-                              onClick={() => moveToOrder1(item._key)}
+                              onClick={() => {
+                                update({ items: items2.filter((i) => i._key !== item._key) });
+                                setItems((prev) => mergeSplitOrderItems([...prev, item]));
+                              }}
                               title="Mover a Orden 1"
                               className="p-1 rounded hover:bg-blue-50 text-slate-300 hover:text-blue-500 transition"
                             >
@@ -1404,7 +1416,7 @@ export default function OrderFormModal({
                             <button
                               type="button"
                               onClick={() =>
-                                setItems2((prev) => prev.filter((i) => i._key !== item._key))
+                                update({ items: items2.filter((i) => i._key !== item._key) })
                               }
                               className="p-1 rounded hover:bg-red-50 text-slate-300 hover:text-red-500 transition"
                             >
@@ -1420,18 +1432,18 @@ export default function OrderFormModal({
 
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Notas orden 2
+                  Notas orden {orderIndex + 2}
                 </label>
                 <textarea
                   value={notas2}
-                  onChange={(e) => setNotas2(e.target.value)}
+                  onChange={(e) => update({ notas: e.target.value })}
                   rows={2}
                   placeholder="Instrucciones para este contenedor…"
                   className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-amber-400"
                 />
               </div>
             </div>
-          )}
+          })}
 
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1489,7 +1501,7 @@ export default function OrderFormModal({
               {saving
                 ? "Guardando…"
                 : showSplit
-                  ? "Guardar 2 borradores"
+                  ? `Guardar ${extraOrders.length + 1} borradores`
                   : isEdit
                     ? "Guardar cambios"
                     : "Guardar borrador"}

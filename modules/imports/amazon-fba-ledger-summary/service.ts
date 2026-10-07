@@ -1,3 +1,4 @@
+import { LEDGER_MAX_BYTES, LedgerEvidenceError } from "./strictLedgerDocument";
 import {
   loadProductIdsBySkuAndAsin,
   loadLatestFbaCountryConditionByIdentity,
@@ -89,6 +90,7 @@ async function importParsedAmazonFbaLedgerSummary(params: {
 }): Promise<AmazonFbaLedgerPreviewResponse | AmazonFbaLedgerCommitResponse> {
 
   const source = params.source?.trim() || DEFAULT_SOURCE;
+  if (params.mode === "commit") throw new LedgerEvidenceError("LEDGER_LEGACY_COMMIT_DISABLED_USE_DURABLE_COORDINATOR");
 
   const skipUnlinkedProducts = params.skipUnlinkedProducts !== false;
 
@@ -302,6 +304,7 @@ export async function importAmazonFbaLedgerSummary(params: {
   sourceFileName?: string | null;
   reportDocumentId?: string | null;
 }): Promise<AmazonFbaLedgerPreviewResponse | AmazonFbaLedgerCommitResponse> {
+  if (params.file.size > LEDGER_MAX_BYTES) throw new LedgerEvidenceError("LEDGER_DOCUMENT_TOO_LARGE");
   const text = await params.file.text();
   const parsed = await parseAmazonFbaLedgerSummaryText(text);
   const identity = resolveLedgerDocumentIdentity({

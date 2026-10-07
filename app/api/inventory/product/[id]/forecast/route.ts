@@ -54,21 +54,6 @@ export async function GET(
       parseForecastConfigOverrideFromSearchParams(
         url.searchParams,
       );
-      console.log("[forecast abort debug] START", {
-        productId: params.id,
-        aborted: req.signal.aborted,
-      });
-      
-      req.signal.addEventListener(
-        "abort",
-        () => {
-          console.log("[forecast abort debug] ABORT", {
-            productId: params.id,
-            aborted: req.signal.aborted,
-          });
-        },
-        { once: true },
-      );
 
       console.log("[forecast abort debug] START", {
         productId: params.id,

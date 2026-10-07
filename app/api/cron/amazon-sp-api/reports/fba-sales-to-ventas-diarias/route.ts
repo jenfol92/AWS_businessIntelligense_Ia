@@ -1,3 +1,5 @@
+import { coordinateFbaSalesSync } from "@/modules/amazon-sp-api/fbaSalesSyncCoordinator";
+import { isUtcDateOnly as isDateOnly, addUtcDays, salesSyncHttpStatus } from "@/modules/amazon-sp-api/fbaSalesSyncPolicy";
 import { NextRequest, NextResponse } from "next/server";
 
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
@@ -63,10 +65,6 @@ function parseMarketplaceEnv(): string[] {
 
   return Array.from(new Set([...fromList, ...fromIndividualVars])).sort();
 }
-function isDateOnly(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
-
 function toUtcDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -247,74 +245,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { data, error } = await supabaseAdmin.rpc(
-      "sync_ventas_diarias_from_amazon_fba_sales",
-      {
-        p_start_date: startDate,
-        p_end_date: endDate,
-        p_marketplace_ids: canonicalSyncMarketplaceIds,
-        p_tipo_cliente: tipoCliente,
-        p_source: source,
-      },
-    );
-
-    if (error) throw new Error(error.message);
-
-    const result = (data ?? {}) as SyncResult;
-    const warnings: string[] = [];
-    const insertedRows = Number(result.inserted ?? 0);
-    const insertedUnits = Number(result.units ?? 0);
-    const orphanRows = Number(result.orphanRows ?? 0);
-    const orphanUnits = Number(result.orphanUnits ?? 0);
-    const skippedSourceConflicts = Number(result.skippedSourceConflicts ?? 0);
-    const resultMarketplaces = Array.isArray(result.marketplaces)
-      ? result.marketplaces
-      : [];
-
-    if (insertedRows === 0 && skippedSourceConflicts === 0) {
-      warnings.push("No hay datos en v_amazon_fba_sales_daily para el rango solicitado.");
-    }
-    if (orphanRows > 0) {
-      warnings.push(
-        "Hay ventas FBA sin producto_id. Se omiten porque no están vinculadas a productos gestionados.",
-      );
-    }
-    if (skippedSourceConflicts > 0) {
-      warnings.push(
-        "Hay filas FBA cuyo grano ya existe en ventas_diarias con otro source. No se han tocado esas fuentes.",
-      );
-    }
-
-    const finishedAt = new Date().toISOString();
-    await updateSyncJob({
-      finishedAt,
-      status: "SUCCESS",
-      error: null,
-      rowsUpserted: insertedRows,
-    });
-
-    return NextResponse.json({
-      ok: true,
-      mode,
-      source,
-      tipoCliente,
-      range: { startDate, endDate },
-      marketplaceIds:
-        canonicalSyncMarketplaceIds.length > 0
-          ? canonicalSyncMarketplaceIds
-          : resultMarketplaces,
-      deletedPreviousRows: Number(result.deleted ?? 0),
-      insertedRows,
-      insertedUnits,
-      orphanRows,
-      orphanUnits,
-      skippedSourceConflicts,
-      orphanMarketplaces: result.orphanMarketplaces ?? [],
-      orphanCountries: result.orphanCountries ?? [],
-      warnings,
-      startedAt,
-      finishedAt,
-    });
+    const result = await coordinateFbaSalesSync({fromDate:startDate,toDate:addUtcDays(endDate,-1),marketplaceIds:canonicalSyncMarketplaceIds,mode:"syncOnly",tipoCliente});
+    return NextResponse.json({...result,mode,startedAt}, {status:salesSyncHttpStatus(result.status)});
   } catch (error: unknown) {
     const mapped = mapGenericError(error);
     const finishedAt = new Date().toISOString();

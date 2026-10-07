@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { parseAmazonFbaLedgerSummaryText } from "./parser.ts";
+import { LEDGER_QUANTITY_COLUMNS } from "./strictLedgerDocument.ts";
 import {
   dedupeLedgerRowsForUpsert,
   prepareLedgerRowsAgainstPersisted,
@@ -11,7 +12,7 @@ import type { AmazonFbaLedgerDbRow, ParsedAmazonFbaLedgerRow } from "./types.ts"
 const header = [
   "Date", "MSKU", "FNSKU", "ASIN", "Condition Type", "Disposition", "Location",
   "Starting Warehouse Balance", "Ending Warehouse Balance",
-].join(",");
+].concat(LEDGER_QUANTITY_COLUMNS.filter(c => c !== "Starting Warehouse Balance" && c !== "Ending Warehouse Balance")).join(",");
 const fixture = [
   header,
   "08/14/2026,TEST_LEDGER_SELLER_A,FNSKU_TEST_A,ASIN_TEST_LEDGER,UNKNOWN,SELLABLE,ES,10,12",
@@ -22,7 +23,7 @@ const fixture = [
   "08/14/2026,TEST_LEDGER_SELLER_A,FNSKU_TEST_A,ASIN_TEST_LEDGER,NEW,SELLABLE,ES,5,6",
   "08/14/2026,TEST_LEDGER_SELLER_A,FNSKU_TEST_A,ASIN_TEST_LEDGER,UNKNOWN,SELLABLE,MAD6,7,8",
   "08/14/2026,TEST_LEDGER_SELLER_A,FNSKU_TEST_A,ASIN_TEST_LEDGER,UNKNOWN,UNSELLABLE,MXP3,1,2",
-].join("\n");
+].map((line, index) => index === 0 ? line : line + ",0".repeat(12)).join("\n");
 
 async function run() {
 const identityA = resolveLedgerDocumentIdentity({ text: fixture });

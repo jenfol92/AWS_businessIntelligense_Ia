@@ -5,7 +5,8 @@ import {
   aggregateCanonicalSnapshotAcrossOperationalPools,
   aggregateCanonicalSnapshotByProductPool,
 } from "./canonicalInventorySnapshotAggregation.ts";
-import { buildOperationalStockSummary } from "./resolveOperationalStock.ts";
+import { buildOperationalStockSummary, resolveOpeningStockForScope } from "./resolveOperationalStock.ts";
+import { resolveChannelScope, resolveCountryScope } from "./inventoryScope.ts";
 
 const RUN = "0ed53451-dd61-4dc0-9037-50ba64d0e688";
 const AT = "2026-08-20T08:10:50.351Z";
@@ -167,6 +168,9 @@ test("FBM canónico habilita total operativo sin leer stock_fbm legacy", () => {
   const resolved = buildOperationalStockSummary(inventoryRows, null, snapshot, { now: new Date("2026-08-20T12:00:00Z") }, { availableQuantity: 7, observedAt: AT });
   assert.equal(resolved.stockOperationalFbm, 7);
   assert.equal(resolved.stockOperationalTotal, 701);
+  assert.equal(resolved.stockFbaAppByCountry[0]?.stockFbm, 7);
+  assert.equal(resolveOpeningStockForScope(inventoryRows, resolveCountryScope("ES"), resolveChannelScope("FBM"), resolved), 7);
+  assert.equal(resolveOpeningStockForScope(inventoryRows, resolveCountryScope("ES"), resolveChannelScope("ALL"), resolved), 671);
 });
 
 test("cantidades distintas entre FNSKU se suman y no producen ambigüedad", () => {

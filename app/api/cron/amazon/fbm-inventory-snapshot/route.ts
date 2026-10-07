@@ -2,7 +2,7 @@ import { handleFbmReportsSync } from "@/modules/amazon-sp-api/fbmReportsEntrypoi
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const maxDuration = 360;
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   return handleFbmReportsSync(request);

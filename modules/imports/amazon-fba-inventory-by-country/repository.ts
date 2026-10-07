@@ -283,25 +283,22 @@ async function loadExistingStockFbmByKeys(
 
 /**
  * Actualiza SOLO inventario_paises.stock_fba (y marketplace_id, updated_at).
- * Preserva stock_fbm existente; no toca stock_pais.
+ * No incluye stock_fbm en el payload: FBM pertenece exclusivamente a sus snapshots.
  */
 export async function upsertInventarioPaisesStockFba(
   rows: AggregatedFbaCountryStock[],
 ): Promise<number> {
   if (rows.length === 0) return 0;
 
-  const existingFbm = await loadExistingStockFbmByKeys(rows);
   const now = new Date().toISOString();
   let affected = 0;
 
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE).map((row) => {
-      const fbmKey = `${row.producto_id}::${row.pais}`;
       return {
         producto_id: row.producto_id,
         pais: row.pais,
         stock_fba: row.stock_fba,
-        stock_fbm: existingFbm.get(fbmKey) ?? 0,
         marketplace_id: row.marketplace_id,
         updated_at: now,
       };

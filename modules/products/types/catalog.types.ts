@@ -1,4 +1,5 @@
 // modules/products/types/catalog.types.ts
+import type { PublishedCatalogFbmStock } from "../repositories/productCatalogFbmRepository";
 
 export type ProductCatalogQuery = {
   q?: string;
@@ -60,6 +61,8 @@ export type ProductCatalogQuery = {
   };
   
   export type ProductCatalogItem = {
+    /** Additive canonical FBM display data; existing stock/FBA contracts are preserved. */
+    publishedFbm?: PublishedCatalogFbmStock;
     id: string;
     sku: string;
     nombre: string;

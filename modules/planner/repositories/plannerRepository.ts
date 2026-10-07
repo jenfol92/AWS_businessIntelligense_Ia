@@ -1196,9 +1196,12 @@ export async function getProductsForPlanning(
   }
 
   const inboundByProduct =
-    productIds.length > 0
-      ? await fetchForecastInboundByProductIds(productIds)
-      : new Map();
+  productIds.length > 0
+    ? await fetchForecastInboundByProductIds(
+        productIds,
+        signal,
+      )
+    : new Map();
 
   if (signal?.aborted) {
     throw new DOMException("Aborted", "AbortError");

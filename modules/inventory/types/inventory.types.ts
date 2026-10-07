@@ -106,19 +106,25 @@ export type InventoryExplanationCode =
 export type InventoryCountryStockRow = {
   pais: string;
   /** FBA sellable stock from latest Inventory Ledger location snapshot. */
-  stockFba: number;
+  stockFba: number | null;
   /** FBA unsellable stock from latest Inventory Ledger location snapshot. */
-  stockFbaUnsellable: number;
+  stockFbaUnsellable: number | null;
   /** FBA sellable + unsellable physical stock from latest Inventory Ledger. */
-  stockFbaPhysicalTotal: number;
+  stockFbaPhysicalTotal: number | null;
   /** Legacy/persisted country FBA stock kept for audit comparisons. */
   stockFbaApp: number;
   stockFbaLedgerSnapshotDate: string | null;
   stockFbaLastImportedAt: string | null;
   stockFbaLedgerStale: boolean;
   stockFbaLedgerStaleDays: number | null;
-  stockFbm: number;
-  stockTotal: number;
+  /** Unidades SELLABLE Grade & Resell (amzn.gr.*), separadas del vendible. */
+  stockFbaResaleSellable?: number;
+  stockFbaUnknownConditionSellable?: number;
+  stockFbaLedgerCoverageValid?: boolean;
+  /** Unidades en tránsito entre almacenes de Amazon (Inventory Ledger). */
+  stockFbaInTransit?: number;
+  stockFbm: number | null;
+  stockTotal: number | null;
   /** FBA shipped units by customer delivery country (ventas_diarias.pais). */
   salesUnitsPeriod: number;
   salesUnits30: number;
@@ -443,6 +449,8 @@ export type InventoryProductCoreResponse = {
   periodDays: number;
   periodFrom: string;
   periodTo: string;
+  /** Ventas del periodo por fecha de compra (pedidos Amazon), para la tarjeta de ventas. */
+  salesOrders?: InventorySalesOrdersSummary | null;
 };
 
 export type InventoryProductForecastResponse = {
@@ -501,6 +509,12 @@ export type FbaInventoryCountryStockRow = {
   stockTotal: number;
   isStale: boolean;
   staleDays: number | null;
+  /** Unidades SELLABLE Grade & Resell / no nuevas (no suman al vendible principal). */
+  stockUnknownConditionSellable?: number;
+  coverageValid?: boolean;
+  stockResaleSellable?: number;
+  /** Unidades en tránsito entre almacenes de Amazon (no suman al stock del país). */
+  stockInTransit?: number;
   dispositions: Array<{
     disposition: string;
     stock: number;
@@ -528,3 +542,105 @@ export type MarketplaceSalesAgg = {
 };
 
 export type MarketplaceSalesByProductCountry = Map<string, MarketplaceSalesAgg>;
+
+// ---------------------------------------------------------------------------
+// Ventas por país (modal tipo Shopkeeper)
+// Fuente: amazon_fba_sales_daily_raw (GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL).
+// País = marketplace de venta (sales-channel). Importes en la moneda del marketplace.
+// ---------------------------------------------------------------------------
+
+export type InventorySalesLine = {
+  saleDate: string;
+  purchaseDate: string | null;
+  amazonOrderId: string | null;
+  units: number;
+  unitPrice: number | null;
+  grossAmount: number | null;
+  currency: string;
+  shipCountry: string | null;
+  fulfillmentCenter: string | null;
+  salesChannel: string | null;
+  /** Solo con fuente de pedidos: FBA | FBM. */
+  fulfillmentChannel?: "FBA" | "FBM" | null;
+  /** Solo con fuente de pedidos: estado del pedido en Amazon (Shipped, Pending…). */
+  orderStatus?: string | null;
+  pending?: boolean;
+};
+
+/**
+ * Fuente de las ventas del modal/tarjeta:
+ *  - amazon_orders: pedidos por fecha de compra, FBA+FBM, incluidos pendientes (como Shopkeeper).
+ *  - fba_shipments: envíos FBA por fecha de envío (fallback si no hay tabla de pedidos).
+ */
+export type InventorySalesSource = "amazon_orders" | "fba_shipments";
+
+export type InventorySalesOrdersSummary = {
+  source: InventorySalesSource;
+  units: number;
+  unitsFba: number;
+  unitsFbm: number;
+  unitsPending: number;
+  orders: number;
+  /** Última importación de pedidos (cualquier producto). */
+  lastImportedAt: string | null;
+};
+
+export type InventorySalesByCountryRow = {
+  country: string;
+  salesChannel: string | null;
+  currency: string;
+  units: number;
+  orders: number;
+  grossAmount: number;
+  avgUnitPrice: number | null;
+  minUnitPrice: number | null;
+  maxUnitPrice: number | null;
+  shareUnits: number;
+  lastSaleDate: string | null;
+  unitsFba?: number;
+  unitsFbm?: number;
+  unitsPending?: number;
+};
+
+export type InventorySalesByCountryResponse = {
+  ok: true;
+  productId: string;
+  periodFrom: string;
+  periodTo: string;
+  channel: InventoryCountryPriceChannel;
+  countries: InventorySalesByCountryRow[];
+  totals: {
+    units: number;
+    orders: number;
+    /** Importe total por moneda (no se suman monedas distintas). */
+    amountByCurrency: Array<{ currency: string; amount: number }>;
+  };
+  /** true si el canal filtrado no tiene detalle de precios (FBM, solo fuente fba_shipments). */
+  priceDetailUnavailable: boolean;
+  source?: InventorySalesSource;
+  summary?: InventorySalesOrdersSummary;
+};
+
+export type InventorySalesPriceRow = {
+  unitPrice: number;
+  currency: string;
+  units: number;
+  orders: number;
+  grossAmount: number;
+  shareUnits: number;
+  firstSaleDate: string | null;
+  lastSaleDate: string | null;
+};
+
+export type InventorySalesCountryDetailResponse = {
+  ok: true;
+  productId: string;
+  country: string;
+  periodFrom: string;
+  periodTo: string;
+  summary: InventorySalesByCountryRow | null;
+  prices: InventorySalesPriceRow[];
+  lines: InventorySalesLine[];
+  linesTruncated: boolean;
+  source?: InventorySalesSource;
+};

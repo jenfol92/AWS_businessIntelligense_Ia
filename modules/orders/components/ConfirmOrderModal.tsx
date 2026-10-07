@@ -13,6 +13,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle, X, FileText } from "lucide-react";
+import { useMarketFxRate } from "@/modules/orders/hooks/useMarketFxRate";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
 
@@ -222,9 +223,15 @@ export default function ConfirmOrderModal({
 
           const monedaOrden = (ordenData.moneda_compra ?? "USD").toString().toUpperCase();
           setMoneda(monedaOrden);
+          const storedFx = ordenData.planned_fx_foreign_per_eur;
+          // Un tipo ya congelado (orden reabierta) prevalece sobre el del mercado.
+          fxEditedRef.current = storedFx != null && storedFx !== "";
           setPlannedFxForeignPerEur(
-            monedaOrden === "EUR" ? "1" : String(ordenData.planned_fx_foreign_per_eur ?? ""),
+            monedaOrden === "EUR" ? "1" : String(storedFx ?? ""),
           );
+          // Cada carga sin tipo guardado vuelve a pedir el del mercado (la carga
+          // puede repetirse, p. ej. StrictMode, después de haberlo rellenado).
+          setFxLoadKey((key) => key + 1);
           setAgenteId(
             (ordenData.agente_id as string | null | undefined) ??
               orden.agente_id ??
@@ -308,6 +315,15 @@ export default function ConfirmOrderModal({
   const [agenteId, setAgenteId] = useState(orden.agente_id ?? "");
   const [moneda,  setMoneda]  = useState("USD");
   const [plannedFxForeignPerEur,setPlannedFxForeignPerEur]=useState("");
+  const fxEditedRef = useRef(false);
+  const [fxLoadKey, setFxLoadKey] = useState(0);
+  const marketFx = useMarketFxRate(moneda);
+  useEffect(() => {
+    // Esperar a la orden (puede traer un tipo congelado) y no aplicar el tipo de otra moneda.
+    if (fxLoadKey === 0 || moneda === "EUR" || fxEditedRef.current) return;
+    if (marketFx.currency !== moneda || marketFx.foreignPerEur == null) return;
+    setPlannedFxForeignPerEur(String(marketFx.foreignPerEur));
+  }, [fxLoadKey, moneda, marketFx.currency, marketFx.foreignPerEur]);
   const [confirmationDate, setConfirmationDate] = useState(todayIsoDate);
   const [orderDate, setOrderDate] = useState(normalizeDate(orden.fecha_orden));
   const [etd,     setEtd]     = useState("");
@@ -353,6 +369,9 @@ export default function ConfirmOrderModal({
     0,
   );
   function handleMonedaChange(nueva: string) {
+    // Otra moneda invalida el tipo anterior: se vuelve a proponer el del mercado.
+    fxEditedRef.current = false;
+    setPlannedFxForeignPerEur("");
     setMoneda(nueva);
   }
 
@@ -612,7 +631,7 @@ export default function ConfirmOrderModal({
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Fecha de confirmaciÃ³n
+                  Fecha de confirmación
                 </label>
                 <input
                   type="date"
@@ -669,11 +688,23 @@ export default function ConfirmOrderModal({
                   required={moneda !== "EUR"}
                   disabled={moneda === "EUR"}
                   value={moneda === "EUR" ? "1" : plannedFxForeignPerEur}
-                  onChange={(e) => setPlannedFxForeignPerEur(e.target.value)}
+                  onChange={(e) => {
+                    fxEditedRef.current = true;
+                    setPlannedFxForeignPerEur(e.target.value);
+                  }}
                   className="w-40 border border-slate-200 rounded-lg px-3 py-2 text-sm disabled:bg-slate-50"
                 />
                 <span className="text-sm font-medium text-slate-700">{moneda}</span>
               </div>
+              {moneda !== "EUR" ? (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {marketFx.loading
+                    ? "Consultando tipo de referencia del BCE…"
+                    : marketFx.currency === moneda && marketFx.foreignPerEur != null
+                      ? `Mercado (BCE${marketFx.referenceDate ? `, ${marketFx.referenceDate}` : ""}): 1 EUR = ${marketFx.foreignPerEur} ${moneda}${String(marketFx.foreignPerEur) !== plannedFxForeignPerEur ? " · editado manualmente" : ""}`
+                      : `${marketFx.error ?? "Tipo de cambio no disponible"}. Introdúcelo manualmente.`}
+                </p>
+              ) : null}
               <p className="mt-1 text-[11px] text-slate-500">
                 Referencia para planificación. El coste real se calculará con el tipo de cambio efectivo de cada pago.
               </p>

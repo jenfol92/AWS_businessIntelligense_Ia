@@ -44,7 +44,12 @@ import { resolveLegacySupplierPaymentSettlement } from "../utils/legacySupplierP
 import { createCreditReleaseTracker } from "../utils/creditLinePlannedRelease";
 import { evaluateTreasury, type TreasuryEvent } from "./treasuryEngine";
 import { buildMarketplaceCashCards, summarizeAmazonCashByMonth, type AmazonCashItem } from "./amazonCashForecast";
+import {
+  buildAmazonDeferredReleasePlanning,
+  type DeferredObservationRow,
+} from "./amazonDeferredReleaseAggregates";
 import { expectedBankDateForPending } from "./amazonTreasuryModel";
+import { buildAmazonPlanningHorizonMonths } from "../utils/amazonPlanningHorizon";
 
 function asNumber(value: unknown, fallback = 0): number {
   if (value === null || value === undefined || value === "") return fallback;
@@ -54,6 +59,24 @@ function asNumber(value: unknown, fallback = 0): number {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function deferredObservationField(value: unknown): number | string | null {
+  if (value == null || value === "") return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") return value;
+  return null;
+}
+
+function toDeferredObservationRow(row: Record<string, unknown>): DeferredObservationRow {
+  return {
+    amazon_release_date: asString(row["amazon_release_date"]),
+    official_amount_eur: deferredObservationField(row["official_amount_eur"]),
+    amount_eur: deferredObservationField(row["amount_eur"]),
+    estimated_amount_eur: deferredObservationField(row["estimated_amount_eur"]),
+    original_amount: deferredObservationField(row["original_amount"]),
+    original_currency: asString(row["original_currency"]),
+  };
 }
 
 function sumKnown(values: Array<number | null | undefined>): number | null {
@@ -870,6 +893,8 @@ export async function buildFinancialPlanning(
   const amazonExpectedNetRatio = amazonExpectedNetRatioRaw == null
     ? null
     : asNumber(amazonExpectedNetRatioRaw);
+  const fromMonth = query.fromMonth ?? accountingDate().slice(0, 7);
+  const monthsCount = query.months ?? 6;
   const currentObservations=Array.from(new Map(raw.amazonTreasuryObservations
     .slice().sort((a,b)=>String(a["id"]??"").localeCompare(String(b["id"]??"")))
     .map(row=>[String(row["source_key"]),row])).values());
@@ -919,15 +944,29 @@ export async function buildFinancialPlanning(
       canMarkPaid: false,
     });
   }
+  const deferredObservationRows=currentObservations.filter(row=>String(row["economic_state"])==="DEFERRED");
+  const amazonPlanningHorizonMonths=buildAmazonPlanningHorizonMonths(fromMonth);
+  const amazonDeferredRelease=buildAmazonDeferredReleasePlanning(
+    deferredObservationRows.map(toDeferredObservationRow),
+    raw.amazonObservationObservedAt,
+    amazonPlanningHorizonMonths,
+  );
+  amazonDeferredRelease.runId=raw.amazonObservationRunId??null;
+  const deferredReleaseKnownByMonth=new Map(
+    amazonDeferredRelease.monthlyByReleaseMonth.filter(bucket=>bucket.month).map(bucket=>[bucket.month!,bucket.knownEur]),
+  );
+  const deferredReleaseMonthlyByHorizon=amazonPlanningHorizonMonths.map((month)=>
+    amazonDeferredRelease.monthlyByReleaseMonth.find((bucket)=>bucket.month===month)
+    ?? {date:null,month,knownEur:null,transactionCount:0,positiveKnownEur:null,negativeKnownEur:null,unvaluedCount:0,unvaluedOriginalByCurrency:{},isComplete:true},
+  );
   for(const observation of currentObservations){
     const state=String(observation["economic_state"]) as "AVAILABLE"|"DEFERRED"|"PENDING_BANK";
+    if(state==="DEFERRED")continue;
     const amountRaw=observation["official_amount_eur"]??observation["amount_eur"]??observation["estimated_amount_eur"];
     const amountEur=amountRaw==null?null:asNumber(amountRaw);const originalAmount=asNumber(observation["original_amount"]);const originalCurrency=String(observation["original_currency"]??"EUR");const persistedBankDate=asString(observation["expected_bank_date"]);const actualRequestAt=asString(observation["fund_transfer_at"]);const expectedBankDate=state==="AVAILABLE"?null:state==="PENDING_BANK"?expectedBankDateForPending(actualRequestAt)??persistedBankDate:persistedBankDate;const unresolved=String(observation["marketplace"]??"UNRESOLVED")==="UNRESOLVED";
-    events.push({id:String(observation["id"]),type:"amazon_income",title:`Amazon ${state.toLowerCase().replace("_"," ")}`,date:expectedBankDate,month:dateToMonth(expectedBankDate),isPendingDate:!expectedBankDate,status:"previsto",amazonStatus:state,amazonConfidence:asString(observation["confidence"]),amazonEstimationMethod:asString(observation["estimation_method"]),sourceKey:asString(observation["source_key"]),settlementId:asString(observation["financial_event_group_id"]),marketplace:String(observation["marketplace"]??"UNRESOLVED"),dateIsEstimated:true,isInformational:unresolved||amountEur==null||state==="DEFERRED"||state==="AVAILABLE",containerId:null,containerCode:null,orderId:null,orderCode:null,numeroPedidoAgente:null,agentContact:null,logisticsType:"SIN_DEFINIR",originalAmount,originalCurrency,plannedFxRate:null,plannedFxSource:"not_configured",plannedAmountEur:amountEur??0,paidAmountEur:null,recommendedSource:null,recommendationReason:unresolved?"Marketplace no resuelto; excluido del consolidado.":amountEur==null?`Importe ${originalCurrency} sin conversion EUR; excluido del consolidado.`:state==="AVAILABLE"?"Liquidez Amazon disponible para solicitar; no es caja ni ingreso bancario confirmado.":`Snapshot observacional ${state}; no modifica caja.`,canMarkPaid:false});
+    events.push({id:String(observation["id"]),type:"amazon_income",title:`Amazon ${state.toLowerCase().replace("_"," ")}`,date:expectedBankDate,month:dateToMonth(expectedBankDate),isPendingDate:!expectedBankDate,status:"previsto",amazonStatus:state,amazonConfidence:asString(observation["confidence"]),amazonEstimationMethod:asString(observation["estimation_method"]),sourceKey:asString(observation["source_key"]),settlementId:asString(observation["financial_event_group_id"]),marketplace:String(observation["marketplace"]??"UNRESOLVED"),dateIsEstimated:true,isInformational:unresolved||amountEur==null||state==="AVAILABLE",containerId:null,containerCode:null,orderId:null,orderCode:null,numeroPedidoAgente:null,agentContact:null,logisticsType:"SIN_DEFINIR",originalAmount,originalCurrency,plannedFxRate:null,plannedFxSource:"not_configured",plannedAmountEur:amountEur??0,paidAmountEur:null,recommendedSource:null,recommendationReason:unresolved?"Marketplace no resuelto; excluido del consolidado.":amountEur==null?`Importe ${originalCurrency} sin conversion EUR; excluido del consolidado.`:state==="AVAILABLE"?"Liquidez Amazon disponible para solicitar; no es caja ni ingreso bancario confirmado.":`Snapshot observacional ${state}; no modifica caja.`,canMarkPaid:false});
   }
 
-  const fromMonth = query.fromMonth ?? accountingDate().slice(0, 7);
-  const monthsCount = query.months ?? 6;
   const amazonCashItems:AmazonCashItem[]=[...raw.amazonIncomeForecasts.filter(row=>String(row["economic_state"]??"").toUpperCase()==="FUTURE"),...currentObservations].flatMap((income)=>{
     const state=String(income["economic_state"]??"").toUpperCase();
     if(!["RECEIVED","PENDING_BANK","AVAILABLE","DEFERRED","FUTURE"].includes(state))return [];
@@ -1001,6 +1040,7 @@ export async function buildFinancialPlanning(
       amazonAvailableEur:datedEvents.filter(event=>!event.isInformational&&event.type==="amazon_income"&&event.amazonStatus==="AVAILABLE").reduce((sum,event)=>sum+event.plannedAmountEur,0),
       amazonPendingBankEur:datedEvents.filter(event=>!event.isInformational&&event.type==="amazon_income"&&event.amazonStatus==="PENDING_BANK").reduce((sum,event)=>sum+event.plannedAmountEur,0),
       amazonDeferredEur:datedEvents.filter(event=>!event.isInformational&&event.type==="amazon_income"&&event.amazonStatus==="DEFERRED").reduce((sum,event)=>sum+event.plannedAmountEur,0),
+      amazonDeferredReleaseKnownEur:deferredReleaseKnownByMonth.get(month)??null,
       amazonMonthlyEstimateEur: monthlyAmazonEstimate(raw.amazonIncomeForecasts, month),
       amazonFutureEur:datedEvents.filter(event=>!event.isInformational&&event.type==="amazon_income"&&event.amazonStatus==="FUTURE").reduce((sum,event)=>sum+event.plannedAmountEur,0),
       amazonIncomes: datedEvents.filter(event=>event.type==="amazon_income").map(event=>({
@@ -1035,6 +1075,15 @@ export async function buildFinancialPlanning(
   const treasuryEvaluation=evaluateTreasury({initialCashEur:cashBalance,reserveEur:minimumOperatingReserveEur,events:treasuryEvents,lines:activeCreditLines.map(line=>({id:line.id,name:`${line.bankName} ${line.lineName}`,availableEur:line.availableAmount,priority:line.priority,dueDate:line.maturityDate,cycleDays:line.cycleDays,knownCostEur:line.fixedFee??null}))});
 
   const monthKeys=months.map(month=>month.month);
+  const pendingBankByMonth=amazonPlanningHorizonMonths.map(month=>({
+    month,
+    knownEur:(()=>{const rows=datedPlanningEvents.filter(event=>event.type==="amazon_income"&&event.amazonStatus==="PENDING_BANK"&&event.month===month&&!event.isInformational);if(rows.length===0)return null;const values=rows.map(event=>event.plannedAmountEur);return values.some(value=>!Number.isFinite(value))?null:values.reduce((sum,value)=>sum+value,0);})(),
+    transactionCount:datedPlanningEvents.filter(event=>event.type==="amazon_income"&&event.amazonStatus==="PENDING_BANK"&&event.month===month).length,
+  }));
+  const futureForecastByMonth=amazonPlanningHorizonMonths.map(month=>({
+    month,
+    estimatedEur:(()=>{const rows=datedPlanningEvents.filter(event=>event.type==="amazon_income"&&event.amazonStatus==="FUTURE"&&event.month===month&&!event.isInformational);if(rows.length===0)return null;return rows.reduce((sum,event)=>sum+event.plannedAmountEur,0);})(),
+  }));
   const currentBalanceItems=amazonCashItems.filter(item=>item.state!=="FUTURE"&&item.state!=="RECEIVED");
   const marketplaceCards=buildMarketplaceCashCards(currentBalanceItems);
   const europeMarketplaces=new Set(["ES","FR","DE","IT","GB","SE","PL","NL","BE","IE"]);
@@ -1078,6 +1127,31 @@ export async function buildFinancialPlanning(
     months,
     pendingDateEvents,
     permissions: { canManageCreditLineRegularizations },
+    amazonDeferredRelease,
+    amazonPlanningHorizonMonths,
+    amazonPlanningLayers:{
+      deferredAmazonRelease:{
+        semantic:"amazon_release",
+        label:amazonDeferredRelease.label,
+        monthly:deferredReleaseMonthlyByHorizon,
+      },
+      pendingBankByMonth:{
+        semantic:"bank_transfer_in_flight",
+        label:"Transferencia Amazon en curso (fecha bancaria estimada)",
+        monthly:pendingBankByMonth,
+      },
+      availableLiquidityStock:{
+        semantic:"amazon_liquidity_current",
+        label:"Liquidez Amazon disponible para solicitar (stock actual)",
+        observedAt:raw.amazonObservationObservedAt,
+        knownEur:currentObservations.filter(row=>String(row["economic_state"]??"")==="AVAILABLE"&&String(row["marketplace"]??"")!=="UNRESOLVED"&&(row["official_amount_eur"]??row["amount_eur"])!=null&&asNumber(row["original_amount"])>0).reduce((sum,row)=>sum+asNumber(row["official_amount_eur"]??row["amount_eur"]),0),
+      },
+      futureForecastByMonth:{
+        semantic:"erp_forecast_estimate",
+        label:"Forecast ERP estimado (separado de Amazon observado)",
+        monthly:futureForecastByMonth,
+      },
+    },
     amazonCashForecast:{marketplaceCards:europeCard?[...marketplaceCards,europeCard]:marketplaceCards,monthlyScenarios:summarizeAmazonCashByMonth(amazonCashItems,monthKeys)},
   };
 }

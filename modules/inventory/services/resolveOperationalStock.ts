@@ -1,9 +1,9 @@
 import type { InventoryRow } from "../types/inventory.types.ts";
-import type {
-  ResolvedChannelScope,
-  ResolvedCountryScope,
+import {
+  stockForChannelRow,
+  type ResolvedChannelScope,
+  type ResolvedCountryScope,
 } from "./inventoryScope.ts";
-import { stockForChannelRow } from "./inventoryScope.ts";
 import { isInventoryTimestampNotStale } from "./inventoryFreshnessPolicy.ts";
 
 export type LatestFbaLedgerStock = {
@@ -94,10 +94,6 @@ export type BuildOperationalStockOptions = {
 
 function sumInventarioFba(rows: InventoryRow[]): number {
   return rows.reduce((s, r) => s + Number(r.stock_fba ?? 0), 0);
-}
-
-function sumInventarioFbm(rows: InventoryRow[]): number {
-  return rows.reduce((s, r) => s + Number(r.stock_fbm ?? 0), 0);
 }
 
 function latestInventarioPaisesUpdatedAt(rows: InventoryRow[]): string | null {
@@ -214,13 +210,13 @@ export function buildOperationalStockSummary(
 ): OperationalStockSummary {
   const now = options.now ?? new Date();
   const stockFbaApp = sumInventarioFba(inventoryRows);
-  const stockFbmApp = sumInventarioFbm(inventoryRows);
+  const stockFbmApp = fbmSnapshot?.availableQuantity ?? 0;
 
   const stockFbaAppByCountry: InventarioPaisStockRow[] = inventoryRows
     .map((row) => ({
       pais: row.pais,
       stockFba: Number(row.stock_fba ?? 0),
-      stockFbm: Number(row.stock_fbm ?? 0),
+      stockFbm: row.pais === "ES" ? (fbmSnapshot?.availableQuantity ?? 0) : 0,
       updatedAt: row.updated_at ?? null,
     }))
     .sort((a, b) => a.pais.localeCompare(b.pais));
@@ -347,8 +343,18 @@ export function resolveOpeningStockForScope(
     return operational.stockOperationalFba;
   }
 
-  return scopedRows.reduce(
-    (sum, row) => sum + stockForChannelRow(row, channelScope),
-    0,
-  );
+  if (channelScope.filter === "AMAZON_FBM") {
+    const includesPhysicalCountry =
+      countryScope.countries == null || countryScope.countries.includes("ES");
+    return includesPhysicalCountry ? (operational?.stockOperationalFbm ?? 0) : 0;
+  }
+
+  if (channelScope.filter === "ALL") {
+    const stockFba = scopedRows.reduce((sum, row) => sum + Number(row.stock_fba ?? 0), 0);
+    const includesPhysicalCountry =
+      countryScope.countries == null || countryScope.countries.includes("ES");
+    return stockFba + (includesPhysicalCountry ? (operational?.stockOperationalFbm ?? 0) : 0);
+  }
+
+  return scopedRows.reduce((sum, row) => sum + stockForChannelRow(row, channelScope), 0);
 }

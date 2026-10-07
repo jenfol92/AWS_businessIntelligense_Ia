@@ -12,7 +12,7 @@ export async function getAmazonSyncState(): Promise<AmazonSyncState> {
 }
 
 export async function tryAcquireAmazonSync(runId:string,leaseSeconds=300,signal?:AbortSignal) {
-  const {data,error}=await supabaseAdmin.rpc("finance_try_acquire_amazon_sync",{p_run_id:runId,p_lease_seconds:leaseSeconds}).abortSignal(signal??AbortSignal.timeout(15_000));fail(error);return data as {acquired:boolean;lastSuccessfulAt:string|null};
+  const {data,error}=await supabaseAdmin.rpc("finance_try_acquire_amazon_sync",{p_run_id:runId,p_lease_seconds:leaseSeconds}).abortSignal(signal??AbortSignal.timeout(15_000));fail(error);return data as {acquired:boolean;lastSuccessfulAt:string|null;observedAt:string;runId:string};
 }
 
 export async function finishAmazonSync(runId:string,succeeded:boolean,result:unknown,errorMessage:string|null) {
@@ -79,6 +79,8 @@ export type AmazonTreasuryObservation = {
   originalCurrency:string; originalAmount:number; amountEur:number|null;
   officialAmountEur:number|null; financialEventGroupId?:string|null;
   amazonTransactionId?:string|null; transactionStatus?:string|null;
+  amazonTransactionType?:string|null; amazonPostedAt?:string|null;
+  amazonReleaseDate?:string|null; amazonDeferralReason?:string|null;
   settlementProcessingStatus?:string|null; fundTransferStatus?:string|null;
   fundTransferAt?:string|null; expectedAvailabilityDate?:string|null;
   expectedRequestDate?:string|null; expectedBankDate?:string|null;
@@ -88,9 +90,9 @@ export type AmazonTreasuryObservation = {
   source:string; evidence:Record<string,unknown>;
 };
 
-export async function insertAmazonTreasuryObservationAdmin(item:AmazonTreasuryObservation,signal?:AbortSignal){
+export async function insertAmazonTreasuryObservationAdmin(item:AmazonTreasuryObservation & {syncRunId:string},signal?:AbortSignal){
   const {data,error}=await supabaseAdmin.rpc("finance_insert_amazon_treasury_observation",{
-    p_observation_key:item.observationKey,p_source_key:item.sourceKey,p_marketplace:item.marketplace,
+    p_sync_run_id:item.syncRunId,p_observation_key:item.observationKey,p_source_key:item.sourceKey,p_marketplace:item.marketplace,
     p_economic_state:item.economicState,p_observed_at:item.observedAt,
     p_original_currency:item.originalCurrency,p_original_amount:item.originalAmount,
     p_amount_eur:item.amountEur,p_official_amount_eur:item.officialAmountEur,
@@ -103,6 +105,8 @@ export async function insertAmazonTreasuryObservationAdmin(item:AmazonTreasuryOb
     p_confidence:item.confidence,p_estimation_method:item.estimationMethod,
     p_fx_source:item.fxSource,p_fx_observed_at:item.fxObservedAt??null,p_fx_kind:item.fxKind,
     p_estimated_fx_rate:item.estimatedFxRate??null,p_realized_fx_rate:item.realizedFxRate??null,p_realized_amount_eur:item.realizedAmountEur??null,
+    p_amazon_transaction_type:item.amazonTransactionType??null,p_amazon_posted_at:item.amazonPostedAt??null,
+    p_amazon_release_date:item.amazonReleaseDate??null,p_amazon_deferral_reason:item.amazonDeferralReason??null,
     p_source:item.source,p_evidence:item.evidence,
   }).abortSignal(signal??AbortSignal.timeout(15_000));assertAmazonObservationSchemaError(error);return data;
 }
@@ -139,7 +143,17 @@ export async function readRecentAmazonSalesAdmin(productIds:string[],marketplace
 
 export async function assertAmazonObservationSchemaReady(signal?:AbortSignal) {
   const {error}=await supabaseAdmin.from("finance_amazon_treasury_forecast_snapshots")
-    .select("fx_kind,estimated_fx_rate,realized_amount_eur,realized_fx_rate").limit(0)
+    .select([
+      "sync_run_id",
+      "fx_kind",
+      "estimated_fx_rate",
+      "realized_amount_eur",
+      "realized_fx_rate",
+      "amazon_transaction_type",
+      "amazon_posted_at",
+      "amazon_release_date",
+      "amazon_deferral_reason",
+    ].join(",")).limit(0)
     .abortSignal(signal??AbortSignal.timeout(15_000));
   assertAmazonObservationSchemaError(error);
 }

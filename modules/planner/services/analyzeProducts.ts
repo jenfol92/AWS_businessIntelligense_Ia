@@ -193,10 +193,10 @@ async function timedPlanner<T>(
   }
 }
 
-export async function analyzeProducts(params: PlannerParams) {
+export async function analyzeProducts(params: PlannerParams, signal?: AbortSignal,) {
   const productsStart = Date.now();
 
-const products = await getProductsForPlanning(params);
+const products = await getProductsForPlanning(params, signal);
 
 if (process.env.NODE_ENV === "development") {
   console.log(

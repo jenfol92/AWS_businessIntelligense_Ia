@@ -23,12 +23,20 @@ import {
 
 let snapshotAlignmentLogCount = 0;
 
+/**
+ * El stock FBM canónico (informe FBM de Amazon) es un único pool físico en el
+ * almacén propio de España. Se asigna a esa fila de país en la tabla por país,
+ * igual que lo usa el panel de stock operativo.
+ */
+const FBM_PHYSICAL_COUNTRY = "ES";
+
 function stockTotalForCurrentChannel(params: {
   canal: string;
-  stockFba: number;
-  stockFbm: number;
-}): number {
-  return params.stockFba + params.stockFbm;
+  stockFba: number | null;
+  stockFbm: number | null;
+}): number | null {
+  if (params.stockFba == null) return null;
+  return params.stockFba + (params.stockFbm ?? 0);
 }
 
 function inferForecastMethod(
@@ -46,24 +54,27 @@ export function buildCountryRowsForProduct(
 ): InventoryCountryStockRow[] {
   const rows = ctx.inventoryRows.filter((r) => r.producto_id === productId);
   const fbaRows = ctx.fbaInventoryCountryLatest.get(productId) ?? [];
+  const canonicalFbm = ctx.fbmInventorySnapshotLatest.get(productId);
   const countries: InventoryCountryStockRow[] = [];
   const countryCodes = new Set<string>();
 
   for (const fba of fbaRows) countryCodes.add(fba.pais);
-  for (const inv of rows) {
-    if (Number(inv.stock_fbm ?? 0) > 0) {
-      countryCodes.add(inv.pais);
-    }
+  if (canonicalFbm) {
+    countryCodes.add(FBM_PHYSICAL_COUNTRY);
   }
 
   for (const pais of Array.from(countryCodes).sort((a, b) => a.localeCompare(b))) {
     const inv = rows.find((r) => r.pais === pais);
     const fba = fbaRows.find((r) => r.pais === pais);
     const stockFbaApp = Number(inv?.stock_fba ?? 0);
-    const stockFba = fba?.stockSellable ?? 0;
-    const stockFbaUnsellable = fba?.stockUnsellable ?? 0;
-    const stockFbaPhysicalTotal = fba?.stockTotal ?? 0;
-    const stockFbm = Number(inv?.stock_fbm ?? 0);
+    const stockFba = fba?.stockSellable ?? null;
+    const stockFbaUnsellable = fba?.stockUnsellable ?? null;
+    const stockFbaPhysicalTotal = fba?.stockTotal ?? null;
+    const stockFbm = canonicalFbm
+      ? pais === FBM_PHYSICAL_COUNTRY
+        ? canonicalFbm.availableQuantity
+        : 0
+      : null;
     const stockTotal = stockTotalForCurrentChannel({
       canal: ctx.canal,
       stockFba,
@@ -80,7 +91,7 @@ export function buildCountryRowsForProduct(
     const avg30 = avgDaily(salesUnitsPeriod, ctx.periodDays);
     const avg90 = avgDaily(sales.units90, 90);
     const avgUsed = avgPeriod;
-    const cov = coverageDays(stockTotal, avgUsed);
+    const cov = stockTotal != null && fba?.coverageValid === true ? coverageDays(stockTotal, avgUsed) : null;
 
     countries.push({
       pais,
@@ -92,6 +103,10 @@ export function buildCountryRowsForProduct(
       stockFbaLastImportedAt: fba?.lastImportedAt ?? null,
       stockFbaLedgerStale: fba?.isStale ?? false,
       stockFbaLedgerStaleDays: fba?.staleDays ?? null,
+      stockFbaResaleSellable: fba?.stockResaleSellable ?? 0,
+      stockFbaUnknownConditionSellable: fba?.stockUnknownConditionSellable ?? 0,
+      stockFbaLedgerCoverageValid: fba?.coverageValid ?? false,
+      stockFbaInTransit: fba?.stockInTransit ?? 0,
       stockFbm,
       stockTotal,
       salesUnitsPeriod,

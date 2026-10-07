@@ -110,3 +110,48 @@ export async function fetchInventoryProductForecast(
 
   return json;
 }
+
+export type FetchInventorySalesParams = {
+  fromDate: string;
+  toDate: string;
+  canal?: string | null;
+  pais?: string | null;
+  signal?: AbortSignal;
+};
+
+async function getJsonOrThrow<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, { cache: "no-store", signal });
+  const json = (await res.json().catch(() => null)) as (T & { ok?: boolean }) | { ok: false; error: string } | null;
+  if (!res.ok || !json || json.ok === false) {
+    throw new Error(json && "error" in json ? String(json.error) : `HTTP ${res.status}`);
+  }
+  return json as T;
+}
+
+/** Ventas del producto por país de marketplace en el periodo. */
+export async function fetchInventorySalesByCountry(
+  productId: string,
+  params: FetchInventorySalesParams,
+): Promise<import("../types/inventory.types").InventorySalesByCountryResponse> {
+  const q = new URLSearchParams({ fromDate: params.fromDate, toDate: params.toDate });
+  if (params.canal && params.canal !== "ALL") q.set("canal", params.canal);
+  if (params.pais && params.pais !== "ALL") q.set("pais", params.pais);
+  return getJsonOrThrow(
+    `/api/inventory/product/${encodeURIComponent(productId)}/sales-by-country?${q.toString()}`,
+    params.signal,
+  );
+}
+
+/** Detalle de ventas de un país: precios y líneas de venta. */
+export async function fetchInventorySalesCountryDetail(
+  productId: string,
+  country: string,
+  params: FetchInventorySalesParams,
+): Promise<import("../types/inventory.types").InventorySalesCountryDetailResponse> {
+  const q = new URLSearchParams({ fromDate: params.fromDate, toDate: params.toDate });
+  if (params.canal && params.canal !== "ALL") q.set("canal", params.canal);
+  return getJsonOrThrow(
+    `/api/inventory/product/${encodeURIComponent(productId)}/sales-by-country/${encodeURIComponent(country)}?${q.toString()}`,
+    params.signal,
+  );
+}

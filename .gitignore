@@ -155,3 +155,6 @@ build/
 credentials-drive.json
 # Carpetas internas de agentes/herramientas
 .agents/
+
+.codex-work/
+outputs/

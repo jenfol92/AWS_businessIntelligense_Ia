@@ -4,8 +4,55 @@ import {
   type ActiveProductIdentityInput,
   type DemonstratedAmazonIdentityInput,
 } from "./operationalAmazonIdentitySet";
+import { readKeysetPages } from "./readKeysetPages";
+import type { SalesIdentityEvidence } from "./amazonInventoryIdentityResolver";
 
 const PAGE_SIZE = 1_000;
+
+/** Sales needs all ERP products (including discontinued) and unfiltered conflicts.
+ * Never reads amazon_envios or uses inferred EAN as a persisted alias. */
+export async function loadSalesIdentityEvidence(signal?: AbortSignal): Promise<SalesIdentityEvidence[]> {
+  const [products, ledger, logistics] = await Promise.all([
+    readKeysetPages<{ id: string; sku: string; asin: string | null }>(async (cursor, limit) => {
+      let q = supabaseAdmin.from("productos").select("id,sku,asin").order("id").limit(limit);
+      if (cursor) q = q.gt("id", cursor);
+      if (signal) q = q.abortSignal(signal);
+      const { data, error } = await q; if (error) throw new Error(error.message);
+      return data ?? [];
+    }, { pageSize: PAGE_SIZE, cursorOf: row => row.id }),
+    loadLedgerIdentityEvidence(signal),
+    readKeysetPages<{ producto_id: string; ean_upc: string | null }>(async (cursor, limit) => {
+      let q = supabaseAdmin.from("producto_logistica").select("producto_id,ean_upc").order("producto_id").limit(limit);
+      if (cursor) q = q.gt("producto_id", cursor);
+      if (signal) q = q.abortSignal(signal);
+      const { data, error } = await q; if (error) throw new Error(error.message);
+      return data ?? [];
+    }, { pageSize: PAGE_SIZE, cursorOf: row => row.producto_id }),
+  ]);
+  return buildSalesIdentityEvidence(products, ledger, logistics);
+}
+
+export function buildSalesIdentityEvidence(
+  products: readonly { id: string; sku: string; asin?: string | null }[],
+  ledger: readonly { producto_id: string | null; asin: string | null; sku_original: string | null; msku_aliases: string[] | null }[],
+  logistics: readonly { producto_id: string; ean_upc: string | null }[],
+): SalesIdentityEvidence[] {
+  const validProducts = new Set(products.map(p => p.id));
+  const evidence: SalesIdentityEvidence[] = [];
+  for (const p of products) {
+    if (p.sku) evidence.push({ productoId: p.id, sellerSku: p.sku, source: "PRODUCT_SKU" });
+    if (p.asin) evidence.push({ productoId: p.id, asin: p.asin, source: "PRODUCT_ASIN" });
+  }
+  for (const row of ledger) {
+    if (!row.producto_id || !validProducts.has(row.producto_id)) continue;
+    for (const sku of Array.from(new Set([row.sku_original, ...(row.msku_aliases ?? [])]))) {
+      // ASIN links are kept even without SKU/FNSKU; never hide conflicting products.
+      evidence.push({ productoId: row.producto_id, sellerSku: sku || null, asin: row.asin, source: "LEDGER" });
+    }
+  }
+  for (const row of logistics) if (validProducts.has(row.producto_id)) evidence.push({ productoId: row.producto_id, ean: row.ean_upc, source: "MASTER_EAN" });
+  return Array.from(new Map(evidence.map(e => [JSON.stringify(e), e])).values());
+}
 
 /**
  * Reads the existing Ledger evidence only. This is deliberately a reader,
@@ -102,17 +149,17 @@ type LedgerIdentityRow = {
   fnsku: string | null;
 };
 
-async function loadLedgerIdentityEvidence(): Promise<LedgerIdentityRow[]> {
-  const rows: LedgerIdentityRow[] = [];
-  for (let offset = 0; ; offset += PAGE_SIZE) {
-    const { data, error } = await supabaseAdmin
+async function loadLedgerIdentityEvidence(signal?: AbortSignal): Promise<LedgerIdentityRow[]> {
+  return readKeysetPages<LedgerIdentityRow>(async (afterId, limit) => {
+    let query = supabaseAdmin
       .from("amazon_fba_inventory_ledger_daily")
       .select("id,producto_id,sku_original,msku_aliases,asin,fnsku")
       .order("id", { ascending: true })
-      .range(offset, offset + PAGE_SIZE - 1);
+      .limit(limit);
+    if (afterId !== null) query = query.gt("id", afterId);
+    if (signal) query = query.abortSignal(signal);
+    const { data, error } = await query;
     if (error) throw new Error(error.message);
-    rows.push(...((data ?? []) as LedgerIdentityRow[]));
-    if (!data || data.length < PAGE_SIZE) break;
-  }
-  return rows;
+    return (data ?? []) as LedgerIdentityRow[];
+  }, { pageSize: PAGE_SIZE, cursorOf: row => row.id });
 }

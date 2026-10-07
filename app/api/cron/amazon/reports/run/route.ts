@@ -1,3 +1,6 @@
+import { recoverPendingLedgerSync } from "@/modules/amazon-sp-api/fbaLedgerSyncRecovery";
+import { resumeDueFbaSalesSync } from "@/modules/amazon-sp-api/fbaSalesSyncCoordinator";
+import { recoverPendingFbmSync } from "@/modules/amazon-sp-api/fbmSyncRecovery";
 import { NextRequest, NextResponse } from "next/server";
 
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
@@ -10,7 +13,7 @@ function getCronSecret(): string | null {
 }
 
 function isSchedulerEnabled(): boolean {
-  return process.env.AMAZON_REPORT_SCHEDULER_ENABLED?.trim().toLowerCase() !== "false";
+  return process.env.AMAZON_REPORT_SCHEDULER_ENABLED === "true";
 }
 
 export async function GET(request: NextRequest) {
@@ -32,6 +35,9 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // FBM recovery is independently enabled; the legacy reports switch must not strand a manual FBM job.
+  const ledger = await recoverPendingLedgerSync().catch(() => ({ status: "RECOVERY_ERROR" }));
+  const fbm = await recoverPendingFbmSync().catch(() => ({ status: "RECOVERY_ERROR" }));
   if (!isSchedulerEnabled()) {
     console.info("[amazon-report-scheduler] run disabled");
     return NextResponse.json({
@@ -53,16 +59,25 @@ export async function GET(request: NextRequest) {
       skippedSuperseded: [],
       errors: [],
       skippedReason: "disabled",
+      fbm,
+      ledger,
     });
   }
 
   try {
     const summary = await runSafeAmazonReportScheduler();
+    const fbaSales = await resumeDueFbaSalesSync().catch((error: unknown) => ({
+      ok: false, status: "FAILED", error: mapGenericError(error).message,
+    }));
+    const fbaSalesFailed = fbaSales?.status === "FAILED" || fbaSales?.status === "FATAL";
     return NextResponse.json({
-      ok: true,
+      ok: !fbaSalesFailed,
       enabled: true,
       ...summary,
-    });
+      fbaSales,
+      fbm,
+      ledger,
+    }, {status: fbaSalesFailed ? 502 : 200});
   } catch (error: unknown) {
     const mapped = mapGenericError(error);
     console.error("[amazon-report-scheduler] run error", {

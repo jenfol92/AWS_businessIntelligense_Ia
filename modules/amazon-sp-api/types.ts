@@ -24,6 +24,11 @@ export type SpApiReportDocument = {
 };
 
 export type SpApiReportJobStatus =
+  | "PENDING"
+  | "PROCESSING"
+  | "RATE_LIMITED"
+  | "COMPLETED"
+  | "FAILED"
   | "CREATED"
   | "SUBMITTED"
   | "IN_PROGRESS"

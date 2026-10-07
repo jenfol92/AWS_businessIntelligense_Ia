@@ -174,7 +174,6 @@ export type AmazonReportRunSafeSummary = {
 
 const SUPPORTED_FBA_COUNTRY_SCHEDULE_TYPES = new Set([
   FBA_COUNTRY_REPORT_TYPE,
-  FBA_LEDGER_REPORT_TYPE,
   "FBA_COUNTRY",
 ]);
 
@@ -424,7 +423,7 @@ async function requestDueAmazonReportSchedule(
 export async function requestDueAmazonReportSchedules(
   now: Date = new Date(),
 ): Promise<AmazonReportRequestDueSummary> {
-  const schedules = await listDueAmazonReportSchedules(now);
+  const schedules = (await listDueAmazonReportSchedules(now)).filter(schedule => schedule.report_type !== FBA_LEDGER_REPORT_TYPE);
   console.info("[amazon-report-scheduler] due schedules found", {
     count: schedules.length,
   });

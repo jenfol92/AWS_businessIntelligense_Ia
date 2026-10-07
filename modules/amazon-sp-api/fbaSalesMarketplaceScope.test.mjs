@@ -13,6 +13,7 @@ const syncOnlyRouteSource = readFileSync(
   ),
   "utf8",
 );
+const coordinatorSource = readFileSync(new URL("./fbaSalesSyncCoordinator.ts", import.meta.url), "utf8");
 
 test("normal import unions requested and observed marketplaces before canonical sync", () => {
   assert.match(
@@ -21,7 +22,7 @@ test("normal import unions requested and observed marketplaces before canonical 
   );
   assert.match(
     importServiceSource,
-    /syncVentasDiariasFromFbaSalesRaw\([\s\S]*?marketplaceIds:\s*canonicalSyncMarketplaceIds/,
+    /params\.commit\(dbRows, canonicalSyncMarketplaceIds\)/,
   );
   assert.match(importServiceSource, /if \(canonicalSyncMarketplaceIds\.length === 0\)/);
   assert.match(importServiceSource, /La fila se conserva en RAW y se excluye del scope canonical/);
@@ -38,7 +39,7 @@ test("syncOnly unions explicit or configured marketplaces with observed range ma
   );
   assert.match(
     syncOnlyRouteSource,
-    /p_marketplace_ids:\s*canonicalSyncMarketplaceIds/,
+    /coordinateFbaSalesSync\([\s\S]*?marketplaceIds:\s*canonicalSyncMarketplaceIds/,
   );
   assert.doesNotMatch(
     syncOnlyRouteSource,
@@ -48,11 +49,11 @@ test("syncOnly unions explicit or configured marketplaces with observed range ma
 
 test("createReport continues to receive only requested marketplaceIds", () => {
   assert.match(
-    importServiceSource,
-    /createWaitAndDownloadReport\(\{\s*reportType,\s*marketplaceIds,\s*dataStartTime,\s*dataEndTime/s,
+    coordinatorSource,
+    /createReport\(\{reportType:FBA_SALES_REPORT_TYPE,marketplaceIds:state.marketplaceIds/,
   );
   assert.doesNotMatch(
-    importServiceSource,
-    /createWaitAndDownloadReport\([\s\S]{0,180}canonicalSyncMarketplaceIds/,
+    coordinatorSource,
+    /createReport\([\s\S]{0,180}canonicalSyncMarketplaceIds/,
   );
 });

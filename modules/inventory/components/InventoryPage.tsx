@@ -19,6 +19,7 @@ import {
 import { Card, Text, Title } from "@tremor/react";
 import { DEFAULT_LOCALE, isLocale } from "@/config/i18n";
 import { useGlobalFilters } from "@/shared/filters/useGlobalFilters";
+import { localIsoDate } from "@/shared/filters/periodDates";
 import { ResponsiveDataCard } from "@/shared/ui/ResponsiveDataCard";
 import { ResponsiveTable } from "@/shared/ui/ResponsiveTable";
 import {
@@ -33,13 +34,15 @@ import { fetchInventoryProductDetail, fetchInventoryProductForecast } from "../s
 import { InventoryForecastSimulationPanel } from "./InventoryForecastSimulationPanel";
 import { OperationalStockPanel } from "./OperationalStockPanel";
 import { InventoryKpiGrid } from "./InventoryKpiGrid";
+import { FbmSyncButton } from "./FbmSyncButton";
+import { LedgerSyncButton } from "./LedgerSyncButton";
 import { ForecastMethodExplanationBox } from "./ForecastMethodExplanationBox";
+import { SalesByCountryModal } from "./detail/SalesByCountryModal";
 import type { ProductForecastConfigUpsertBody } from "@/modules/planning/types";
 import type {
   InventoryComparisonResponse,
   InventoryCountryStockRow,
   InventoryCountryPriceDistributionRow,
-  InventoryDiagnosticsResponse,
   InventoryInboundRow,
   InventoryInboundPlanningKind,
   InventoryLotesResponse,
@@ -90,20 +93,6 @@ type InventoryProductsLiteResponse = {
   ok: true;
   products: InventoryProductLite[];
 };
-
-type AmazonInventoryHealth = {
-  status: "FRESH" | "AGING" | "STALE" | "UNKNOWN" | "ERROR" | "RUNNING";
-  freshnessStatus: "FRESH" | "AGING" | "STALE" | "UNKNOWN";
-  sourceTimestamp: string | null;
-  lastRunAt: string | null;
-  lastSuccessAt: string | null;
-  lastError: string | null;
-  rows: number | null;
-  nextRunHint: string | null;
-  runtimeMode: "DEPLOYED" | "LOCAL_MANUAL";
-};
-
-type AmazonInventoryHealthResponse = { ok: true; health: AmazonInventoryHealth } | DetailFail;
 type AmazonCanonicalSyncResponse = {
   ok: true;
   summary: {
@@ -319,17 +308,18 @@ const forecastRequestIdRef = useRef(0);
   const [lotesLoading, setLotesLoading] = useState(false);
   const [priceDistributionModal, setPriceDistributionModal] =
     useState<PriceDistributionModalState>(null);
-  const [inventoryDiagnosticsLoading, setInventoryDiagnosticsLoading] = useState(false);
-  const [inventoryDiagnosticsError, setInventoryDiagnosticsError] = useState<string | null>(null);
-  const [inventoryDiagnostics, setInventoryDiagnostics] =
-    useState<InventoryDiagnosticsResponse | null>(null);
-  const [amazonHealth, setAmazonHealth] = useState<AmazonInventoryHealth | null>(null);
+  const [salesModalOpen, setSalesModalOpen] = useState(false);
   const [amazonRefreshLoading, setAmazonRefreshLoading] = useState(false);
   const [amazonRefreshMessage, setAmazonRefreshMessage] = useState<string | null>(null);
   const [amazonRefreshError, setAmazonRefreshError] = useState<string | null>(null);
   const [salesRefreshLoading, setSalesRefreshLoading] = useState(false);
   const [salesRefreshMessage, setSalesRefreshMessage] = useState<string | null>(null);
   const [salesRefreshError, setSalesRefreshError] = useState<string | null>(null);
+  const [salesRefreshJob, setSalesRefreshJob] = useState<{jobId: string; fromDate: string; toDate: string} | null>(null);
+  const [ordersRefreshLoading, setOrdersRefreshLoading] = useState(false);
+  const [ordersRefreshMessage, setOrdersRefreshMessage] = useState<string | null>(null);
+  const [ordersRefreshError, setOrdersRefreshError] = useState<string | null>(null);
+  const [ordersRefreshJobId, setOrdersRefreshJobId] = useState<string | null>(null);
 
   const filterState = useMemo(
     () => ({
@@ -596,6 +586,7 @@ const forecastRequestIdRef = useRef(0);
   useEffect(() => {
     simulationProductIdRef.current = null;
     setSimulationOverride(null);
+    setSalesModalOpen(false);
   }, [selectedId]);
 
   useEffect(() => {
@@ -719,42 +710,7 @@ const forecastRequestIdRef = useRef(0);
     }
   }
 
-  async function loadInventoryDiagnostics() {
-    setInventoryDiagnosticsLoading(true);
-    setInventoryDiagnosticsError(null);
-    try {
-      const query = new URLSearchParams();
-      if (selectedProductId) query.set("productId", selectedProductId);
-      query.set("limit", selectedProductId ? "20" : "200");
-      const res = await fetch(`/api/inventory/diagnostics?${query.toString()}`, {
-        cache: "no-store",
-      });
-      const json = (await res.json()) as InventoryDiagnosticsResponse | DetailFail;
-      if (!res.ok || json.ok === false) {
-        setInventoryDiagnostics(null);
-        setInventoryDiagnosticsError("error" in json ? json.error : `HTTP ${res.status}`);
-        return;
-      }
-      setInventoryDiagnostics(json);
-    } catch (error) {
-      setInventoryDiagnostics(null);
-      setInventoryDiagnosticsError(
-        error instanceof Error ? error.message : "Error cargando diagnóstico.",
-      );
-    } finally {
-      setInventoryDiagnosticsLoading(false);
-    }
-  }
-
-  async function loadAmazonHealth() {
-    try {
-      const res = await fetch("/api/inventory/amazon-canonical?limit=1", { cache: "no-store" });
-      const json = (await res.json()) as AmazonInventoryHealthResponse;
-      if (res.ok && json.ok) setAmazonHealth(json.health);
-    } catch {
-      // Conserva el último health conocido; el refresh muestra los errores operativos.
-    }
-  }
+ 
 
   async function refreshAmazonInventory() {
     if (amazonRefreshLoading) return;
@@ -777,7 +733,6 @@ const forecastRequestIdRef = useRef(0);
             ? "Amazon ha limitado temporalmente las consultas. Se mantiene el último snapshot válido."
             : raw,
         );
-        await loadAmazonHealth();
         return;
       }
       const result = json.summary;
@@ -790,16 +745,66 @@ const forecastRequestIdRef = useRef(0);
           ? "El snapshot sigue fresco; no se ha vuelto a consultar Amazon."
           : `Actualizado: ${result.inventory?.rowsUpserted ?? 0} filas de stock y ${result.inbound?.linesUpserted ?? 0} líneas inbound.`,
       );
-      await Promise.all([
-        loadAmazonHealth(),
-        selectedProductId ? loadDetail(selectedProductId, simulationOverride) : Promise.resolve(),
-      ]);
+      if (selectedProductId) await loadDetail(selectedProductId, simulationOverride);
     } catch (error) {
       setAmazonRefreshError(
         error instanceof Error ? error.message : "Error de red actualizando Amazon.",
       );
     } finally {
       setAmazonRefreshLoading(false);
+    }
+  }
+
+  /**
+   * Importa pedidos Amazon por fecha de compra (FBA+FBM, incluidos pendientes) de los
+   * últimos 90 días. Amazon genera el informe en diferido: si queda pendiente, volver
+   * a pulsar reanuda el mismo trabajo.
+   */
+  async function refreshAmazonOrders() {
+    if (ordersRefreshLoading) return;
+    setOrdersRefreshLoading(true);
+    setOrdersRefreshMessage(null);
+    setOrdersRefreshError(null);
+    try {
+      const toDate = localIsoDate();
+      const range = buildInclusiveDateWindow(toDate, 90);
+      const res = await fetch("/api/amazon/reports/all-orders/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(ordersRefreshJobId ? { jobId: ordersRefreshJobId } : range),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        status?: string;
+        jobId?: string;
+        rowsUpserted?: number;
+        unmatchedRows?: number;
+        error?: string;
+      };
+      if (res.status === 202 && json.status === "PENDING") {
+        if (json.jobId) setOrdersRefreshJobId(json.jobId);
+        setOrdersRefreshMessage(
+          "Amazon está generando el informe de pedidos. Vuelve a pulsar «Actualizar pedidos Amazon» en un par de minutos.",
+        );
+        return;
+      }
+      if (!res.ok || json.status !== "COMPLETED") {
+        setOrdersRefreshJobId(null);
+        throw new Error(json.error ?? `HTTP ${res.status}`);
+      }
+      setOrdersRefreshJobId(null);
+      setOrdersRefreshMessage(
+        `Pedidos Amazon actualizados (${json.rowsUpserted ?? 0} líneas${
+          json.unmatchedRows ? `, ${json.unmatchedRows} sin producto enlazado` : ""
+        }).`,
+      );
+      if (selectedProductId) {
+        await loadDetail(selectedProductId, simulationOverride);
+      }
+    } catch (error) {
+      setOrdersRefreshError(error instanceof Error ? error.message : "Error actualizando pedidos Amazon.");
+    } finally {
+      setOrdersRefreshLoading(false);
     }
   }
 
@@ -810,14 +815,20 @@ const forecastRequestIdRef = useRef(0);
     setSalesRefreshError(null);
     try {
       const toDate = new Date().toISOString().slice(0, 10);
-      const range = buildInclusiveDateWindow(toDate, 90);
+      const range = salesRefreshJob ?? buildInclusiveDateWindow(toDate, 90);
       const res = await fetch("/api/amazon/reports/fba-sales/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(range),
+        body: JSON.stringify(salesRefreshJob ? {jobId:salesRefreshJob.jobId} : range),
       });
-      const json = await res.json().catch(() => ({})) as { ok?: boolean; error?: string };
-      if (!res.ok || json.ok === false) throw new Error(json.error ?? `HTTP ${res.status}`);
+      const json = await res.json().catch(() => ({})) as { ok?: boolean; status?: string; jobId?: string; error?: string };
+      if (res.status === 202 && ["PENDING", "PROCESSING", "RATE_LIMITED"].includes(json.status ?? "")) {
+        if (json.jobId) setSalesRefreshJob({jobId:json.jobId,fromDate:range.fromDate,toDate:range.toDate});
+        setSalesRefreshMessage(`Sincronización Amazon pendiente (${json.status}). Trabajo: ${json.jobId ?? ""}. Las ventas aún no están actualizadas para todo el rango.`);
+        return;
+      }
+      if (json.status !== "COMPLETED" || !res.ok || json.ok !== true) throw new Error(json.error ?? `HTTP ${res.status}`);
+      setSalesRefreshJob(null);
       setSalesRefreshMessage(`Ventas Amazon actualizadas: ${range.fromDate} a ${range.toDate}.`);
       if (selectedProductId) {
         await loadDetail(selectedProductId, simulationOverride);
@@ -828,10 +839,6 @@ const forecastRequestIdRef = useRef(0);
       setSalesRefreshLoading(false);
     }
   }
-
-  useEffect(() => {
-    void loadAmazonHealth();
-  }, []);
 
   const flatProducts = listData ? flattenProducts(listData.products) : [];
 
@@ -876,50 +883,6 @@ const forecastRequestIdRef = useRef(0);
           KPIs recientes.
         </Text>
       </div>
-
-      <Card className="ring-1 ring-amber-100 bg-amber-50/30 p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <Title className="text-base">Herramientas de Inventario</Title>
-            <Text className="text-xs text-slate-500">
-              Diagnóstico solo lectura. La actualización operativa se ejecuta
-              exclusivamente desde Inventario mediante el servicio canónico.
-            </Text>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => void loadInventoryDiagnostics()}
-              disabled={inventoryDiagnosticsLoading}
-              className="inline-flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 shadow-sm hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {inventoryDiagnosticsLoading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Search className="h-3.5 w-3.5" />
-              )}
-              Diagnóstico Inventario
-            </button>
-          </div>
-        </div>
-        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-          <div><span className="text-slate-500">Amazon inventory:</span> <strong>{amazonHealth?.status ?? "UNKNOWN"}</strong></div>
-          <div><span className="text-slate-500">Última actualización:</span> <strong>{fmtDateTime(amazonHealth?.lastSuccessAt)}</strong></div>
-          <div><span className="text-slate-500">Modo:</span> <strong>{amazonHealth?.runtimeMode === "DEPLOYED" ? "DEPLOYED" : "LOCAL / MANUAL"}</strong></div>
-        </div>
-        <Text className="mt-2 text-xs text-slate-500">
-          En local, el refresh es manual. Tras deployment, el cron existente usará este mismo servicio.
-        </Text>
-        {amazonHealth?.lastError ? <Text className="mt-2 text-xs text-rose-700">Último error: {amazonHealth.lastError}</Text> : null}
-      </Card>
-      {inventoryDiagnostics || inventoryDiagnosticsError || inventoryDiagnosticsLoading ? (
-        <InventoryDiagnosticsPanel
-          diagnostics={inventoryDiagnostics}
-          error={inventoryDiagnosticsError}
-          loading={inventoryDiagnosticsLoading}
-        />
-      ) : null}
-
       {listData?.summary ? (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           {[
@@ -983,6 +946,13 @@ const forecastRequestIdRef = useRef(0);
             </select>
           </label>
           <div className="flex flex-wrap items-end gap-2">
+            <LedgerSyncButton onCompleted={() => {
+              if (selectedProductId) void loadDetail(selectedProductId, simulationOverride);
+            }} />
+            <FbmSyncButton onCompleted={() => {
+              void loadList();
+              if (selectedProductId) void loadDetail(selectedProductId, simulationOverride);
+            }} />
             <button
               type="button"
               onClick={() => void refreshAmazonInventory()}
@@ -1005,12 +975,24 @@ const forecastRequestIdRef = useRef(0);
               {salesRefreshLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               {salesRefreshLoading ? "Actualizando ventas…" : "Actualizar ventas Amazon"}
             </button>
+            <button
+              type="button"
+              onClick={() => void refreshAmazonOrders()}
+              disabled={ordersRefreshLoading}
+              title="Pedidos por fecha de compra (FBA + FBM, incluidos pendientes), como Shopkeeper"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {ordersRefreshLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {ordersRefreshLoading ? "Actualizando pedidos…" : "Actualizar pedidos Amazon"}
+            </button>
           </div>
         </div>
         {amazonRefreshMessage ? <Text className="mt-3 text-xs text-emerald-700">{amazonRefreshMessage}</Text> : null}
         {amazonRefreshError ? <Text className="mt-3 text-xs text-rose-700">{amazonRefreshError}</Text> : null}
         {salesRefreshMessage ? <Text className="mt-3 text-xs text-emerald-700">{salesRefreshMessage}</Text> : null}
         {salesRefreshError ? <Text className="mt-3 text-xs text-rose-700">{salesRefreshError}</Text> : null}
+        {ordersRefreshMessage ? <Text className="mt-3 text-xs text-emerald-700">{ordersRefreshMessage}</Text> : null}
+        {ordersRefreshError ? <Text className="mt-3 text-xs text-rose-700">{ordersRefreshError}</Text> : null}
         <div className="mt-3 flex flex-wrap gap-2">
           {[
             { key: "criticos", label: "Solo críticos", value: soloCriticos, set: setSoloCriticos },
@@ -1229,7 +1211,11 @@ const forecastRequestIdRef = useRef(0);
                   </Link>
                 </div>
 
-                <InventoryKpiGrid detail={detail} forecast={forecastData?.forecast}/>
+                <InventoryKpiGrid
+                  detail={detail}
+                  forecast={forecastData?.forecast}
+                  onOpenSales={() => setSalesModalOpen(true)}
+                />
               </Card>
 
               {detail.operationalStock ? (
@@ -1379,137 +1365,23 @@ const forecastRequestIdRef = useRef(0);
         state={priceDistributionModal}
         onClose={() => setPriceDistributionModal(null)}
       />
+      {detail ? (
+        <SalesByCountryModal
+          open={salesModalOpen}
+          onClose={() => setSalesModalOpen(false)}
+          productId={detail.product.productoId}
+          productName={detail.product.nombre}
+          periodLabel={detail.periodLabel}
+          periodFrom={detail.periodFrom}
+          periodTo={detail.periodTo}
+          canal={canal}
+          pais={pais}
+          allSourcesUnits={detail.product.salesUnitsPeriod}
+        />
+      ) : null}
     </div>
   );
 }
-
-
-
-function InventoryDiagnosticsPanel({
-  diagnostics,
-  error,
-  loading,
-}: {
-  diagnostics: InventoryDiagnosticsResponse | null;
-  error: string | null;
-  loading: boolean;
-}) {
-  const product = diagnostics?.products[0] ?? null;
-
-  return (
-    <Card className="ring-1 ring-sky-100 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <Title className="text-base">Diagnóstico Inventario</Title>
-          <Text className="text-xs text-slate-500">
-            Solo lectura. No ejecuta SP-API, cron ni importaciones.
-          </Text>
-        </div>
-        {loading ? <Loader2 className="h-4 w-4 animate-spin text-sky-600" /> : null}
-      </div>
-      {error ? (
-        <p className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-          {error}
-        </p>
-      ) : null}
-      {product ? (
-        <div className="mt-4 space-y-3 text-sm">
-          <div>
-            <p className="font-semibold text-slate-900">
-              {product.nombre} <span className="font-mono text-xs text-slate-500">{product.sku}</span>
-            </p>
-            <p className="text-xs text-slate-500">
-              Generado: {fmtDateTime(diagnostics?.generatedAt)}
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-            {[
-              {
-                label: "Snapshot FBA",
-                value: product.hasFbaSnapshot
-                  ? `${fmtNum(product.fbaSnapshotUnits)} uds`
-                  : "No",
-              },
-              {
-                label: "FBA legacy",
-                value: `${fmtNum(product.legacyFbaUnits)} uds`,
-              },
-              {
-                label: "Diferencia FBA",
-                value:
-                  product.fbaDifferenceUnits == null
-                    ? "—"
-                    : `${fmtNum(product.fbaDifferenceUnits)} uds`,
-              },
-              {
-                label: "Ventas 30/60/90",
-                value: `${fmtNum(product.sales30Units)} / ${fmtNum(product.sales60Units)} / ${fmtNum(product.sales90Units)}`,
-              },
-              {
-                label: "Año anterior",
-                value: product.hasSalesPreviousYear
-                  ? `${fmtNum(product.previousYearUnits)} uds`
-                  : "No",
-              },
-              {
-                label: "Ledger",
-                value: product.hasLedger ? `${fmtNum(product.ledgerUnits)} uds` : "No",
-              },
-              {
-                label: "Inbound",
-                value: product.hasInbound ? `${fmtNum(product.inboundUnits)} uds` : "No",
-              },
-              {
-                label: "Amazon inbound",
-                value: product.hasAmazonInbound
-                  ? product.amazonShipmentIds.join(", ")
-                  : "No",
-              },
-            ].map((item) => (
-              <div key={item.label} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-                <p className="text-[10px] font-medium uppercase text-slate-400">{item.label}</p>
-                <p className="mt-0.5 text-xs font-medium text-slate-800">{item.value}</p>
-              </div>
-            ))}
-          </div>
-          {product.missingData.length > 0 ? (
-            <div>
-              <p className="text-xs font-semibold text-slate-700">Datos faltantes</p>
-              <p className="mt-1 text-xs text-amber-700">{product.missingData.join(" · ")}</p>
-            </div>
-          ) : null}
-          {product.warnings.length > 0 ? (
-            <div>
-              <p className="text-xs font-semibold text-slate-700">Avisos</p>
-              <p className="mt-1 text-xs text-orange-700">{product.warnings.join(" · ")}</p>
-            </div>
-          ) : null}
-          {product.recommendedActions.length > 0 ? (
-            <div>
-              <p className="text-xs font-semibold text-slate-700">Acciones recomendadas</p>
-              <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-slate-600">
-                {product.recommendedActions.map((action) => (
-                  <li key={action}>{action}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {diagnostics ? (
-            <p className="text-xs text-slate-400">
-              Resumen: {fmtNum(diagnostics.summary.totalProducts)} producto(s) ·{" "}
-              sin snapshot {fmtNum(diagnostics.summary.productsWithoutFbaSnapshot)} ·{" "}
-              sin ventas recientes {fmtNum(diagnostics.summary.productsWithoutRecentSales)}
-            </p>
-          ) : null}
-        </div>
-      ) : !loading && !error ? (
-        <p className="mt-3 text-xs text-slate-500">Sin resultados de diagnóstico.</p>
-      ) : null}
-    </Card>
-  );
-}
-
-
 
 function CountryStockTableV2({
   countries,
@@ -1536,7 +1408,7 @@ function CountryStockTableV2({
   ) => void;
 }) {
   if (countries.length === 0) {
-    return <Text className="text-sm text-slate-500">Sin inventario por pais.</Text>;
+    return <Text className="text-sm text-slate-500">Sin evidencia Ledger certificada para este producto; pendiente de sincronización.</Text>;
   }
 
   const latestSnapshot =
@@ -1550,15 +1422,35 @@ function CountryStockTableV2({
       .map((row) => row.stockFbaLedgerSnapshotDate)
       .filter((value): value is string => Boolean(value))
       .sort()[0] ?? null;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localIsoDate();
+  const totalInTransit = countries.reduce((s, row) => s + (row.stockFbaInTransit ?? 0), 0);
+  const totalResale = countries.reduce((s, row) => s + (row.stockFbaResaleSellable ?? 0), 0);
+  const totalUnknownCondition = countries.reduce((s, row) => s + (row.stockFbaUnknownConditionSellable ?? 0), 0);
 
   return (
     <>
       <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
         <p className="font-medium">
           Fuente FBA: Inventory Ledger Amazon. Ultimo snapshot:{" "}
-          {latestSnapshot ?? "sin snapshot"}
+          {latestSnapshot ?? "sin evidencia Ledger certificada; pendiente de primera sincronización"}
         </p>
+        <p className="mt-1">Saldo físico al cierre del día; no equivale a disponibilidad instantánea.</p>
+        {countries.some(row => row.stockFbaLedgerSnapshotDate && !row.stockFbaLedgerCoverageValid) ? (
+          <p className="mt-1 text-amber-700">Cobertura incompleta: la ausencia de un país no demuestra stock cero.</p>
+        ) : null}
+        {totalUnknownCondition > 0 ? (
+          <p className="mt-1 text-amber-700">SELLABLE con condición desconocida: {fmtNum(totalUnknownCondition)} uds físicas, separadas del stock nuevo.</p>
+        ) : null}
+        {totalInTransit > 0 ? (
+          <p className="mt-1 text-sky-800">
+            En tránsito entre almacenes de Amazon: {fmtNum(totalInTransit)} uds (no suman al stock de ningún país).
+          </p>
+        ) : null}
+        {totalResale > 0 ? (
+          <p className="mt-1 text-slate-500">
+            Grade &amp; Resell (amzn.gr): {fmtNum(totalResale)} uds vendibles, separadas del stock nuevo.
+          </p>
+        ) : null}
         {staleRows.length > 0 ? (
           <p className="mt-1 text-amber-700">
             Advertencia: Inventory Ledger FBA no actualizado desde{" "}
@@ -1644,7 +1536,7 @@ function CountryStockTableV2({
                         ? fmtDateTime(row.stockFbaLastImportedAt)
                         : row.stockFbaLedgerSnapshotDate
                           ? fmtDate(row.stockFbaLedgerSnapshotDate)
-                          : "â€”"}
+                          : "—"}
                     </td>
                     <td className="py-1.5 pr-3 text-right">
                       <TopPriceMetric
@@ -1675,7 +1567,7 @@ function CountryStockTableV2({
                       />
                     </td>
                     <td className="py-1.5 pr-3 text-right">
-                      {row.coverageDays != null ? `${Math.round(row.coverageDays)} d` : "â€”"}
+                      {row.coverageDays != null ? `${Math.round(row.coverageDays)} d` : "—"}
                     </td>
                     <td className="py-1.5 pr-3">
                       <span
@@ -1725,7 +1617,7 @@ function CountryStockTableV2({
                         ? fmtDateTime(row.stockFbaLastImportedAt)
                         : row.stockFbaLedgerSnapshotDate
                           ? fmtDate(row.stockFbaLedgerSnapshotDate)
-                          : "â€”",
+                          : "—",
                     },
                     {
                       label: "Precio hoy",
@@ -1766,7 +1658,7 @@ function CountryStockTableV2({
                       value:
                         row.coverageDays != null
                           ? `${Math.round(row.coverageDays)} dias`
-                          : "â€”",
+                          : "—",
                     },
                   ]}
                   footer={
@@ -1966,7 +1858,7 @@ function CountryStockTable({
                       ? fmtDateTime(row.stockFbaLastImportedAt)
                       : row.stockFbaLedgerSnapshotDate
                         ? fmtDate(row.stockFbaLedgerSnapshotDate)
-                        : "â€”"}
+                        : "—"}
                   </td>
                   <td className="py-2 pr-3 text-right">
                     <TopPriceButton
@@ -2048,7 +1940,7 @@ function CountryStockTable({
                       ? fmtDateTime(row.stockFbaLastImportedAt)
                       : row.stockFbaLedgerSnapshotDate
                         ? fmtDate(row.stockFbaLedgerSnapshotDate)
-                        : "â€”",
+                        : "—",
                   },
                   {
                     label: "Precio top 30d",
@@ -2148,6 +2040,16 @@ function CountryLedgerStockDetail({ row }: { row: InventoryCountryStockRow }) {
         </div>
       </div>
 
+      {(row.stockFbaInTransit ?? 0) > 0 || (row.stockFbaResaleSellable ?? 0) > 0 ? (
+        <p className="mt-2 text-xs text-slate-600">
+          {(row.stockFbaInTransit ?? 0) > 0
+            ? `En tránsito entre almacenes: ${fmtNum(row.stockFbaInTransit)} uds. `
+            : ""}
+          {(row.stockFbaResaleSellable ?? 0) > 0
+            ? `Grade & Resell vendible: ${fmtNum(row.stockFbaResaleSellable)} uds.`
+            : ""}
+        </p>
+      ) : null}
       {hasLedger ? (
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
           <div className="rounded-lg bg-slate-50 px-3 py-2">

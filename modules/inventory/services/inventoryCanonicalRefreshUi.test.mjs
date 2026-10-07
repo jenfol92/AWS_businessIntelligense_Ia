@@ -11,7 +11,6 @@ test("existing Inventory refresh button calls canonical sync and exposes outcome
   assert.match(source,/amazonRefreshLoading\s*\?\s*["']Actualizando Amazon/);
   assert.match(source,/Amazon ha limitado temporalmente las consultas/);
   assert.match(source,/Ya hay una actualización de Amazon en curso/);
-  assert.match(source,/loadAmazonHealth\(\)/);
   assert.match(source,/loadList\(\)/);
 });
 test("canonical read model is server-side and does not use stock_total",async()=>{
@@ -25,7 +24,11 @@ test("sales refresh wiring builds an inclusive 90 day range without executing in
   assert.match(source,/buildInclusiveDateWindow\(toDate, 90\)/);
   assert.match(source,/\/api\/amazon\/reports\/fba-sales\/import/);
   assert.match(source,/onClick=\{\(\) => void refreshAmazonSales\(\)\}/);
-  assert.match(source,/body: JSON\.stringify\(range\)/);
+  assert.match(source,/body: JSON\.stringify\(salesRefreshJob \? \{jobId:salesRefreshJob\.jobId\} : range\)/);
+  assert.match(source,/json\.status !== "COMPLETED"/);
+  assert.match(source,/res\.status === 202/);
+  const refresh=source.slice(source.indexOf("async function refreshAmazonSales"),source.indexOf("const flatProducts"));
+  assert.ok(refresh.indexOf('json.status !== "COMPLETED"') < refresh.indexOf('Ventas Amazon actualizadas'));
 });
 
 test("Inventory reads only the latest complete publication-ready dual-pool run", async () => {

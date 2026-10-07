@@ -1,9 +1,55 @@
+import { extractTwinlySkuFromSellerSku } from "../imports/shared/twinlySku.ts";
+
 export type ConfirmedAmazonIdentity = {
   sellerSku: string;
   asin: string;
   productoId: string;
   skuLimpio: string;
 };
+
+/** Sales uses the existing identity owner with explicit evidence, never legacy cleaning. */
+export type SalesIdentityEvidence = {
+  productoId: string;
+  sellerSku?: string | null;
+  asin?: string | null;
+  ean?: string | null;
+  source: "PRODUCT_SKU" | "PRODUCT_ASIN" | "LEDGER" | "MASTER_EAN";
+};
+export type SalesIdentityResult = {
+  productoId: string | null;
+  status: "SAFE_BY_ASIN" | "SAFE_BY_SKU_EXACT" | "SAFE_BY_ALIAS" | "IDENTITY_CONFLICT" | "IDENTITY_AMBIGUOUS" | "UNRESOLVED";
+  evidence: SalesIdentityEvidence[];
+  version: "sales-v1";
+};
+
+export function resolveSalesAmazonIdentity(
+  sellerSku: string, asinValue: string | null | undefined, evidence: readonly SalesIdentityEvidence[],
+): SalesIdentityResult {
+  const asin = String(asinValue ?? "").trim().toUpperCase();
+  const validAsin = /^[A-Z0-9]{10}$/.test(asin);
+  const asinEvidence = validAsin ? evidence.filter(e => e.source !== "MASTER_EAN" && e.asin?.trim().toUpperCase() === asin) : [];
+  const skuEvidence = evidence.filter(e => e.source !== "MASTER_EAN" && e.sellerSku === sellerSku);
+  const asinProducts = new Set(asinEvidence.map(e => e.productoId));
+  const skuProducts = new Set(skuEvidence.map(e => e.productoId));
+  const combined = [...asinEvidence, ...skuEvidence];
+  const result = (status: SalesIdentityResult["status"], productoId: string | null = null, proof = combined): SalesIdentityResult => ({ status, productoId, evidence: proof, version: "sales-v1" });
+  // All deterministic evidence has been collected before any assignment.
+  if (asinProducts.size > 1) return result("IDENTITY_CONFLICT");
+  if (asinProducts.size === 1) {
+    const id = Array.from(asinProducts)[0];
+    if (Array.from(skuProducts).some(other => other !== id)) return result("IDENTITY_CONFLICT");
+    return result("SAFE_BY_ASIN", id);
+  }
+  if (skuProducts.size > 1) return result("IDENTITY_AMBIGUOUS");
+  if (skuProducts.size === 1) {
+    const id = Array.from(skuProducts)[0];
+    return result(skuEvidence.some(e => e.source === "PRODUCT_SKU") ? "SAFE_BY_SKU_EXACT" : "SAFE_BY_ALIAS", id);
+  }
+  // Extracted EAN is diagnostic only, even when it has exactly one candidate.
+  const digits = extractTwinlySkuFromSellerSku(sellerSku);
+  const heuristic = digits ? evidence.filter(e => e.ean === digits || (e.source === "PRODUCT_SKU" && e.sellerSku === digits)) : [];
+  return result(new Set(heuristic.map(e => e.productoId)).size > 1 ? "IDENTITY_AMBIGUOUS" : "UNRESOLVED", null, heuristic);
+}
 
 export type OperationalIdentityResolution = {
   productoId: string | null;

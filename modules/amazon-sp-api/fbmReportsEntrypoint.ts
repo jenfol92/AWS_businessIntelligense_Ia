@@ -1,8 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
-import { syncAmazonFbmInventoryFromReports } from "./amazonFbmReportsSyncService.ts";
+import { coordinateFbmSync } from "./fbmSyncCoordinator.ts";
+import { fbmHttpStatus } from "./fbmSyncPolicy.ts";
 
 let running = false;
-export async function handleFbmReportsSync(request: Request, run = syncAmazonFbmInventoryFromReports) {
+export async function handleFbmReportsSync(request: Request, run: () => Promise<{ status: string } | null> = coordinateFbmSync) {
   const respond = (body: unknown, status: number) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
   if (request.method !== "POST") return respond({ status: "METHOD_NOT_ALLOWED" }, 405);
   const secret = process.env.CRON_SECRET?.trim();
@@ -16,7 +17,7 @@ export async function handleFbmReportsSync(request: Request, run = syncAmazonFbm
   try {
     const result = await run();
     console.info("[amazon-fbm-reports]", JSON.stringify(result));
-    return respond(result, result.status === "SUCCESS" ? 200 : 422);
+    return respond(result, result ? fbmHttpStatus(result.status) : 200);
   } catch { return respond({ status: "INTERNAL_ERROR" }, 500); }
   finally { running = false; }
 }

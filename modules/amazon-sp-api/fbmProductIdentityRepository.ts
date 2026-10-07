@@ -45,3 +45,19 @@ export async function loadCanonicalFbmProductIdentities(signal?: AbortSignal): P
   }
   return buildFbmProductIdentities(products);
 }
+
+/** Read excluded records too, to prove why an expected identity disappeared. */
+export async function loadFbmIdentityProducts(signal?: AbortSignal) {
+  const { supabaseAdmin } = await import("../../server/supabase/adminClient.ts");
+  const products: { id: string; sku: string | null; asin: string | null; estado: string | null }[] = [];
+  for (let offset = 0; ; offset += 500) {
+    if (offset >= 100_000) throw new Error("FBM_PRODUCT_READ_LIMIT");
+    signal?.throwIfAborted();
+    const query = supabaseAdmin.from("productos").select("id,sku,asin,estado").order("id").range(offset, offset + 499);
+    const { data, error } = await (signal ? query.abortSignal(signal) : query);
+    if (error) throw new Error("FBM_PRODUCT_READ_FAILED");
+    products.push(...(data ?? []));
+    if (!data || data.length < 500) break;
+  }
+  return products;
+}

@@ -49,6 +49,8 @@ import {
 
   Route,
 
+  ShieldAlert,
+
   Ship,
 
   ShoppingCart,
@@ -62,6 +64,7 @@ import {
 import { twMerge } from "tailwind-merge";
 
 import { DEFAULT_LOCALE, isLocale } from "@/config/i18n";
+import { filterExposedNavigation } from "@/config/productionExposure";
 
 
 
@@ -163,6 +166,12 @@ const NAV_GROUPS: NavGroup[] = [
         path: "/amazon/envios",
         icon: PackageSearch,
         badge: "Beta",
+      },
+      {
+        label: "Cumplimiento Amazon",
+        path: "/amazon/cumplimiento",
+        icon: ShieldAlert,
+        badge: "Nuevo",
       },
     ],
   },
@@ -576,7 +585,7 @@ export default function Sidebar({
 
       <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
 
-        {NAV_GROUPS.map((group) => (
+        {filterExposedNavigation(NAV_GROUPS).map((group) => (
 
           <div key={group.title}>
 

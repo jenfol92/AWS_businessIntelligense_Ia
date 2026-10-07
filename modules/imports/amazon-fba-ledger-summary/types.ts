@@ -39,6 +39,7 @@ export type AmazonFbaLedgerParseWarning = {
 };
 
 export type AmazonFbaLedgerParseResult = {
+  errors?: Array<{ row: number; code: string; message: string }>;
   totalRows: number;
   twinlyRows: number;
   skippedNonTwinlyRows: number;

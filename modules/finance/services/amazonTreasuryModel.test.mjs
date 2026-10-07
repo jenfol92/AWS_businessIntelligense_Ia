@@ -37,13 +37,14 @@ test("migration preserves exact amounts and identities without automatic cash",a
 });
 
 test("sync never makes Closed Succeeded future or converts foreign amounts silently",async()=>{
-  const source=await readFile(new URL("./amazonTreasuryObservations.ts",import.meta.url),"utf8");
-  assert.match(source,/FundTransferStatus==="Processing"/);assert.doesNotMatch(source,/FundTransferStatus==="Succeeded"[^\n]*PENDING_BANK/);
-  assert.match(source,/expectedRequestDate:pending\?null:simulation\.expectedRequestDate/);
-  assert.match(source,/pending\?expectedBankDateForPending/);
-  assert.match(source,/expectedBankDate=pending\?expectedBankDateForPending\([^)]*\):null/);
+  const source=await readFile(new URL("./amazonTreasuryGroupObservation.ts",import.meta.url),"utf8");
+  const sync=await readFile(new URL("./amazonTreasuryObservations.ts",import.meta.url),"utf8");
+  assert.match(source,/FundTransferStatus\s*===\s*"Processing"/);assert.doesNotMatch(source,/FundTransferStatus\s*===\s*"Succeeded"[^\n]*PENDING_BANK/);
+  assert.match(source,/expectedRequestDate:\s*pending\s*\?\s*null\s*:\s*simulation\.expectedRequestDate/);
+  assert.match(source,/pending\s*\?\s*expectedBankDateForPending/);
+  assert.match(source,/expectedBankDate\s*=\s*pending\s*\?\s*expectedBankDateForPending\([^)]*\)\s*:\s*null/);
   const fx=await readFile(new URL("./ecbFxService.ts",import.meta.url),"utf8");assert.match(fx,/currency==="EUR"/);assert.match(fx,/AMAZON_CONVERTED_TOTAL/);
-  assert.doesNotMatch(source,/data\?\.value\?\?0\.75|gross\*0\.75/);
-  assert.match(source,/finance_insert_amazon_treasury_observation|insertAmazonTreasuryObservationAdmin/);
-  assert.doesNotMatch(source,/finance_cash_movements|finance_receive_amazon_income/);
+  assert.doesNotMatch(sync,/data\?\.value\?\?0\.75|gross\*0\.75/);
+  assert.match(sync,/finance_insert_amazon_treasury_observation|insertAmazonTreasuryObservationAdmin/);
+  assert.doesNotMatch(sync,/finance_cash_movements|finance_receive_amazon_income/);
 });

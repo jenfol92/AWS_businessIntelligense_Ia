@@ -1,5 +1,5 @@
 export const AMAZON_OBSERVATION_SCHEMA_MESSAGE =
-  "La base de datos no tiene la versión de observaciones Amazon requerida. Debe revisarse la migración 20260812_02_amazon_marketplace_external_fx_ecb.sql antes de actualizar.";
+  "La base de datos no tiene la versión de observaciones Amazon requerida. Debe revisarse la migración 20260915_02_amazon_observation_sync_runs.sql antes de actualizar.";
 
 export class AmazonObservationSchemaError extends Error {
   readonly code = "AMAZON_OBSERVATION_SCHEMA_MISMATCH";

@@ -1,7 +1,7 @@
 /**
- * API de categorÃ­as de producto.
- * GET  /api/categories â€” categorÃ­as activas con campos_config
- * POST /api/categories â€” crear categorÃ­a
+ * API de categorías de producto.
+ * GET  /api/categories — categorías activas con campos_config
+ * POST /api/categories — crear categoría
  */
 
 import { NextResponse } from "next/server";
@@ -27,7 +27,7 @@ export async function GET() {
     const rows = await listActiveCategories();
     return NextResponse.json({ ok: true, rows });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Error listando categorÃ­as.";
+    const msg = e instanceof Error ? e.message : "Error listando categorías.";
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
@@ -47,14 +47,14 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: "JSON invÃ¡lido" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "JSON inválido" }, { status: 400 });
   }
 
   const raw = body as Record<string, unknown>;
   const nombre = typeof raw.nombre === "string" ? raw.nombre.trim() : "";
   if (!nombre) {
     return NextResponse.json(
-      { ok: false, error: "El nombre de la categorÃ­a es obligatorio." },
+      { ok: false, error: "El nombre de la categoría es obligatorio." },
       { status: 400 },
     );
   }
@@ -75,7 +75,7 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ ok: true, row }, { status: 201 });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Error creando categorÃ­a.";
+    const msg = e instanceof Error ? e.message : "Error creando categoría.";
     const status = msg.includes("Ya existe") ? 409 : 400;
     return NextResponse.json({ ok: false, error: msg }, { status });
   }

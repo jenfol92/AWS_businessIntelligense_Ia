@@ -7,7 +7,7 @@ const { chromium } = require(process.env.FINANCE_PLAYWRIGHT_MODULE || 'playwrigh
 const compiled = require('next/dist/compiled/webpack/webpack');
 compiled.init();
 const root = process.cwd();
-const work = path.join(root,'.codex-work','finance-ui-tests');
+const work = path.join(root,'outputs','finance-ui-tests');
 fs.mkdirSync(work,{recursive:true});
 fs.writeFileSync(path.join(work,'loader.cjs'), `module.exports=function(source){return require(${JSON.stringify(require.resolve('typescript'))}).transpileModule(source,{compilerOptions:{jsx:4,target:7,module:99}}).outputText}`);
 fs.writeFileSync(path.join(work,'fixture.jsx'), `import React from 'react'; import {createRoot} from 'react-dom/client';

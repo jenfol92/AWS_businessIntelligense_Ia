@@ -9,6 +9,7 @@
 import { useRouter } from "next/navigation";
 
 import type { ProductCatalogItem } from "../types/catalog.types";
+import { ProductCatalogFbmStock } from "./ProductCatalogFbmStock";
 
 import { ResponsiveDataCard } from "@/shared/ui/ResponsiveDataCard";
 
@@ -188,7 +189,7 @@ export function ProductCatalogRow({ row }: ProductCatalogRowProps) {
 
         <div className="text-xs text-slate-500">
 
-          FBA {row.stockFba} · FBM {row.stockFbm}
+          FBA {row.stockFba} · <ProductCatalogFbmStock stock={row.publishedFbm} />
 
         </div>
 
@@ -348,7 +349,7 @@ export function ProductCatalogMobileCard({ row }: ProductCatalogRowProps) {
 
               <span className="text-xs text-slate-500">
 
-                (FBA {row.stockFba} · FBM {row.stockFbm})
+                (FBA {row.stockFba} · <ProductCatalogFbmStock stock={row.publishedFbm} />)
 
               </span>
 

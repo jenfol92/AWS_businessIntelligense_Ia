@@ -4,6 +4,7 @@ import createIntlMiddleware from "next-intl/middleware";
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { isPageRouteExposed } from "@/config/productionExposure";
 
 import {
   DEFAULT_LOCALE,
@@ -14,6 +15,8 @@ import {
 
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
+  // Before locale/auth work: blocked pages never render or call Supabase here.
+  if (!isPageRouteExposed(pathname)) return new NextResponse(null, { status: 404 });
 
   const hasLocalePrefix = LOCALES.some(
     (locale) =>

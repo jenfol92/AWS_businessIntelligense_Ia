@@ -16,6 +16,8 @@ import {
   Search,
   Link2,
   TrendingUp,
+  ChevronDown,
+  ChevronUp,
   X,
 } from "lucide-react";
 import type {
@@ -38,6 +40,8 @@ import { LinkedPurchasePaymentModal } from "./LinkedPurchasePaymentModal";
 import { PurchasePaymentBatchDetailModal } from "./PurchasePaymentBatchDetailModal";
 import { CreditLineMaturityPaymentModal } from "./CreditLineMaturityPaymentModal";
 import type { CreditLineMaturity } from "../types/creditLineMaturities.types";
+import { AmazonAnnualPlanningSection } from "./AmazonAnnualPlanningSection";
+import { formatPlanningEur } from "./amazonPlanningFormat";
 
 const FUNDING_SOURCE_OPTIONS: Array<{
   value: SupplierPaymentFundingSourceType;
@@ -982,6 +986,7 @@ export function FinancialPlanningPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [filters, setFilters] = useState<FinanceFiltersState>(EMPTY_FILTERS);
   const [urlFiltersReady, setUrlFiltersReady] = useState(false);
+  const [showAmazonMarketplaceLiquidity, setShowAmazonMarketplaceLiquidity] = useState(false);
 
   const initialPlanningRequest = useRef<Promise<FinancePlanningResponse> | null>(null);
   const loadPlanning = useCallback(async () => {
@@ -1227,20 +1232,36 @@ export function FinancialPlanningPage() {
               <div className="text-sm font-bold uppercase text-indigo-700">{data.summary.treasuryEvaluation.status}</div>
               <div className="mt-1 text-[10px] text-slate-500">{data.summary.treasuryEvaluation.recommendation}</div>
             </div>
+            <button
+              type="button"
+              className="rounded-lg border border-slate-200 bg-white p-3 text-left hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
+              aria-expanded={showAmazonMarketplaceLiquidity}
+              aria-controls="amazon-marketplace-liquidity"
+              onClick={() => setShowAmazonMarketplaceLiquidity((current) => !current)}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[11px] text-slate-500">Amazon disponible para solicitar (fuera de caja)</div>
+                  <div className="text-sm font-bold text-slate-900">{eur(data.summary.amazonAvailable)}</div>
+                  <div className="mt-1 text-[10px] text-slate-500">{data.summary.amazonAvailableSource}</div>
+                </div>
+                {showAmazonMarketplaceLiquidity ? (
+                  <ChevronUp className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                ) : (
+                  <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                )}
+              </div>
+            </button>
             <div className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-[11px] text-slate-500">Amazon disponible para solicitar (fuera de caja)</div>
-              <div className="text-sm font-bold text-slate-900">{eur(data.summary.amazonAvailable)}</div>
-              <div className="mt-1 text-[10px] text-slate-500">{data.summary.amazonAvailableSource}</div>
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-[11px] text-slate-500">Amazon previsto</div>
+              <div className="text-[11px] text-slate-500">Forecast ERP acumulado (referencia)</div>
               <div className="text-sm font-bold text-sky-700">{eur(data.summary.amazonExpected)}</div>
-              <div className="mt-1 text-[10px] text-slate-500">{data.summary.amazonExpectedNetRatio == null ? "Neto bancario no disponible hasta disponer de evidencia histórica suficiente." : `Ventas estimadas × ratio neto histórico configurado ${Math.round(data.summary.amazonExpectedNetRatio * 100)} %.`} No modifica caja.</div>
+              <div className="mt-1 text-[10px] text-slate-500">{data.summary.amazonExpectedNetRatio == null ? "Estimación ERP separada de Amazon observado." : `Ventas estimadas × ratio neto ${Math.round(data.summary.amazonExpectedNetRatio * 100)} %.`} No es ingreso bancario ni suma de capas del gráfico.</div>
             </div>
           </div>
         </header>
 
-        <section className="rounded-xl border border-slate-200 bg-white p-4">
+        {showAmazonMarketplaceLiquidity ? (
+        <section id="amazon-marketplace-liquidity" className="rounded-xl border border-slate-200 bg-white p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 className="text-sm font-semibold text-slate-900">Amazon · Estados de liquidez por marketplace</h2>
@@ -1254,7 +1275,7 @@ export function FinancialPlanningPage() {
             {marketplaceAmazonCards.map((card) => <div key={card.marketplace} className="rounded-lg border border-slate-200 p-3">
               <div className="text-sm font-bold text-slate-900">{card.marketplace}</div>
               <div className="mt-3 text-[11px] text-slate-500">Disponible para solicitar</div><div className="text-sm font-semibold text-slate-900">{originalMoney(card.availableOriginal,card.currency)}</div><div className="text-lg font-bold text-emerald-700">{knownEur(card.availablePositiveEur)}</div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-xs"><div><span className="block text-slate-400">Diferido por Amazon</span><b className="block">{originalMoney(card.deferredOriginal,card.currency)}</b><b>{knownEur(card.deferredEur)}</b></div><div><span className="block text-slate-400">En curso / pendiente banco</span><b className="block">{originalMoney(card.pendingBankOriginal,card.currency)}</b><b>{knownEur(card.pendingBankEur)}</b></div></div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs"><div><span className="block text-slate-400">Diferido observado (stock)</span><b className="block">{originalMoney(card.deferredOriginal,card.currency)}</b><b>{knownEur(card.deferredEur)}</b><span className="block text-[10px] text-slate-400">Ver curva de liberación abajo</span></div><div><span className="block text-slate-400">En curso / pendiente banco</span><b className="block">{originalMoney(card.pendingBankOriginal,card.currency)}</b><b>{knownEur(card.pendingBankEur)}</b></div></div>
               {(card.pendingBankEur ?? 0) > 0 ? <div className="mt-2 text-[11px] text-emerald-700">Llegada estimada: {card.pendingBankArrivalBase ?? card.expectedBankDate ?? "no disponible"}</div> : null}
               {card.currency!=="EUR"?<div className="mt-3 border-t border-slate-100 pt-2 text-[10px] text-slate-500">FX: {card.fxRate!=null?`1 ${card.currency} = ${card.fxRate.toFixed(6)} EUR`:"EUR unavailable"}<br/>{card.fxSources.join(", ")||"UNAVAILABLE"} · {card.fxObservedAt??"sin fecha FX"}</div>:<div className="mt-3 border-t border-slate-100 pt-2 text-[10px] text-slate-400">EUR · sin conversión</div>}
             </div>)}
@@ -1274,10 +1295,14 @@ export function FinancialPlanningPage() {
           </div>
 
           <div className="mt-5 border-t border-slate-200 pt-4">
-            <h3 className="text-sm font-semibold text-slate-900">Próximas transferencias en curso</h3>
+            <h3 className="text-sm font-semibold text-slate-900">Próximas transferencias en curso (detalle por marketplace)</h3>
+            <p className="mt-1 text-[11px] text-slate-500">Complemento operativo; la curva mensual está en el horizonte anual.</p>
             <div className="mt-2 overflow-x-auto"><table className="min-w-full text-left text-xs"><thead className="text-slate-400"><tr><th className="py-2 pr-4">Marketplace</th><th className="py-2 pr-4">Importe</th><th className="py-2 pr-4">Solicitado/Iniciado</th><th className="py-2 pr-4">Llegada estimada</th><th className="py-2">Estado</th></tr></thead><tbody className="divide-y divide-slate-100">{pendingBankCards.map((card) => <tr key={card.marketplace}><td className="py-2 pr-4 font-semibold">{card.marketplace}</td><td className="py-2 pr-4">{knownEur(card.pendingBankEur)}</td><td className="py-2 pr-4">Evidencia Amazon</td><td className="py-2 pr-4">{card.pendingBankArrivalBase ?? card.expectedBankDate ?? "no disponible"}</td><td className="py-2 text-emerald-700">PENDING_BANK</td></tr>)}{pendingBankCards.length === 0 ? <tr><td colSpan={5} className="py-4 text-center text-slate-400">No hay transferencias en curso.</td></tr> : null}</tbody></table></div>
           </div>
         </section>
+        ) : null}
+
+        <AmazonAnnualPlanningSection data={data} />
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           {data.creditLines.map((line) => {
@@ -1431,8 +1456,8 @@ export function FinancialPlanningPage() {
                   <span className="col-span-2">Importes pendientes en EUR estimados con el cambio previsto; pagados con importes reales.</span>
                   <span>Amazon disponible: {eur(month.amazonAvailableEur)}</span>
                   <span>Amazon pendiente banco: {eur(month.amazonPendingBankEur)}</span>
-                  <span>Amazon diferido: {eur(month.amazonDeferredEur)}</span>
-                  <span className="col-span-2 font-semibold text-amber-200">Estimación ingresos AWS: {month.amazonMonthlyEstimateEur == null ? "Sin estimación" : eur(month.amazonMonthlyEstimateEur)}<span className="block font-normal text-slate-300">Previsión del mes; no es saldo bancario disponible.</span></span>
+                  <span>Liberación Amazon (mes): {formatPlanningEur(month.amazonDeferredReleaseKnownEur)}<span className="block font-normal text-slate-400">≠ ingreso bancario · ver horizonte anual</span></span>
+                  <span className="col-span-2 font-semibold text-amber-200">Forecast ERP (mes): {month.amazonMonthlyEstimateEur == null ? "Sin estimación" : eur(month.amazonMonthlyEstimateEur)}<span className="block font-normal text-slate-300">Estimación ERP; no es saldo bancario ni liberación Amazon.</span></span>
                   <span>Amazon recibido: {eur(month.amazonReceivedEur)}</span>
                   {month.hasUnvaluedForeignDebt ? <span className="text-amber-300">FX pendiente: {month.pendingFxObligations} obligación(es), importe EUR no valorado</span> : null}
                   <span>Liberacion prevista: {eur(month.totalCreditReleases)}</span>

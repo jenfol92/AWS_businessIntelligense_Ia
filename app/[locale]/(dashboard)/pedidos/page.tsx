@@ -17,6 +17,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isModuleExposed } from "@/config/productionExposure";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Check,
@@ -726,7 +727,7 @@ export default function PedidosPage() {
           <FileText className="h-4 w-4" />
           Historial
         </button>
-        <button
+        {isModuleExposed("purchaseSuggestions") && <button
           onClick={() => setActiveTab("sugerencias")}
           className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
             activeTab === "sugerencias"
@@ -741,7 +742,7 @@ export default function PedidosPage() {
               {suggestions.sugerencias.length}
             </span>
           )}
-        </button>
+        </button>}
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════ */}
@@ -977,7 +978,7 @@ export default function PedidosPage() {
       {/* ── PESTAÑA SUGERENCIAS ── */}
       {/* ══════════════════════════════════════════════════════════════════ */}
 
-      {activeTab === "sugerencias" && (
+      {isModuleExposed("purchaseSuggestions") && activeTab === "sugerencias" && (
         <div className="space-y-4">
 
           {/* ── Cabecera sugerencias ── */}
@@ -1317,10 +1318,10 @@ export default function PedidosPage() {
       />
 
       {/* Basket de borrador (sugerencias) */}
-      <OrderDraftBasket
+      {isModuleExposed("purchaseSuggestions") && <OrderDraftBasket
         basket={basket}
         onDraftSaved={() => ordersList.refresh()}
-      />
+      />}
     </div>
   );
 }

@@ -159,7 +159,14 @@ export type FinanceMonthBucket = {
   amazonReceivedEur: number;
   amazonAvailableEur: number;
   amazonPendingBankEur: number;
+  /**
+   * Legacy month-bucket total from non-informational DEFERRED amazon_income events.
+   * Historically always 0 because treasury DEFERRED observations are informational.
+   * Do not use for Amazon release-by-month; prefer amazonDeferredReleaseKnownEur.
+   */
   amazonDeferredEur: number;
+  /** Known EUR whose Amazon release (liberación) falls in this month; null if none or incomplete. */
+  amazonDeferredReleaseKnownEur?: number | null;
   amazonMonthlyEstimateEur?: number | null;
   amazonFutureEur: number;
   amazonIncomes: FinanceMonthlyAmazonIncome[];
@@ -237,6 +244,32 @@ export type FinancePlanningSummary = {
   treasuryEvaluation: import("../services/treasuryEngine").TreasuryEvaluation;
 };
 
+export type AmazonDeferredReleaseAggregate = {
+  date: string | null;
+  month: string | null;
+  knownEur: number | null;
+  transactionCount: number;
+  positiveKnownEur: number | null;
+  negativeKnownEur: number | null;
+  unvaluedCount: number;
+  unvaluedOriginalByCurrency: Record<string, number>;
+  isComplete: boolean;
+};
+
+export type AmazonDeferredReleasePlanning = {
+  runId?: string | null;
+  semantic: "amazon_release";
+  label: string;
+  observedAt: string | null;
+  dailyByReleaseDate: AmazonDeferredReleaseAggregate[];
+  monthlyByReleaseMonth: AmazonDeferredReleaseAggregate[];
+};
+
+export type AmazonPlanningLayerRef = {
+  semantic: string;
+  label: string;
+};
+
 export type FinancePlanningResponse = {
   ok: true;
   recurringPaymentsWarning?: string | null;
@@ -246,6 +279,19 @@ export type FinancePlanningResponse = {
   months: FinanceMonthBucket[];
   pendingDateEvents: FinancePlanningEvent[];
   permissions: { canManageCreditLineRegularizations: boolean };
+  amazonDeferredRelease: AmazonDeferredReleasePlanning;
+  /** Exactly 12 YYYY-MM buckets for Amazon layer charts; independent of query.months. */
+  amazonPlanningHorizonMonths: string[];
+  amazonPlanningLayers: {
+    deferredAmazonRelease: AmazonPlanningLayerRef & { monthly: AmazonDeferredReleaseAggregate[] };
+    pendingBankByMonth: AmazonPlanningLayerRef & {
+      monthly: Array<{ month: string; knownEur: number | null; transactionCount: number }>;
+    };
+    availableLiquidityStock: AmazonPlanningLayerRef & { knownEur: number | null; observedAt: string | null };
+    futureForecastByMonth: AmazonPlanningLayerRef & {
+      monthly: Array<{ month: string; estimatedEur: number | null }>;
+    };
+  };
   amazonCashForecast: {
     marketplaceCards: import("../services/amazonCashForecast").AmazonMarketplaceCashCard[];
     monthlyScenarios: ReturnType<typeof import("../services/amazonCashForecast").summarizeAmazonCashByMonth>;
@@ -276,5 +322,7 @@ export type FinancePlanningRawData = {
   cashAccounts: Record<string, unknown>[];
   amazonIncomeForecasts: Record<string, unknown>[];
   amazonTreasuryObservations: Record<string, unknown>[];
+  amazonObservationObservedAt: string | null;
+  amazonObservationRunId?: string | null;
   settings: Record<string, unknown>[];
 };

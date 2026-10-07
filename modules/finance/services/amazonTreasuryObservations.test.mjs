@@ -5,32 +5,40 @@ const read=path=>readFile(new URL(`../../../${path}`,import.meta.url),"utf8");
 
 test("producer persists the three observational states through the dedicated RPC",async()=>{
   const source=await read("modules/finance/services/amazonTreasuryObservations.ts");const repository=await read("modules/finance/repositories/amazonFinancialPlanningSyncRepository.ts");
-  for(const state of ["AVAILABLE","PENDING_BANK","DEFERRED"])assert.match(source,new RegExp(state));
+  assert.match(await read("modules/finance/services/amazonTreasuryGroupObservation.ts"),/AVAILABLE/);
+  assert.match(await read("modules/finance/services/amazonTreasuryGroupObservation.ts"),/PENDING_BANK/);
+  assert.match(source,/DEFERRED/);
   assert.match(repository,/finance_insert_amazon_treasury_observation/);assert.match(source,/insertAmazonTreasuryObservationAdmin/);
+  assert.match(repository,/p_amazon_release_date/);
   assert.doesNotMatch(source,/finance_receive_amazon_income|finance_cash_movements|finance_cash_accounts/);
 });
 
 test("observation key uses UTC day bucket and material hash",async()=>{
-  const source=await read("modules/finance/services/amazonTreasuryObservations.ts");
-  assert.match(source,/observedAt\.slice\(0,10\)/);assert.match(source,/createHash\("sha256"\)/);assert.match(source,/amazon-observation:v1/);
-  assert.match(source,/amount,currency,marketplace/);assert.match(source,/fundTransferStatus/);
+  const core=await read("modules/finance/services/amazonTreasuryObservationCore.ts");
+  const group=await read("modules/finance/services/amazonTreasuryGroupObservation.ts");
+  assert.match(core,/observedAt\.slice\(0,\s*10\)/);assert.match(core,/createHash\("sha256"\)/);assert.match(core,/amazon-observation:v1/);
+  assert.match(group,/amount,\s*\r?\n\s*currency,\s*\r?\n\s*marketplace/s);assert.match(group,/fundTransferStatus/);
 });
 
 test("AVAILABLE retains negative observations and uses configured weekday only as conditional simulation",async()=>{
-  const source=await read("modules/finance/services/amazonTreasuryObservations.ts");
-  assert.match(source,/ProcessingStatus!=="Open"/);assert.doesNotMatch(source,/amount\s*<=\s*0[^\n]*return/);
-  assert.match(source,/availablePayoutSimulation\(now,weekdays\)/);assert.match(source,/expectedBankDate=pending\?expectedBankDateForPending\([^)]*\):null/);
+  const group=await read("modules/finance/services/amazonTreasuryGroupObservation.ts");
+  assert.match(group,/ProcessingStatus\s*!==\s*"Open"/);assert.doesNotMatch(group,/amount\s*<=\s*0[^\n]*return/);
+  assert.match(group,/availablePayoutSimulation\(now,\s*weekdays\)/);assert.match(group,/expectedBankDate\s*=\s*pending\s*\?\s*expectedBankDateForPending/);
 });
 
 test("PENDING_BANK is only Closed Processing and uses real FundTransferDate",async()=>{
-  const source=await read("modules/finance/services/amazonTreasuryObservations.ts");
-  assert.match(source,/ProcessingStatus==="Closed"&&group\.FundTransferStatus==="Processing"/);
-  assert.match(source,/expectedBankDateForPending\(group\.FundTransferDate\?\?null\)/);assert.match(source,/expectedRequestDate:pending\?null/);
+  const group=await read("modules/finance/services/amazonTreasuryGroupObservation.ts");
+  assert.match(group,/ProcessingStatus\s*===\s*"Closed"\s*&&\s*group\.FundTransferStatus\s*===\s*"Processing"/);
+  assert.match(group,/expectedBankDateForPending\(group\.FundTransferDate\s*\?\?\s*null\)/);assert.match(group,/expectedRequestDate:\s*pending\s*\?\s*null/);
 });
 
 test("DEFERRED uses transaction identity, unresolved is explicit, and FX is never zero",async()=>{
   const source=await read("modules/finance/services/amazonTreasuryObservations.ts");
-  assert.match(source,/transactionStatus:"DEFERRED"/);assert.match(source,/amazonTransactionId:value\.id/);assert.match(source,/"UNRESOLVED"/);
+  const deferred=await read("modules/finance/services/amazonTreasuryDeferredFields.ts");
+  assert.match(source,/buildDeferredTreasuryObservation/);
+  assert.match(deferred,/amazonReleaseDate/);assert.match(deferred,/expectedBankDate:\s*null/);assert.match(deferred,/expectedAvailabilityDate:\s*null/);
+  assert.match(deferred,/transactionStatus:\s*"DEFERRED"/);assert.match(deferred,/amazonTransactionId:\s*value\.id/);
+  assert.match(await read("modules/finance/services/amazonTreasuryObservationCore.ts"),/"UNRESOLVED"/);
   const fx=await read("modules/finance/services/ecbFxService.ts");assert.match(fx,/fxSource:"UNAVAILABLE"/);assert.match(fx,/amountEur:null,officialAmountEur:null/);assert.doesNotMatch(fx,/amountEur:0|officialAmountEur:0/);
 });
 

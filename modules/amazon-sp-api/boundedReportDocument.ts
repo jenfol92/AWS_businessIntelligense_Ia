@@ -1,4 +1,5 @@
 import { gunzipSync } from "node:zlib";
+import { SpApiError } from "./errors.ts";
 import type { SpApiReportDocument } from "./types";
 
 export type ReportDownloadOptions = { signal: AbortSignal; maxBytes: number; fetchDocument?: typeof fetch };
@@ -11,6 +12,7 @@ export async function downloadBoundedReportDocument(document: SpApiReportDocumen
   if (document.compressionAlgorithm !== undefined && document.compressionAlgorithm !== "GZIP") throw new Error("UNSUPPORTED_COMPRESSION");
   if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes <= 0) throw new Error("INVALID_BYTE_LIMIT");
   const res = await (options.fetchDocument ?? fetch)(url.href, { method: "GET", redirect: "error", credentials: "omit", signal: options.signal });
+  if (res.status === 429) throw new SpApiError("DOCUMENT_RATE_LIMITED", "rate_limited", 429, { headers: { "retry-after": res.headers.get("retry-after") } });
   if (!res.ok || !res.body) throw new Error("DOCUMENT_HTTP_ERROR");
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];

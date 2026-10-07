@@ -1,3 +1,5 @@
+import { isUtcDateOnly as isDate, salesSyncHttpStatus } from "@/modules/amazon-sp-api/fbaSalesSyncPolicy";
+import { resumeFbaSalesSync } from "@/modules/amazon-sp-api/fbaSalesSyncCoordinator";
 import { NextRequest, NextResponse } from "next/server";
 import { getMissingSpApiEnvKeys } from "@/modules/amazon-sp-api/config";
 import { mapGenericError } from "@/modules/amazon-sp-api/errors";
@@ -10,20 +12,16 @@ import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 export const dynamic = "force-dynamic";
 
 type Body = {
+  jobId?: string;
   fromDate?: string;
   toDate?: string;
   marketplaceIds?: string[];
   reportType?: string;
 };
 
-function isDate(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
-
 function isDateRangeOrdered(fromDate: string, toDate: string): boolean {
   return fromDate <= toDate;
 }
-
 export async function POST(request: NextRequest) {
   const supabase = createSupabaseRouteClient();
   const {
@@ -44,6 +42,10 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = (await request.json()) as Body;
+    if (typeof body.jobId === "string") {
+      const result = await resumeFbaSalesSync(body.jobId);
+      return NextResponse.json(result, {status:salesSyncHttpStatus(result.status)});
+    }
     if (!isDate(body.fromDate) || !isDate(body.toDate)) {
       return NextResponse.json(
         { ok: false, error: "fromDate y toDate son obligatorios (YYYY-MM-DD)." },
@@ -73,27 +75,8 @@ export async function POST(request: NextRequest) {
       ? body.reportType
       : undefined;
 
-    const summary = await importFbaSalesDailyFromSpApi({
-      fromDate: body.fromDate,
-      toDate: body.toDate,
-      marketplaceIds: body.marketplaceIds,
-      reportType,
-    });
-
-    if (!summary.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error:
-            summary.error ??
-            "Amazon no pudo generar el informe solicitado.",
-          summary,
-        },
-        { status: summary.status === "RATE_LIMITED" ? 429 : 502 },
-      );
-    }
-
-    return NextResponse.json({ ok: true, summary });
+    const result = await importFbaSalesDailyFromSpApi({fromDate:body.fromDate,toDate:body.toDate,marketplaceIds:body.marketplaceIds,reportType});
+    return NextResponse.json(result, {status:salesSyncHttpStatus(result.status)});
   } catch (error: unknown) {
     const mapped = mapGenericError(error);
     return NextResponse.json(

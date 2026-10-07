@@ -58,6 +58,7 @@ export async function getReportJobById(
     .from("amazon_spapi_report_jobs")
     .select("*")
     .eq("id", jobId)
+    .neq("report_type", FBA_LEDGER_REPORT_TYPE)
     .maybeSingle();
 
   if (error) throw new Error(error.message);
@@ -65,6 +66,7 @@ export async function getReportJobById(
 }
 
 export async function claimReportRequestJob(params: {
+  now?: Date;
   reportType: string;
   marketplaceIds: string[];
   source?: string;
@@ -186,6 +188,9 @@ export async function listAmazonReportJobsPendingPoll(): Promise<
   const { data, error } = await supabaseAdmin
     .from("amazon_spapi_report_jobs")
     .select("*")
+    .neq("source", "fba_sales_coordinator")
+    .neq("source", "fbm_reports_coordinator_v1")
+    .neq("report_type", FBA_LEDGER_REPORT_TYPE)
     .not("report_id", "is", null)
     .is("report_document_id", null)
     .is("error_message", null)
@@ -202,6 +207,7 @@ export async function listAmazonReportJobsPendingPoll(): Promise<
 export async function listAmazonReportJobsReadyForPreview(params: {
   reportType: string;
 }): Promise<AmazonSpApiReportJobRow[]> {
+  if (params.reportType === FBA_LEDGER_REPORT_TYPE) return []; // Ledger has its own owner.
   const { data, error } = await supabaseAdmin
     .from("amazon_spapi_report_jobs")
     .select("*")
@@ -222,6 +228,7 @@ export async function listAmazonReportJobsReadyForPreview(params: {
 export async function listAmazonReportJobsReadyToCommit(params: {
   reportType: string;
 }): Promise<AmazonSpApiReportJobRow[]> {
+  if (params.reportType === FBA_LEDGER_REPORT_TYPE) return []; // Ledger has its own owner.
   const { data, error } = await supabaseAdmin
     .from("amazon_spapi_report_jobs")
     .select("*")

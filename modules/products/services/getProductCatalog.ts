@@ -8,6 +8,7 @@ import { findProductCatalogFilterOptions } from "../repositories/productCatalogO
 import { mapProductCatalogRow } from "../mappers/productCatalogMapper";
 import { matchesProductCatalogSearch } from "../utils/productCatalogSearch";
 import type { ProductCatalogQuery, ProductCatalogResponse } from "../types";
+import { findPublishedCatalogFbm, noPublishedFbm } from "../repositories/productCatalogFbmRepository";
 
 /**
  * Caso de uso: cargar catálogo de productos.
@@ -43,6 +44,9 @@ export async function getProductCatalog(
     hasMore = filtered.length > query.offset + query.limit;
     rows = filtered.slice(query.offset, query.offset + query.limit);
   }
+
+  const publishedFbm = await findPublishedCatalogFbm(rows.map(row => row.id));
+  rows = rows.map(row => ({ ...row, publishedFbm: publishedFbm.get(row.id) ?? noPublishedFbm() }));
 
   return {
     ok: true,

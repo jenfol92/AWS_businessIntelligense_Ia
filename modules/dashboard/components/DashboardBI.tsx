@@ -15,6 +15,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { DEFAULT_LOCALE, isLocale } from "@/config/i18n";
+import { isPageRouteExposed } from "@/config/productionExposure";
 import { useGlobalFilters } from "@/shared/filters/useGlobalFilters";
 import type {
   InventoryComparisonResponse,
@@ -196,9 +197,9 @@ export default function DashboardBI() {
                 Ordenada por falta de stock, riesgo, ausencia de histórico y cobertura.
               </p>
             </div>
-            <Link href={`/${locale}/inventario`} className="inline-flex items-center gap-1 text-sm font-semibold text-indigo-700 hover:text-indigo-600">
+            {isPageRouteExposed("/inventario") && <Link href={`/${locale}/inventario`} className="inline-flex items-center gap-1 text-sm font-semibold text-indigo-700 hover:text-indigo-600">
               Abrir inventario <ArrowRight className="h-4 w-4" aria-hidden />
-            </Link>
+            </Link>}
           </div>
 
           {loading ? (
@@ -312,6 +313,7 @@ function NavigationCard({ href, title, description, icon: Icon }: {
   description: string;
   icon: typeof CalendarRange;
 }) {
+  if (!isPageRouteExposed(href)) return null;
   return (
     <Link href={href} className="group block rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-indigo-200 hover:shadow-md">
       <div className="flex items-start gap-3">

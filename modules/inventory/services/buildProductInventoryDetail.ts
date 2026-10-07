@@ -20,6 +20,7 @@ import {
   loadInventoryContextForProduct,
 } from "./loadInventoryContext";
 import { buildOperationalStockSummary } from "./resolveOperationalStock";
+import { summarizeProductSales } from "./buildProductSalesByCountry";
 
 
 function logInventoryDetailTiming(
@@ -111,7 +112,7 @@ logInventoryDetailTiming(
     });
     const countryCodes = countries.map((row) => row.pais);
     const today = todayIsoDate();
-    const [topTodayByCountry, topPeriodByCountry] = await Promise.all([
+    const [topTodayByCountry, topPeriodByCountry, salesOrders] = await Promise.all([
       fetchTopPriceByProductCountry({
         productId: targetId,
         countries: countryCodes,
@@ -125,6 +126,16 @@ logInventoryDetailTiming(
         channelScope: params.canal ?? ctx.canal,
         fromDate: ctx.periodFrom,
         toDate: ctx.periodTo,
+      }),
+      summarizeProductSales(targetId, {
+        fromDate: ctx.periodFrom,
+        toDate: ctx.periodTo,
+        canal: params.canal ?? null,
+        pais: params.pais ?? null,
+        signal: params.signal,
+      }).catch((error) => {
+        console.error("[inventory] ventas por pedidos no disponibles", error);
+        return null;
       }),
     ]);
     const countriesWithPriceTop = countries.map((row) => {
@@ -207,6 +218,7 @@ logInventoryDetailTiming(
       periodDays: ctx.periodDays,
       periodFrom: ctx.periodFrom,
       periodTo: ctx.periodTo,
+      salesOrders,
       simulationActive: params.forecastOverride != null,
       appliedForecastConfig: params.forecastOverride ?? undefined,
     };

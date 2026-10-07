@@ -1,6 +1,6 @@
 // Isolated PostgreSQL (PGlite), synthetic fixtures only. No environment file or network connection.
-// npm install --prefix .codex-work/finance-validation --no-save --package-lock=false @electric-sql/pglite
-import { PGlite } from '../.codex-work/finance-validation/node_modules/@electric-sql/pglite/dist/index.js';
+// Install project dependencies with npm ci before running.
+import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';

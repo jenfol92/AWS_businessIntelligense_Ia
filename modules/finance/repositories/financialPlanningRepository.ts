@@ -1,4 +1,6 @@
+import { readPublishedAmazonObservation, amazonObservationFilter, type AmazonObservationSelection } from "../services/amazonObservationRun";
 import { accountingDate } from "../utils/accountingDate";
+import { AMAZON_PLANNING_HORIZON_MONTH_COUNT } from "../utils/amazonPlanningHorizon";
 import { readRecurringCalendar } from "./recurringPaymentsRepository";
 import { createSupabaseRouteClient } from "@/server/supabase/routeClient";
 import { supabaseAdmin } from "@/server/supabase/adminClient";
@@ -23,16 +25,6 @@ function lastDayOfWindow(fromMonth: string, months: number): string {
 
 const AMAZON_OBSERVATION_PAGE_SIZE = 1000;
 
-function readSuccessfulSyncObservationAt(
-  lastResult: unknown,
-): string | null {
-  if (!lastResult || typeof lastResult !== "object") return null;
-  const observations = (lastResult as Record<string, unknown>).observations;
-  if (!observations || typeof observations !== "object") return null;
-  const observedAt = (observations as Record<string, unknown>).observedAt;
-  return typeof observedAt === "string" && observedAt.length > 0 ? observedAt : null;
-}
-
 async function readLatestSuccessfulAmazonObservationAt() {
   const { data, error } = await supabaseAdmin
     .from("finance_amazon_sync_state")
@@ -44,32 +36,92 @@ async function readLatestSuccessfulAmazonObservationAt() {
     return { data: null, error: null };
   }
   return {
-    data: readSuccessfulSyncObservationAt(data.last_result),
+    data: readPublishedAmazonObservation(data.last_result),
     error: null,
   };
 }
 
 async function findCurrentAmazonTreasuryObservations() {
   const syncAtResult = await readLatestSuccessfulAmazonObservationAt();
-  if (syncAtResult.error) return { data: null, error: syncAtResult.error };
-  const snapshotAt = syncAtResult.data;
-  if (!snapshotAt) return { data: [], error: null };
+  if (syncAtResult.error) return { data: null, observedAt: null, error: syncAtResult.error };
+  const selection = syncAtResult.data ?? {runId:null,observedAt:null};
+  const filter = amazonObservationFilter(selection);
+  if (!filter) return { data: [], observedAt: null, runId:null, error: null };
 
   const rows: Record<string, unknown>[] = [];
   for (let from = 0; ; from += AMAZON_OBSERVATION_PAGE_SIZE) {
     const { data, error } = await supabaseAdmin
       .from("finance_amazon_treasury_forecast_snapshots")
       .select("*")
-      .eq("snapshot_at", snapshotAt)
+      .eq(filter.column, filter.value)
       .in("economic_state", ["AVAILABLE", "DEFERRED", "PENDING_BANK"])
       .order("id", { ascending: false })
       .range(from, from + AMAZON_OBSERVATION_PAGE_SIZE - 1);
-    if (error) return { data: null, error };
+    if (error) return { data: null, observedAt: null, error };
     const page = (data ?? []) as Record<string, unknown>[];
     rows.push(...page);
     if (page.length < AMAZON_OBSERVATION_PAGE_SIZE) break;
   }
-  return { data: rows, error: null };
+  return { data: rows, observedAt: selection.observedAt, runId:selection.runId, error: null };
+}
+
+export async function findDeferredAmazonReleaseDetail(options: {
+  releaseDate?: string;
+  month?: string;
+  runId?: string;
+  legacyObservedAt?: string;
+}) {
+  const syncAtResult = await readLatestSuccessfulAmazonObservationAt();
+  if (syncAtResult.error) throw new Error(syncAtResult.error.message);
+  let selection: AmazonObservationSelection = syncAtResult.data ?? {runId:null,observedAt:null};
+  if (options.runId) {
+    const {data:run,error}=await supabaseAdmin.from("finance_amazon_observation_runs").select("id,observed_at,status").eq("id",options.runId).eq("status","succeeded").maybeSingle();
+    if(error)throw new Error(error.message);
+    if(!run)throw new Error("AMAZON_RUN_NOT_PUBLISHED");
+    selection={runId:run.id,observedAt:run.observed_at};
+  } else if(options.legacyObservedAt) {
+    if(selection.runId || selection.observedAt!==options.legacyObservedAt)throw new Error("AMAZON_LEGACY_SNAPSHOT_CHANGED");
+  }
+  const filter=amazonObservationFilter(selection);
+  if (!filter) {
+    return { observedAt: null, semantic: "amazon_release" as const, transactions: [] as Record<string, unknown>[] };
+  }
+
+  let query = supabaseAdmin
+    .from("finance_amazon_treasury_forecast_snapshots")
+    .select(
+      "id,source_key,marketplace,amazon_transaction_id,amazon_transaction_type,amazon_posted_at,amazon_release_date,amazon_deferral_reason,original_currency,original_amount,amount_eur,official_amount_eur,estimated_amount_eur,confidence,estimation_method,expected_bank_date",
+    )
+    .eq(filter.column, filter.value)
+    .eq("economic_state", "DEFERRED")
+    .order("amazon_release_date", { ascending: true })
+    .order("id", { ascending: true });
+
+  if (options.releaseDate) {
+    query = query.eq("amazon_release_date", options.releaseDate);
+  } else if (options.month && /^\d{4}-\d{2}$/.test(options.month)) {
+    const start = `${options.month}-01`;
+    const endDate = new Date(`${options.month}-01T00:00:00Z`);
+    endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+    endDate.setUTCDate(0);
+    query = query.gte("amazon_release_date", start).lte("amazon_release_date", endDate.toISOString().slice(0, 10));
+  }
+
+  const data:Record<string,unknown>[]=[];
+  for(let from=0;;from+=AMAZON_OBSERVATION_PAGE_SIZE){
+    const {data:page,error}=await query.range(from,from+AMAZON_OBSERVATION_PAGE_SIZE-1);
+    if(error)throw new Error(error.message);
+    data.push(...(page??[]));
+    if((page??[]).length<AMAZON_OBSERVATION_PAGE_SIZE)break;
+  }
+  return {
+    observedAt: selection.observedAt,
+    runId: selection.runId,
+    semantic: "amazon_release" as const,
+    releaseDate: options.releaseDate ?? null,
+    month: options.month ?? null,
+    transactions: (data ?? []) as Record<string, unknown>[],
+  };
 }
 
 /**
@@ -85,6 +137,7 @@ export async function findFinancialPlanningData(
   const months = query.months ?? 6;
   const fromDate = firstDayOfMonth(fromMonth);
   const toDate = lastDayOfWindow(fromMonth, months);
+  const amazonForecastToDate = lastDayOfWindow(fromMonth, AMAZON_PLANNING_HORIZON_MONTH_COUNT);
 
   const [
     containersResult,
@@ -182,7 +235,7 @@ export async function findFinancialPlanningData(
       .from("finance_amazon_income_forecasts")
       .select("*")
       .gte("forecast_date", fromDate)
-      .lte("forecast_date", toDate)
+      .lte("forecast_date", amazonForecastToDate)
       .order("forecast_date", { ascending: true }),
     findCurrentAmazonTreasuryObservations(),
     supabase
@@ -223,6 +276,8 @@ export async function findFinancialPlanningData(
     cashAccounts: (cashResult.data ?? []) as Record<string, unknown>[],
     amazonIncomeForecasts: (incomeResult.data ?? []) as Record<string, unknown>[],
     amazonTreasuryObservations: (observationResult.data ?? []) as Record<string, unknown>[],
+    amazonObservationObservedAt: observationResult.observedAt ?? null,
+    amazonObservationRunId: observationResult.runId ?? null,
     settings: (settingsResult.data ?? []) as Record<string, unknown>[],
   };
 }

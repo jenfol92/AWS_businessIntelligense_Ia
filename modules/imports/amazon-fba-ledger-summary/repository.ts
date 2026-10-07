@@ -1,3 +1,4 @@
+import { readLedgerPages } from "./ledgerPagination.ts";
 import { supabaseAdmin } from "@/server/supabase/adminClient";
 // Solo escribe amazon_fba_inventory_ledger_daily.
 // La fuente FBA canonica por pais es v_latest_fba_inventory_by_product_country.
@@ -17,17 +18,11 @@ import {
 
 const UPSERT_BATCH_SIZE = 200;
 
-export async function loadLedgerLocationEvidence(): Promise<LedgerLocationEvidence> {
-  const [{ data: countries, error: countriesError }, { data: inbound, error: inboundError }] =
-    await Promise.all([
-      supabaseAdmin.from("paises").select("code").eq("activo", true),
-      supabaseAdmin
-        .from("amazon_inbound_shipments")
-        .select("destination_center,destination_country")
-        .not("destination_center", "is", null),
-    ]);
-  if (countriesError) throw new Error(countriesError.message);
-  if (inboundError) throw new Error(inboundError.message);
+export async function loadLedgerLocationEvidence(signal?: AbortSignal): Promise<LedgerLocationEvidence> {
+  const [countries, inbound] = await Promise.all([
+    readLedgerPages((from,to)=>supabaseAdmin.from("paises").select("code").eq("activo",true).order("code").range(from,to).abortSignal(signal),signal),
+    readLedgerPages((from,to)=>supabaseAdmin.from("amazon_inbound_shipments").select("destination_center,destination_country").not("destination_center","is",null).order("shipment_id").range(from,to).abortSignal(signal),signal),
+  ]);
 
   const knownCountryCodes = new Set(
     (countries ?? []).map((row) => normalizeLedgerIdentity((row as { code?: string }).code)).filter(Boolean),
@@ -77,6 +72,7 @@ function normalizeLedgerDisposition(value: string | null | undefined): string {
 
 export async function loadProductIdsBySku(
   skus: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   if (skus.length === 0) return map;
@@ -85,12 +81,7 @@ export async function loadProductIdsBySku(
 
   for (let i = 0; i < uniqueSkus.length; i += 500) {
     const chunk = uniqueSkus.slice(i, i + 500);
-    const { data, error } = await supabaseAdmin
-      .from("productos")
-      .select("id, sku")
-      .in("sku", chunk);
-
-    if (error) throw new Error(error.message);
+    const data = await readLedgerPages((from,to)=>supabaseAdmin.from("productos").select("id,sku").in("sku",chunk).order("id").range(from,to).abortSignal(signal),signal);
 
     for (const row of data ?? []) {
       const sku = String((row as { sku?: string }).sku ?? "").trim();
@@ -106,6 +97,7 @@ export async function loadProductIdsBySkuAndAsin(params: {
   skus: string[];
   asins: string[];
   fnskus?: string[];
+  signal?: AbortSignal;
 }): Promise<{
   bySku: Map<string, string>;
   byAsin: Map<string, string>;
@@ -116,7 +108,7 @@ export async function loadProductIdsBySkuAndAsin(params: {
   ambiguousFnskus: Set<string>;
   ambiguousAliases: Set<string>;
 }> {
-  const bySku = await loadProductIdsBySku(params.skus);
+  const bySku = await loadProductIdsBySku(params.skus, params.signal);
   const byAsin = new Map<string, string>();
   const skuByProductId = new Map<string, string>();
   const ambiguousAsins = new Set<string>();
@@ -130,12 +122,7 @@ export async function loadProductIdsBySkuAndAsin(params: {
 
   for (let i = 0; i < uniqueAsins.length; i += 500) {
     const chunk = uniqueAsins.slice(i, i + 500);
-    const { data, error } = await supabaseAdmin
-      .from("productos")
-      .select("id, sku, asin")
-      .in("asin", chunk);
-
-    if (error) throw new Error(error.message);
+    const data = await readLedgerPages((from,to)=>supabaseAdmin.from("productos").select("id,sku,asin").in("asin",chunk).order("id").range(from,to).abortSignal(params.signal),params.signal);
 
     const grouped = new Map<string, string[]>();
     for (const row of data ?? []) {
@@ -167,12 +154,9 @@ export async function loadProductIdsBySkuAndAsin(params: {
     msku_aliases?: string[] | null;
   }> = [];
   for (let i = 0; i < uniqueFnskus.length; i += 500) {
-    const { data, error } = await supabaseAdmin
-      .from("amazon_fba_inventory_ledger_daily")
-      .select("producto_id,fnsku,sku_original,sku_limpio,msku_aliases")
-      .not("producto_id", "is", null)
-      .in("fnsku", uniqueFnskus.slice(i, i + 500));
-    if (error) throw new Error(error.message);
+    const data = await readLedgerPages((from,to)=>supabaseAdmin
+      .from("amazon_fba_inventory_ledger_daily").select("producto_id,fnsku,sku_original,sku_limpio,msku_aliases")
+      .not("producto_id","is",null).in("fnsku",uniqueFnskus.slice(i,i+500)).order("id").range(from,to).abortSignal(params.signal),params.signal);
     historicalRows.push(...((data ?? []) as typeof historicalRows));
   }
   const collectUnique = (
@@ -225,6 +209,7 @@ type ConditionLookupValue = {
 
 export async function loadLatestFbaCountryConditionByIdentity(
   identities: Array<{ fnsku: string | null; asin: string | null }>,
+  signal?: AbortSignal,
 ): Promise<Map<string, ConditionLookupValue>> {
   const fnskus = Array.from(
     new Set(identities.map((i) => normalizeLedgerIdentity(i.fnsku)).filter(Boolean)),
@@ -235,16 +220,8 @@ export async function loadLatestFbaCountryConditionByIdentity(
   const result = new Map<string, ConditionLookupValue>();
   if (fnskus.length === 0 && asins.length === 0) return result;
 
-  const { data, error } = await supabaseAdmin
-    .from("fba_country_stock_daily")
-    .select("snapshot_date, raw")
-    .order("snapshot_date", { ascending: false })
-    .limit(5000);
-
-  if (error) {
-    if (error.message.includes("fba_country_stock_daily")) return result;
-    throw new Error(error.message);
-  }
+  const data = await readLedgerPages((from,to)=>supabaseAdmin.from("fba_country_stock_daily")
+    .select("snapshot_date,raw").order("snapshot_date",{ascending:false}).order("id").range(from,to).abortSignal(signal),signal);
 
   const wantedFnskus = new Set(fnskus);
   const wantedAsins = new Set(asins);
@@ -499,11 +476,8 @@ export async function upsertAmazonFbaLedgerDailyRows(
   const documentIdentities = Array.from(
     new Set(dedupedRows.map((row) => row.document_identity)),
   );
-  const { data: persisted, error: persistedError } = await supabaseAdmin
-    .from("amazon_fba_inventory_ledger_daily")
-    .select("*")
-    .in("document_identity", documentIdentities);
-  if (persistedError) throw new Error(persistedError.message);
+  const persisted = await readLedgerPages((from,to)=>supabaseAdmin.from("amazon_fba_inventory_ledger_daily")
+    .select("*").in("document_identity", documentIdentities).order("id").range(from,to));
 
   const rowsToWrite = prepareLedgerRowsAgainstPersisted(
     dedupedRows,

@@ -1,4 +1,5 @@
-import Papa from "papaparse";
+import type Papa from "papaparse";
+import { parseStrictLedgerText, strictLedgerInteger, LEDGER_MAX_BYTES, LedgerEvidenceError } from "./strictLedgerDocument.ts";
 import { extractTwinlySkuFromMsku } from "../shared/twinlySku.ts";
 import type {
   AmazonFbaLedgerParseResult,
@@ -35,25 +36,10 @@ function getValue(row: RawRow, possibleNames: string[]): string {
   return "";
 }
 
-function parseInteger(value: unknown): number {
-  const raw = cleanText(value);
-  if (!raw) return 0;
-  const n = Number(raw.replace(/,/g, ""));
-  if (!Number.isFinite(n)) return 0;
-  return Math.round(n);
-}
+const parseInteger = strictLedgerInteger;
 
 function parseLedgerText(text: string): Promise<Papa.ParseResult<RawRow>> {
-  const delimiter = text.includes("\t") ? "\t" : ",";
-  return new Promise<Papa.ParseResult<RawRow>>((resolve, reject) => {
-    Papa.parse<RawRow>(text, {
-      header: true,
-      delimiter,
-      skipEmptyLines: "greedy",
-      complete: resolve,
-      error: reject,
-    });
-  });
+  return Promise.resolve(parseStrictLedgerText(text));
 }
 
 function splitMskuAliases(value: string): string[] {
@@ -118,6 +104,7 @@ function rowToRecord(row: RawRow): Record<string, unknown> {
 export async function parseAmazonFbaLedgerSummaryCsv(
   file: File,
 ): Promise<AmazonFbaLedgerParseResult> {
+  if (file.size > LEDGER_MAX_BYTES) throw new LedgerEvidenceError("LEDGER_DOCUMENT_TOO_LARGE");
   const text = await file.text();
   return parseAmazonFbaLedgerSummaryText(text);
 }

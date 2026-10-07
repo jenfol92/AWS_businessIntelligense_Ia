@@ -143,6 +143,7 @@ export async function requestFbaLedgerReportJob(params: {
   marketplaceIds?: string[] | null;
   source?: "manual" | "scheduler";
 } = {}) {
+  rejectLegacyLedger();
   return unwrapFbaLedgerExecution(await runWithFbaLedgerExecutionLock({
     operation: "REQUEST",
     execute: ({ setJobId }) => requestFbaLedgerReportJobUnlocked({
@@ -189,6 +190,7 @@ async function refreshFbaLedgerReportJobStatusUnlocked(jobId: string) {
 }
 
 export async function refreshFbaLedgerReportJobStatus(jobId: string) {
+  rejectLegacyLedger();
   return unwrapFbaLedgerExecution(await runWithFbaLedgerExecutionLock({
     operation: "POLL",
     jobId,
@@ -294,6 +296,7 @@ async function commitFbaLedgerReportJobUnlocked(jobId: string) {
 }
 
 export async function commitFbaLedgerReportJob(jobId: string) {
+  rejectLegacyLedger();
   return unwrapFbaLedgerExecution(await runWithFbaLedgerExecutionLock({
     operation: "COMMIT",
     jobId,
@@ -363,9 +366,12 @@ async function downloadAndPreviewFbaLedgerReportJobUnlocked(jobId: string) {
 }
 
 export async function downloadAndPreviewFbaLedgerReportJob(jobId: string) {
+  rejectLegacyLedger();
   return unwrapFbaLedgerExecution(await runWithFbaLedgerExecutionLock({
     operation: "PREVIEW",
     jobId,
     execute: () => downloadAndPreviewFbaLedgerReportJobUnlocked(jobId),
   }));
 }
+
+function rejectLegacyLedger():void { throw new Error("LEDGER_LEGACY_DISABLED_USE_DURABLE_COORDINATOR"); }

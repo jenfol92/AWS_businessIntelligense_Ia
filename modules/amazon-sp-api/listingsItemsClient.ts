@@ -39,6 +39,140 @@ export type ListingsItemDiagnostic = {
 
 type ListingsItemsRequester = <T>(input: SpApiRequestInput) => Promise<T>;
 
+// Amazon Listings Items v2021-08-01: Item, ItemIssues, Issue, IssueEnforcements.
+// https://github.com/amzn/selling-partner-api-models/blob/main/models/listings-items-api-model/listingsItems_2021-08-01.json
+// Listings issues are observed listing problems, not proof of legal compliance.
+export type AmazonListingIssue = {
+  code: string;
+  message: string;
+  severity: "ERROR" | "WARNING" | "INFO";
+  categories: string[];
+  attributeNames?: string[];
+  marketplaceIds?: string[];
+  enforcements?: {
+    actions: { action: string }[];
+    exemption: { status: string; expiryDate?: string };
+  };
+};
+
+type ListingIssuesContext = {
+  sellerId: string | null;
+  sku: string;
+  marketplaceId: string;
+  checkedAt: string; // Attempt time on failure; never a successful-verification timestamp.
+  requestId: string | null;
+  amazonResponses: number; // Responses observed by transport, not inferred network attempts.
+};
+
+export type ListingIssuesObservation = ListingIssuesContext & (
+  | { status: "SUCCESS"; issues: AmazonListingIssue[] }
+  | { status: "LISTING_NOT_FOUND" | "RATE_LIMITED" | "UNAUTHORIZED" |
+      "QUERY_FAILED" | "INVALID_RESPONSE" | "UNKNOWN"; error: string }
+);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function readListingIssues(raw: unknown, sku: string, marketplaceId: string): AmazonListingIssue[] | null {
+  // Item requires sku. Require an explicit issues array even though it is optional
+  // in the schema: an omitted dataset is not evidence of zero issues.
+  if (!isRecord(raw) || raw.sku !== sku || !Array.isArray(raw.issues) || "errors" in raw) return null;
+  const issues: AmazonListingIssue[] = [];
+  for (const value of raw.issues) {
+    if (!isRecord(value) || typeof value.code !== "string" || !value.code.trim() ||
+        typeof value.message !== "string" || typeof value.severity !== "string" ||
+        !["ERROR", "WARNING", "INFO"].includes(String(value.severity)) ||
+        !isStringArray(value.categories)) return null;
+    for (const key of ["attributeNames", "marketplaceIds"] as const) {
+      if (key in value && !isStringArray(value[key])) return null;
+    }
+    if (isStringArray(value.marketplaceIds) &&
+        (value.marketplaceIds.length === 0 || value.marketplaceIds.some((id) => id !== marketplaceId))) return null;
+    const issue: AmazonListingIssue = {
+      code: value.code, message: value.message,
+      severity: value.severity as AmazonListingIssue["severity"],
+      categories: [...value.categories],
+    };
+    if (isStringArray(value.attributeNames)) issue.attributeNames = [...value.attributeNames];
+    if (isStringArray(value.marketplaceIds)) issue.marketplaceIds = [...value.marketplaceIds];
+    if ("enforcements" in value) {
+      const enforcement = value.enforcements;
+      if (!isRecord(enforcement) || !Array.isArray(enforcement.actions) ||
+          !enforcement.actions.every((action) => isRecord(action) && typeof action.action === "string") ||
+          !isRecord(enforcement.exemption) || typeof enforcement.exemption.status !== "string" ||
+          ("expiryDate" in enforcement.exemption && typeof enforcement.exemption.expiryDate !== "string")) return null;
+      issue.enforcements = {
+        actions: enforcement.actions.map((action) => ({ action: action.action as string })),
+        exemption: {
+          status: enforcement.exemption.status,
+          ...(typeof enforcement.exemption.expiryDate === "string" ? { expiryDate: enforcement.exemption.expiryDate } : {}),
+        },
+      };
+    }
+    issues.push(issue);
+  }
+  return issues;
+}
+
+export async function getListingIssues(params: {
+  sellerSku: string;
+  marketplaceId: string;
+  signal?: AbortSignal;
+  oneShot?: boolean;
+  request?: ListingsItemsRequester;
+  loadConfig?: () => SpApiConfig;
+}): Promise<ListingIssuesObservation> {
+  const context: ListingIssuesContext = {
+    sellerId: null, sku: params.sellerSku, marketplaceId: params.marketplaceId,
+    checkedAt: new Date().toISOString(), requestId: null, amazonResponses: 0,
+  };
+  const failure = (status: Exclude<ListingIssuesObservation["status"], "SUCCESS">, error: string): ListingIssuesObservation =>
+    ({ ...context, checkedAt: new Date().toISOString(), status, error });
+  if (!params.sellerSku?.trim() || params.sellerSku !== params.sellerSku.trim() ||
+      /[\x00-\x1f\x7f]/.test(params.sellerSku) || !params.marketplaceId?.trim()) {
+    return failure("UNKNOWN", "LISTING_IDENTITY_REQUIRED");
+  }
+  let config: SpApiConfig;
+  try {
+    config = (params.loadConfig ?? loadSpApiConfig)();
+  } catch {
+    return failure("UNKNOWN", "SP_API_CONFIGURATION_UNAVAILABLE");
+  }
+  context.sellerId = config.sellerId ?? null;
+  if (!config.sellerId) return failure("UNKNOWN", "AMAZON_SELLER_ID_MISSING");
+  try {
+    const request = params.request ?? (await import("./spApiClient.ts")).spApiRequest;
+    const raw = await request<unknown>({
+      method: "GET",
+      path: `/listings/2021-08-01/items/${encodeURIComponent(config.sellerId)}/${encodeURIComponent(params.sellerSku)}`,
+      query: { marketplaceIds: params.marketplaceId, includedData: "issues" },
+      operation: "getListingsItem.issues",
+      signal: params.signal,
+      rateLimitRetry: { maxRetries: params.oneShot ? 0 : 1, baseDelayMs: 1_500, maxDelayMs: 8_000 },
+      retryExpiredAccessToken: !params.oneShot,
+      onResponseMetadata(metadata) {
+        context.amazonResponses += 1;
+        context.requestId = metadata.requestId;
+      },
+    });
+    const issues = readListingIssues(raw, params.sellerSku, params.marketplaceId);
+    if (issues === null) return failure("INVALID_RESPONSE", "LISTING_ISSUES_PAYLOAD_INVALID");
+    return { ...context, checkedAt: new Date().toISOString(), status: "SUCCESS", issues };
+  } catch (error) {
+    // Never expose upstream bodies, headers, tokens or arbitrary error messages.
+    const status = isRecord(error) ? error.status : undefined;
+    if (status === 404) return failure("LISTING_NOT_FOUND", "AMAZON_HTTP_404");
+    if (status === 429) return failure("RATE_LIMITED", "AMAZON_HTTP_429");
+    if (status === 401 || status === 403) return failure("UNAUTHORIZED", `AMAZON_HTTP_${status}`);
+    return failure("QUERY_FAILED", "LISTING_ISSUES_QUERY_FAILED");
+  }
+}
+
 function nonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   return value.trim() || null;

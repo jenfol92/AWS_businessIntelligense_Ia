@@ -4,7 +4,12 @@ import test from "node:test";
 
 const source = fs.readFileSync(new URL("./DashboardBI.tsx", import.meta.url), "utf8");
 const localeIndexSource = fs.readFileSync(
-  new URL("../../../app/[locale]/page.tsx", import.meta.url),
+  new URL("../../../app/[locale]/(dashboard)/page.tsx", import.meta.url),
+  "utf8",
+);
+
+const dashboardLayoutSource = fs.readFileSync(
+  new URL("../../../app/[locale]/(dashboard)/layout.tsx", import.meta.url),
   "utf8",
 );
 
@@ -28,4 +33,15 @@ test("locale root renders the decision dashboard instead of redirecting to produ
   assert.match(localeIndexSource, /<DashboardBI \/>/);
   assert.doesNotMatch(localeIndexSource, /redirect\(/);
   assert.doesNotMatch(localeIndexSource, /productos/);
+  assert.doesNotMatch(dashboardLayoutSource, /redirect\(/);
+  assert.doesNotMatch(dashboardLayoutSource, /productos/);
+  assert.match(
+    dashboardLayoutSource,
+    /<GlobalFiltersProvider>\s*<DashboardShell>\{children\}<\/DashboardShell>\s*<\/GlobalFiltersProvider>/,
+  );
+  assert.equal(
+    fs.existsSync(new URL("../../../app/[locale]/page.tsx", import.meta.url)),
+    false,
+    "locale root must have a single page owner in the dashboard route group",
+  );
 });
